@@ -1,0 +1,6 @@
+{
+  "name": "Laporan Kebersihan SCB",
+  "description": "Aplikasi Laporan Harian Cleaning Service & Kebersihan Kamar Mandi Petugas Sekolah Cendekia BAZNAS",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
