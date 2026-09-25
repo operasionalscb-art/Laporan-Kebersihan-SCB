@@ -17,8 +17,7 @@ import {
   deleteReport, 
   getCurrentUser, 
   setCurrentUser, 
-  clearCurrentUser,
-  resetAllData
+  clearCurrentUser
 } from './utils/storage';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -81,8 +80,15 @@ export default function App() {
       return;
     }
     if (targetTab === 'accounts') {
-      if (!currentUser || (currentUser.role !== 'superadmin' && currentUser.email !== 'operasional.scb@gmail.com')) {
+      if (!isSuperAdmin) {
         handleOpenLoginModal('Pengelolaan akun hanya dapat diakses oleh Superadmin.', 'email_admin');
+        setActiveTab('dashboard');
+        return;
+      }
+    }
+    if (targetTab === 'drive') {
+      if (!isSuperAdmin) {
+        handleOpenLoginModal('Integrasi Google Drive hanya dapat diakses oleh Super Admin (operasional.scb@gmail.com).', 'email_admin');
         setActiveTab('dashboard');
         return;
       }
@@ -144,13 +150,6 @@ export default function App() {
     showToast('Akun berhasil dihapus.', 'info');
   };
 
-  // User Session
-  const handleSwitchUser = (user: User) => {
-    setCurrentUser(user);
-    setCurrentUserState(user);
-    showToast(`Beralih ke akun: ${user.name}`);
-  };
-
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
     setCurrentUserState(user);
@@ -166,15 +165,6 @@ export default function App() {
     setCurrentUserState(null);
     setIsLoginModalOpen(true);
     showToast('Anda telah keluar. Silakan masuk kembali.', 'info');
-  };
-
-  const handleResetData = () => {
-    resetAllData();
-    setUsers(getUsers());
-    setReports(getReports());
-    const admin = getCurrentUser();
-    setCurrentUserState(admin);
-    showToast('Data demo berhasil direset ke setelan awal.', 'info');
   };
 
   const officers = users.filter((u) => u.role === 'petugas');
@@ -207,10 +197,8 @@ export default function App() {
       {/* Main Navbar */}
       <Navbar
         currentUser={currentUser}
-        allUsers={users}
         activeTab={activeTab}
         setActiveTab={handleSafeTabChange}
-        onSwitchUser={handleSwitchUser}
         onLogout={handleLogout}
         onOpenLoginModal={() => handleOpenLoginModal('Masuk Akun Petugas Kebersihan / Superadmin SCB')}
         onRequestInputReport={handleRequestInputReport}
@@ -276,8 +264,6 @@ export default function App() {
               onAddUser={handleAddUser}
               onUpdateUser={handleUpdateUser}
               onDeleteUser={handleDeleteUser}
-              onSwitchUser={handleSwitchUser}
-              onResetData={handleResetData}
             />
           ) : (
             <div className="max-w-md mx-auto my-12 p-6 bg-white rounded-2xl border border-slate-200 text-center">
@@ -287,25 +273,38 @@ export default function App() {
                 Halaman pengelolaan akun hanya dapat diakses oleh akun pengelola superadmin (operasional.scb@gmail.com).
               </p>
               <button
-                onClick={() => {
-                  const admin = users.find((u) => u.email === 'operasional.scb@gmail.com') || users[0];
-                  handleSwitchUser(admin);
-                }}
-                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold"
+                onClick={() => handleOpenLoginModal('Masuk dengan email operasional.scb@gmail.com dan kata sandi Anda.', 'email_admin')}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
               >
-                Beralih ke Superadmin
+                Masuk Akun Superadmin
               </button>
             </div>
           )
         )}
 
         {activeTab === 'drive' && (
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-            <GoogleDriveManager
-              reports={reports}
-              onShowToast={showToast}
-            />
-          </div>
+          isSuperAdmin ? (
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+              <GoogleDriveManager
+                reports={reports}
+                onShowToast={showToast}
+              />
+            </div>
+          ) : (
+            <div className="max-w-md mx-auto my-12 p-6 bg-white rounded-2xl border border-slate-200 text-center">
+              <AlertCircle className="w-10 h-10 text-amber-500 mx-auto mb-2" />
+              <h3 className="font-bold text-slate-800 text-base">Akses Khusus Super Admin</h3>
+              <p className="text-xs text-slate-500 mt-1 mb-4">
+                Integrasi dan penyimpanan Google Drive hanya dapat diakses oleh akun Super Admin (operasional.scb@gmail.com).
+              </p>
+              <button
+                onClick={() => handleOpenLoginModal('Masuk dengan akun superadmin untuk mengakses Google Drive.', 'email_admin')}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
+              >
+                Masuk Akun Superadmin
+              </button>
+            </div>
+          )
         )}
       </main>
 

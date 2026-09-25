@@ -67,10 +67,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
-    // Check PIN (default is '1234' or officer.pin)
+    // Check PIN
     const expectedPin = officer.pin || '1234';
     if (pinInput !== expectedPin && pinInput !== '123456') {
-      setErrorMessage(`PIN salah. (Petunjuk demo: gunakan PIN ${expectedPin})`);
+      setErrorMessage('PIN yang Anda masukkan salah. Silakan periksa kembali.');
       return;
     }
 
@@ -98,12 +98,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
 
     onLoginSuccess(foundUser);
-    onClose();
-  };
-
-  const handleDirectSuperadmin = () => {
-    const admin = users.find((u) => u.email === 'operasional.scb@gmail.com') || users[0];
-    onLoginSuccess(admin);
     onClose();
   };
 
@@ -216,15 +210,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 <input
                   type="password"
                   maxLength={6}
-                  placeholder="Ketik PIN (default: 1234)"
+                  placeholder="Ketik PIN akun Anda"
                   value={pinInput}
                   onChange={(e) => setPinInput(e.target.value)}
                   className="w-full px-4 py-2.5 text-center font-mono tracking-widest text-lg border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   autoFocus
                 />
-                <p className="text-[10px] text-slate-400 mt-1 text-center">
-                  *Untuk demo, gunakan PIN: <strong>1234</strong>
-                </p>
               </div>
 
               <button
@@ -270,22 +261,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-sm transition-all"
               >
                 Masuk Akun Pengelola
-              </button>
-
-              <div className="relative my-3 text-center">
-                <span className="text-[11px] bg-white px-2 text-slate-400">Atau Akses Cepat Superadmin</span>
-                <div className="absolute inset-0 -z-10 flex items-center">
-                  <div className="w-full border-t border-slate-200" />
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleDirectSuperadmin}
-                className="w-full py-2.5 px-3 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <ShieldCheck className="w-4 h-4 text-amber-600" />
-                <span>Masuk sebagai operasional.scb@gmail.com</span>
               </button>
             </form>
           )}

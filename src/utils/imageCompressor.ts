@@ -62,7 +62,7 @@ export async function compressImage(file: File, maxWidth = 900, maxHeight = 900,
 }
 
 /**
- * Creates a clean SVG placeholder image data URL for seeded demo reports
+ * Creates a clean SVG placeholder image data URL for initial system reports
  */
 export function createSamplePhotoUrl(title: string, subtitle: string, bgColor = '#059669'): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="450" viewBox="0 0 600 450">

@@ -6,7 +6,6 @@ import {
   PlusCircle, 
   Users, 
   LogOut, 
-  UserCheck, 
   ChevronDown, 
   Sparkles,
   ShieldCheck,
@@ -19,10 +18,10 @@ import {
 
 interface NavbarProps {
   currentUser: User | null;
-  allUsers: User[];
+  allUsers?: User[];
   activeTab: 'dashboard' | 'input' | 'accounts' | 'drive';
   setActiveTab: (tab: 'dashboard' | 'input' | 'accounts' | 'drive') => void;
-  onSwitchUser: (user: User) => void;
+  onSwitchUser?: (user: User) => void;
   onLogout: () => void;
   onOpenLoginModal: (reason?: string, tab?: 'quick_petugas' | 'email_admin') => void;
   onRequestInputReport: () => void;
@@ -30,10 +29,8 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
-  allUsers,
   activeTab,
   setActiveTab,
-  onSwitchUser,
   onLogout,
   onOpenLoginModal,
   onRequestInputReport,
@@ -149,20 +146,22 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            <button
-              onClick={() => setActiveTab('drive')}
-              className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'drive'
-                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <HardDrive className="w-4 h-4" />
-              <span>Google Drive</span>
-              <span className="ml-1 px-1.5 py-0.2 bg-blue-100 text-blue-800 text-[10px] font-bold rounded">
-                Cloud
-              </span>
-            </button>
+            {isSuperAdmin && (
+              <button
+                onClick={() => setActiveTab('drive')}
+                className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  activeTab === 'drive'
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <HardDrive className="w-4 h-4" />
+                <span>Google Drive</span>
+                <span className="ml-1 px-1.5 py-0.2 bg-blue-100 text-blue-800 text-[10px] font-bold rounded">
+                  Admin
+                </span>
+              </button>
+            )}
           </nav>
 
           {/* Right Actions: User Switcher / Profile */}
@@ -190,10 +189,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {/* Dropdown Menu */}
                 {showSwitchMenu && (
                   <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-50 animate-in fade-in zoom-in-95 duration-100">
-                    <div className="px-3 py-2 border-b border-slate-100">
+                    <div className="px-3 py-2.5 border-b border-slate-100">
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                          Akun Aktif
+                          Akun Terhubung
                         </span>
                         {currentUser.role === 'superadmin' && (
                           <span className="inline-flex items-center text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
@@ -205,50 +204,41 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <p className="text-xs text-slate-500 truncate">{currentUser.email}</p>
                     </div>
 
-                    {/* Quick Switcher for Testing Different Roles */}
-                    <div className="px-3 py-2 border-b border-slate-100">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                          <UserCheck className="w-3 h-3 text-emerald-600" />
-                          Ganti Cepat Pengguna
-                        </span>
-                        <span className="text-[10px] text-slate-400">Mode Demo</span>
+                    {isSuperAdmin && (
+                      <div className="p-1 border-b border-slate-100 space-y-0.5">
+                        <button
+                          onClick={() => {
+                            setShowSwitchMenu(false);
+                            setActiveTab('accounts');
+                          }}
+                          className="w-full flex items-center space-x-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg transition-colors text-left"
+                        >
+                          <Users className="w-4 h-4 text-emerald-600" />
+                          <span>Pengelolaan Akun Petugas</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowSwitchMenu(false);
+                            setActiveTab('drive');
+                          }}
+                          className="w-full flex items-center space-x-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg transition-colors text-left"
+                        >
+                          <HardDrive className="w-4 h-4 text-blue-600" />
+                          <span>Google Drive (Cloud Backup)</span>
+                        </button>
                       </div>
-                      <div className="space-y-1 max-h-44 overflow-y-auto">
-                        {allUsers.map((u) => (
-                          <button
-                            key={u.id}
-                            onClick={() => {
-                              onSwitchUser(u);
-                              setShowSwitchMenu(false);
-                            }}
-                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left text-xs transition-colors ${
-                              currentUser.id === u.id
-                                ? 'bg-emerald-50 text-emerald-800 font-semibold'
-                                : 'text-slate-700 hover:bg-slate-100'
-                            }`}
-                          >
-                            <span className="truncate pr-2">{u.name}</span>
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                              u.role === 'superadmin' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'
-                            }`}>
-                              {u.role === 'superadmin' ? 'Admin' : 'Petugas'}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    )}
 
-                    <div className="pt-1">
+                    <div className="p-1">
                       <button
                         onClick={() => {
                           setShowSwitchMenu(false);
                           onLogout();
                         }}
-                        className="w-full flex items-center space-x-2 px-3 py-2 text-xs font-medium text-rose-600 hover:bg-rose-50 transition-colors"
+                        className="w-full flex items-center space-x-2 px-3 py-2 text-xs font-medium text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
                       >
                         <LogOut className="w-4 h-4" />
-                        <span>Keluar / Ganti Akun Lain</span>
+                        <span>Keluar Akun (Logout)</span>
                       </button>
                     </div>
                   </div>
@@ -299,15 +289,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           )}
 
-          <button
-            onClick={() => setActiveTab('drive')}
-            className={`flex flex-col items-center py-1 px-3 text-xs font-medium rounded-lg ${
-              activeTab === 'drive' ? 'text-emerald-700 font-bold' : 'text-slate-600'
-            }`}
-          >
-            <HardDrive className="w-5 h-5 mb-0.5" />
-            <span>Drive</span>
-          </button>
+          {isSuperAdmin && (
+            <button
+              onClick={() => setActiveTab('drive')}
+              className={`flex flex-col items-center py-1 px-3 text-xs font-medium rounded-lg ${
+                activeTab === 'drive' ? 'text-emerald-700 font-bold' : 'text-slate-600'
+              }`}
+            >
+              <HardDrive className="w-5 h-5 mb-0.5" />
+              <span>Drive</span>
+            </button>
+          )}
         </div>
       </div>
     </header>
