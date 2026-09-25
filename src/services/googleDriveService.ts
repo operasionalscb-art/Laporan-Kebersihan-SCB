@@ -1,6 +1,73 @@
 import { getGoogleAccessToken } from './googleAuth';
 import { CleaningReport } from '../types';
 
+export const DEFAULT_DATABASE_FOLDER_ID = '1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z';
+export const DEFAULT_DATABASE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_DATABASE_FOLDER_ID}?usp=share_link`;
+export const STORAGE_FOLDER_KEY = 'scb_custom_gdrive_folder_id';
+
+/**
+ * Extracts a Google Drive Folder ID from a URL, link with parameters, or returns the raw ID.
+ */
+export function extractFolderId(input: string): string {
+  if (!input) return DEFAULT_DATABASE_FOLDER_ID;
+  const trimmed = input.trim();
+  // Format: .../folders/FOLDER_ID...
+  const match = trimmed.match(/folders\/([a-zA-Z0-9_-]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  // Format: ...id=FOLDER_ID...
+  const queryMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (queryMatch && queryMatch[1]) {
+    return queryMatch[1];
+  }
+  // Raw alphanumeric ID (Google Drive IDs are usually 15-44 characters)
+  if (/^[a-zA-Z0-9_-]{15,}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return trimmed || DEFAULT_DATABASE_FOLDER_ID;
+}
+
+/**
+ * Retrieves the currently active Google Drive storage folder ID (defaults to user configured ID).
+ */
+export function getConfiguredFolderId(): string {
+  try {
+    const saved = localStorage.getItem(STORAGE_FOLDER_KEY);
+    if (saved && saved.trim()) {
+      return saved.trim();
+    }
+  } catch (e) {
+    // Ignore localStorage errors
+  }
+  return DEFAULT_DATABASE_FOLDER_ID;
+}
+
+/**
+ * Saves a custom Google Drive folder ID or URL as the active storage database.
+ */
+export function setConfiguredFolderId(folderIdOrUrl: string): string {
+  const cleanId = extractFolderId(folderIdOrUrl);
+  try {
+    localStorage.setItem(STORAGE_FOLDER_KEY, cleanId);
+  } catch (e) {
+    // Ignore localStorage errors
+  }
+  return cleanId;
+}
+
+/**
+ * Resets the folder ID back to the designated default SCB database folder.
+ */
+export function resetConfiguredFolderId(): string {
+  try {
+    localStorage.setItem(STORAGE_FOLDER_KEY, DEFAULT_DATABASE_FOLDER_ID);
+  } catch (e) {
+    // Ignore localStorage errors
+  }
+  return DEFAULT_DATABASE_FOLDER_ID;
+}
+
 export interface DriveFileItem {
   id: string;
   name: string;
@@ -31,9 +98,11 @@ export async function listDriveFiles(
     throw new Error('Akses Google Drive belum terautentikasi. Silakan Hubungkan Akun Google.');
   }
 
+  const targetFolderId = folderId || getConfiguredFolderId();
+
   let q = "trashed = false";
-  if (folderId) {
-    q += ` and '${folderId}' in parents`;
+  if (targetFolderId) {
+    q += ` and '${targetFolderId}' in parents`;
   }
   if (queryText && queryText.trim()) {
     q += ` and name contains '${queryText.trim().replace(/'/g, "\\'")}'`;
@@ -44,6 +113,8 @@ export async function listDriveFiles(
     pageSize: '50',
     fields: 'files(id, name, mimeType, modifiedTime, size, webViewLink, thumbnailLink, iconLink)',
     orderBy: 'modifiedTime desc',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
   });
 
   const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
@@ -62,10 +133,64 @@ export async function listDriveFiles(
 }
 
 /**
- * Finds or creates a dedicated root folder in Google Drive:
- * "SIM-BERSIH SCB (Sekolah Cendekia BAZNAS)"
+ * Gets details of a Google Drive folder by its ID.
+ */
+export async function getDriveFolderDetails(folderId: string): Promise<{
+  id: string;
+  name: string;
+  webViewLink: string;
+  accessible: boolean;
+}> {
+  const token = await getGoogleAccessToken();
+  const defaultUrl = `https://drive.google.com/drive/folders/${folderId}`;
+
+  if (!token) {
+    return {
+      id: folderId,
+      name: 'Folder Database SIM-BERSIH SCB',
+      webViewLink: defaultUrl,
+      accessible: false,
+    };
+  }
+
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,mimeType,webViewLink,trashed&supportsAllDrives=true`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        id: data.id,
+        name: data.name || 'Folder Database SIM-BERSIH SCB',
+        webViewLink: data.webViewLink || defaultUrl,
+        accessible: !data.trashed,
+      };
+    }
+  } catch (err) {
+    console.warn('Could not fetch folder details from Drive API:', err);
+  }
+
+  return {
+    id: folderId,
+    name: 'Folder Database SIM-BERSIH SCB',
+    webViewLink: defaultUrl,
+    accessible: true,
+  };
+}
+
+/**
+ * Finds or uses the designated database folder in Google Drive:
+ * Defaults to the configured folder (1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z).
  */
 export async function getOrCreateScbDriveFolder(): Promise<string> {
+  const configuredId = getConfiguredFolderId();
+  if (configuredId) {
+    return configuredId;
+  }
+
   const token = await getGoogleAccessToken();
   if (!token) {
     throw new Error('Akses Google Drive belum terautentikasi.');
@@ -77,6 +202,8 @@ export async function getOrCreateScbDriveFolder(): Promise<string> {
   const searchParams = new URLSearchParams({
     q: `mimeType = 'application/vnd.google-apps.folder' and name = '${folderName}' and trashed = false`,
     fields: 'files(id, name)',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
   });
 
   const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?${searchParams.toString()}`, {
@@ -91,7 +218,7 @@ export async function getOrCreateScbDriveFolder(): Promise<string> {
   }
 
   // 2. Create if not found
-  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+  const createRes = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -114,6 +241,26 @@ export async function getOrCreateScbDriveFolder(): Promise<string> {
 }
 
 /**
+ * Reads a JSON file directly from Google Drive (e.g. for database restoration/import).
+ */
+export async function readJsonFromDrive<T = any>(fileId: string): Promise<T> {
+  const token = await getGoogleAccessToken();
+  if (!token) {
+    throw new Error('Akses Google Drive belum terautentikasi.');
+  }
+
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Gagal mengunduh file dari Google Drive (${res.status})`);
+  }
+
+  return await res.json();
+}
+
+/**
  * Uploads a text/JSON/CSV/blob file to Google Drive using multipart upload.
  */
 export async function uploadFileToDrive(
@@ -132,8 +279,9 @@ export async function uploadFileToDrive(
     mimeType,
   };
 
-  if (parentFolderId) {
-    metadata.parents = [parentFolderId];
+  const targetParent = parentFolderId || getConfiguredFolderId();
+  if (targetParent) {
+    metadata.parents = [targetParent];
   }
 
   const boundary = '-------314159265358979323846';
@@ -153,7 +301,7 @@ export async function uploadFileToDrive(
   const fullBody = new Blob(bodyBlobParts);
 
   const res = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink&supportsAllDrives=true',
     {
       method: 'POST',
       headers: {

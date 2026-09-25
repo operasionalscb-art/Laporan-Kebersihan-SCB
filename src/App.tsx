@@ -12,6 +12,7 @@ import {
   updateUser, 
   deleteUser, 
   getReports, 
+  saveReports,
   addReport, 
   updateReport, 
   deleteReport, 
@@ -288,6 +289,10 @@ export default function App() {
               <GoogleDriveManager
                 reports={reports}
                 onShowToast={showToast}
+                onRestoreReports={(restoredReports) => {
+                  saveReports(restoredReports);
+                  setReports(restoredReports);
+                }}
               />
             </div>
           ) : (
