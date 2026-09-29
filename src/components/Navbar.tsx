@@ -13,7 +13,8 @@ import {
   Lock,
   Eye,
   LogIn,
-  HardDrive
+  HardDrive,
+  Database
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -155,9 +156,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <HardDrive className="w-4 h-4" />
-                <span>Google Drive</span>
-                <span className="ml-1 px-1.5 py-0.2 bg-blue-100 text-blue-800 text-[10px] font-bold rounded">
+                <Database className="w-4 h-4" />
+                <span>Penyimpanan Data</span>
+                <span className="ml-1 px-1.5 py-0.2 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded">
                   Admin
                 </span>
               </button>
@@ -223,8 +224,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                           }}
                           className="w-full flex items-center space-x-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg transition-colors text-left"
                         >
-                          <HardDrive className="w-4 h-4 text-blue-600" />
-                          <span>Google Drive (Cloud Backup)</span>
+                          <Database className="w-4 h-4 text-emerald-600" />
+                          <span>Pusat Penyimpanan & Cadangan</span>
                         </button>
                       </div>
                     )}
@@ -296,8 +297,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                 activeTab === 'drive' ? 'text-emerald-700 font-bold' : 'text-slate-600'
               }`}
             >
-              <HardDrive className="w-5 h-5 mb-0.5" />
-              <span>Drive</span>
+              <Database className="w-5 h-5 mb-0.5" />
+              <span>Data</span>
             </button>
           )}
         </div>

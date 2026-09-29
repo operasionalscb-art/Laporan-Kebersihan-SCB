@@ -89,7 +89,7 @@ export default function App() {
     }
     if (targetTab === 'drive') {
       if (!isSuperAdmin) {
-        handleOpenLoginModal('Integrasi Google Drive hanya dapat diakses oleh Super Admin (operasional.scb@gmail.com).', 'email_admin');
+        handleOpenLoginModal('Pusat Penyimpanan Data hanya dapat diakses oleh Super Admin (operasional.scb@gmail.com).', 'email_admin');
         setActiveTab('dashboard');
         return;
       }
@@ -293,6 +293,10 @@ export default function App() {
                   saveReports(restoredReports);
                   setReports(restoredReports);
                 }}
+                onResetData={() => {
+                  saveReports([]);
+                  setReports([]);
+                }}
               />
             </div>
           ) : (
@@ -300,10 +304,10 @@ export default function App() {
               <AlertCircle className="w-10 h-10 text-amber-500 mx-auto mb-2" />
               <h3 className="font-bold text-slate-800 text-base">Akses Khusus Super Admin</h3>
               <p className="text-xs text-slate-500 mt-1 mb-4">
-                Integrasi dan penyimpanan Google Drive hanya dapat diakses oleh akun Super Admin (operasional.scb@gmail.com).
+                Pusat penyimpanan dan pencadangan data hanya dapat diakses oleh akun Super Admin (operasional.scb@gmail.com).
               </p>
               <button
-                onClick={() => handleOpenLoginModal('Masuk dengan akun superadmin untuk mengakses Google Drive.', 'email_admin')}
+                onClick={() => handleOpenLoginModal('Masuk dengan akun superadmin untuk mengakses Pusat Penyimpanan Data.', 'email_admin')}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
               >
                 Masuk Akun Superadmin
