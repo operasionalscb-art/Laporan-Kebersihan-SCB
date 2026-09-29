@@ -137,9 +137,15 @@ export default function App() {
       setUsers(cloudUsers);
     });
 
+    // 3. Initialize Google Auth and restore saved session
+    const unsubscribeGoogle = initGoogleAuth();
+
     return () => {
       unsubscribeReports();
       unsubscribeUsers();
+      if (typeof unsubscribeGoogle === 'function') {
+        unsubscribeGoogle();
+      }
     };
   }, []);
 

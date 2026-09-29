@@ -27,6 +27,7 @@ export const SCOPES = [
 const STORAGE_ACCESS_TOKEN_KEY = 'scb_gdrive_access_token';
 const STORAGE_PROFILE_KEY = 'scb_gdrive_profile';
 const STORAGE_EXPIRY_KEY = 'scb_gdrive_token_expiry';
+export const STORAGE_KEEP_CONNECTED_KEY = 'scb_gdrive_keep_connected';
 
 // Combine config from json and Vite environment variables
 export const firebaseConfig = {
@@ -58,6 +59,28 @@ let cachedAccessToken: string | null = null;
 let currentProfile: GoogleUserProfile | null = null;
 
 /**
+ * Checks if the Google Drive connection is retained and remembered
+ */
+export function isGoogleDriveLinked(): boolean {
+  try {
+    const keep = localStorage.getItem(STORAGE_KEEP_CONNECTED_KEY);
+    const profile = getCurrentGoogleProfile();
+    return keep === 'true' || Boolean(profile);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persists or updates the Google Drive connection retention flag
+ */
+export function setGoogleDriveLinked(linked: boolean): void {
+  try {
+    localStorage.setItem(STORAGE_KEEP_CONNECTED_KEY, String(linked));
+  } catch {}
+}
+
+/**
  * Storage helpers to persist authentication across page refreshes
  */
 export function getSavedToken(): string | null {
@@ -68,7 +91,9 @@ export function getSavedToken(): string | null {
     if (expiryStr) {
       const expiry = parseInt(expiryStr, 10);
       if (Date.now() > expiry) {
-        clearStoredGoogleAuth();
+        // Clear only expired token, KEEP the linked profile and status!
+        localStorage.removeItem(STORAGE_ACCESS_TOKEN_KEY);
+        cachedAccessToken = null;
         return null;
       }
     }
@@ -85,6 +110,7 @@ export function saveGoogleAuth(token: string, profile: GoogleUserProfile, expire
     localStorage.setItem(STORAGE_ACCESS_TOKEN_KEY, token);
     localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(profile));
     localStorage.setItem(STORAGE_EXPIRY_KEY, String(Date.now() + expiresInSeconds * 1000));
+    localStorage.setItem(STORAGE_KEEP_CONNECTED_KEY, 'true');
   } catch (e) {
     console.warn('Could not persist Google auth:', e);
   }
@@ -97,6 +123,7 @@ export function clearStoredGoogleAuth() {
     localStorage.removeItem(STORAGE_ACCESS_TOKEN_KEY);
     localStorage.removeItem(STORAGE_PROFILE_KEY);
     localStorage.removeItem(STORAGE_EXPIRY_KEY);
+    localStorage.removeItem(STORAGE_KEEP_CONNECTED_KEY);
   } catch {}
 }
 
@@ -214,7 +241,9 @@ export const initGoogleAuth = (
  * Direct Google Identity Services (GIS) Token Client.
  * Works seamlessly in client-side SPA without requiring Firebase Authorized Domains.
  */
-export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
+export const signInWithGIS = async (
+  silent = false
+): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
   const clientId = firebaseConfig.oAuthClientId;
   if (!clientId) {
     throw new Error('OAuth Client ID tidak ditemukan.');
@@ -245,6 +274,7 @@ export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; acc
       const client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: SCOPES.join(' '),
+        prompt: silent ? '' : undefined,
         callback: async (response: any) => {
           if (response.error) {
             reject(new Error(response.error_description || response.error));
@@ -260,9 +290,9 @@ export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; acc
           const expiresIn = response.expires_in ? parseInt(response.expires_in, 10) : 3500;
 
           // Fetch basic user profile from Google UserInfo endpoint
-          let profile: GoogleUserProfile = {
+          let profile: GoogleUserProfile = getCurrentGoogleProfile() || {
             email: 'operasional.scb@gmail.com',
-            displayName: 'Pengguna Google Drive',
+            displayName: 'Operasional SCB',
             authMethod: 'gis',
           };
 
@@ -273,9 +303,9 @@ export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; acc
             if (userinfoRes.ok) {
               const userinfo = await userinfoRes.json();
               profile = {
-                email: userinfo.email || 'operasional.scb@gmail.com',
-                displayName: userinfo.name || userinfo.email || 'Pengguna Google Drive',
-                photoURL: userinfo.picture,
+                email: userinfo.email || profile.email,
+                displayName: userinfo.name || userinfo.email || profile.displayName,
+                photoURL: userinfo.picture || profile.photoURL,
                 authMethod: 'gis',
               };
             }
@@ -288,7 +318,7 @@ export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; acc
         },
       });
 
-      client.requestAccessToken({ prompt: '' });
+      client.requestAccessToken({ prompt: silent ? '' : undefined });
     } catch (err) {
       reject(err);
     }
@@ -366,8 +396,42 @@ export const getGoogleAccessToken = async (): Promise<string | null> => {
     cachedAccessToken = saved;
     return saved;
   }
+
+  // If connection is retained and remembered, attempt silent token renewal via GIS
+  if (isGoogleDriveLinked()) {
+    try {
+      const res = await signInWithGIS(true);
+      if (res?.accessToken) {
+        cachedAccessToken = res.accessToken;
+        return res.accessToken;
+      }
+    } catch (e) {
+      console.warn('Silent token renewal via GIS was not possible:', e);
+    }
+  }
+
   return null;
 };
+
+/**
+ * Permanently remembers and stores the Google Drive account connection
+ */
+export function persistGoogleDriveAccount(
+  email = 'operasional.scb@gmail.com',
+  displayName = 'Operasional SCB'
+): GoogleUserProfile {
+  const profile: GoogleUserProfile = {
+    email: email.trim(),
+    displayName: displayName || email.split('@')[0],
+    authMethod: 'gis',
+  };
+  currentProfile = profile;
+  try {
+    localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(profile));
+    localStorage.setItem(STORAGE_KEEP_CONNECTED_KEY, 'true');
+  } catch {}
+  return profile;
+}
 
 export const getCurrentGoogleProfile = (): GoogleUserProfile | null => {
   if (currentProfile) return currentProfile;
