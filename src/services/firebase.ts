@@ -11,8 +11,14 @@ export const firebaseConfig = {
   appId: (import.meta.env.VITE_FIREBASE_APP_ID as string) || (rawConfig as any)?.appId || '',
 };
 
+export const FIRESTORE_DATABASE_ID: string =
+  (import.meta.env.VITE_FIREBASE_DATABASE_ID as string) ||
+  (rawConfig as any)?.firestoreDatabaseId ||
+  (rawConfig as any)?.databaseId ||
+  'ai-studio-laporankebersiha-b837dc60-6c60-4a56-9829-2068c57227dc';
+
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
 
 // Connection test as required by skill
 export async function testFirestoreConnection(): Promise<boolean> {
