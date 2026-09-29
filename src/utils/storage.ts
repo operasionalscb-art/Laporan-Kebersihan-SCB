@@ -248,12 +248,12 @@ export function saveReports(reports: CleaningReport[]): void {
   }
 }
 
-export function addReport(report: Omit<CleaningReport, 'id' | 'timestamp'>): CleaningReport {
+export function addReport(report: Omit<CleaningReport, 'id' | 'timestamp'> & { id?: string; timestamp?: number }): CleaningReport {
   const reports = getReports();
   const newReport: CleaningReport = {
     ...report,
-    id: `rep-${Date.now()}`,
-    timestamp: Date.now(),
+    id: report.id || `rep-${Date.now()}`,
+    timestamp: report.timestamp || Date.now(),
   };
   reports.unshift(newReport);
   saveReports(reports);

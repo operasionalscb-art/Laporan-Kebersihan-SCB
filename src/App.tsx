@@ -20,6 +20,15 @@ import {
   setCurrentUser, 
   clearCurrentUser
 } from './utils/storage';
+import {
+  subscribeReports,
+  saveReportToCloud,
+  deleteReportFromCloud,
+  batchRestoreReportsToCloud,
+  subscribeUsers,
+  saveUserToCloud,
+  deleteUserFromCloud,
+} from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
 import { ReportForm } from './components/ReportForm';
@@ -97,45 +106,87 @@ export default function App() {
     setActiveTab(targetTab);
   };
 
-  // Initial Load
+  // Initial Real-time Subscriptions (Sync across devices & Vercel)
   useEffect(() => {
-    const loadedUsers = getUsers();
-    setUsers(loadedUsers);
-
+    // Current user session (local device)
     const loadedCurrentUser = getCurrentUser();
     setCurrentUserState(loadedCurrentUser);
 
-    const loadedReports = getReports();
-    setReports(loadedReports);
+    // Initial local cache load for instant render
+    setUsers(getUsers());
+    setReports(getReports());
+
+    // 1. Subscribe to Live Firestore Reports
+    const unsubscribeReports = subscribeReports((cloudReports) => {
+      setReports(cloudReports);
+    });
+
+    // 2. Subscribe to Live Firestore Users
+    const unsubscribeUsers = subscribeUsers((cloudUsers) => {
+      setUsers(cloudUsers);
+    });
+
+    return () => {
+      unsubscribeReports();
+      unsubscribeUsers();
+    };
   }, []);
 
   // Handlers for Reports
-  const handleAddNewReport = (newReportData: Omit<CleaningReport, 'id' | 'timestamp'>) => {
+  const handleAddNewReport = async (newReportData: Omit<CleaningReport, 'id' | 'timestamp'>) => {
+    // 1. Save locally first for instant feedback
     const saved = addReport(newReportData);
     setReports(getReports());
     showToast(`Laporan ${saved.area} berhasil disimpan!`);
+
+    // 2. Persist to Firestore Cloud in real-time
+    try {
+      await saveReportToCloud(saved);
+    } catch (e) {
+      console.warn('Saved locally, background cloud sync retry in progress:', e);
+    }
   };
 
-  const handleUpdateReport = (id: string, updates: Partial<CleaningReport>) => {
-    updateReport(id, updates);
+  const handleUpdateReport = async (id: string, updates: Partial<CleaningReport>) => {
+    const updated = updateReport(id, updates);
     setReports(getReports());
     showToast('Laporan berhasil diperbarui / diverifikasi.');
+
+    if (updated) {
+      try {
+        await saveReportToCloud(updated);
+      } catch (e) {
+        console.warn('Updated locally, background cloud sync error:', e);
+      }
+    }
   };
 
-  const handleDeleteReport = (id: string) => {
+  const handleDeleteReport = async (id: string) => {
     deleteReport(id);
     setReports(getReports());
     showToast('Laporan berhasil dihapus.', 'info');
+
+    try {
+      await deleteReportFromCloud(id);
+    } catch (e) {
+      console.warn('Deleted locally, background cloud sync error:', e);
+    }
   };
 
   // Handlers for Users
-  const handleAddUser = (userData: Omit<User, 'id' | 'createdAt'>) => {
+  const handleAddUser = async (userData: Omit<User, 'id' | 'createdAt'>) => {
     const created = addUser(userData);
     setUsers(getUsers());
     showToast(`Petugas ${created.name} berhasil ditambahkan!`);
+
+    try {
+      await saveUserToCloud(created);
+    } catch (e) {
+      console.warn('Saved user locally, cloud sync error:', e);
+    }
   };
 
-  const handleUpdateUser = (id: string, updates: Partial<User>) => {
+  const handleUpdateUser = async (id: string, updates: Partial<User>) => {
     const updated = updateUser(id, updates);
     setUsers(getUsers());
     if (currentUser?.id === id && updated) {
@@ -143,12 +194,26 @@ export default function App() {
       setCurrentUser(updated);
     }
     showToast('Data petugas berhasil diperbarui.');
+
+    if (updated) {
+      try {
+        await saveUserToCloud(updated);
+      } catch (e) {
+        console.warn('Updated user locally, cloud sync error:', e);
+      }
+    }
   };
 
-  const handleDeleteUser = (id: string) => {
+  const handleDeleteUser = async (id: string) => {
     deleteUser(id);
     setUsers(getUsers());
     showToast('Akun berhasil dihapus.', 'info');
+
+    try {
+      await deleteUserFromCloud(id);
+    } catch (e) {
+      console.warn('Deleted user locally, cloud sync error:', e);
+    }
   };
 
   const handleLoginSuccess = (user: User) => {
@@ -292,10 +357,12 @@ export default function App() {
                 onRestoreReports={(restoredReports) => {
                   saveReports(restoredReports);
                   setReports(restoredReports);
+                  batchRestoreReportsToCloud(restoredReports);
                 }}
                 onResetData={() => {
                   saveReports([]);
                   setReports([]);
+                  batchRestoreReportsToCloud([]);
                 }}
               />
             </div>

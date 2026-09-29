@@ -2,7 +2,7 @@
  * Compresses an image file (from camera or file picker) to a web-friendly size
  * and returns a JPEG data URL.
  */
-export async function compressImage(file: File, maxWidth = 900, maxHeight = 900, quality = 0.72): Promise<string> {
+export async function compressImage(file: File, maxWidth = 720, maxHeight = 720, quality = 0.65): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {

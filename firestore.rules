@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Reports collection - readable by all (dashboard and visitors) and writable for logging reports
+    match /reports/{reportId} {
+      allow read: if true;
+      allow create: if request.resource.data.id != null;
+      allow update: if true;
+      allow delete: if true;
+    }
+    
+    // Users collection - accessible for officer directory and management
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

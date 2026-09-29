@@ -1,0 +1,77 @@
+{
+  "entities": {
+    "Report": {
+      "title": "Report",
+      "description": "Daily cleaning service inspection report submitted by officers at SCB",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tanggal": { "type": "string" },
+        "waktu": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "petugasId": { "type": "string" },
+        "namaPetugas": { "type": "string" },
+        "area": { "type": "string" },
+        "isAreaOther": { "type": "boolean" },
+        "areaCustom": { "type": "string" },
+        "checklist": { "type": "array" },
+        "checklistCustom": { "type": "string" },
+        "kondisiAkhir": {
+          "type": "string",
+          "enum": ["Bersih", "Perlu Pengecekan Ulang", "Ada Kerusakan"]
+        },
+        "keteranganTambahan": { "type": "string" },
+        "fotoBukti": { "type": "array" },
+        "statusVerifikasi": {
+          "type": "string",
+          "enum": ["Menunggu", "Disetujui", "Perlu Perbaikan"]
+        },
+        "catatanSupervisor": { "type": "string" },
+        "diverifikasiOleh": { "type": "string" },
+        "diverifikasiPada": { "type": "string" }
+      },
+      "required": [
+        "id",
+        "tanggal",
+        "waktu",
+        "timestamp",
+        "petugasId",
+        "namaPetugas",
+        "area",
+        "kondisiAkhir",
+        "statusVerifikasi"
+      ]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile for staff and supervisors in SCB",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["superadmin", "supervisor", "petugas"]
+        },
+        "pin": { "type": "string" },
+        "phone": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "avatarColor": { "type": "string" }
+      },
+      "required": ["id", "name", "username", "role", "pin", "isActive"]
+    }
+  },
+  "firestore": {
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Collection of all cleaning service reports"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Registered officers and administrators"
+    }
+  }
+}
