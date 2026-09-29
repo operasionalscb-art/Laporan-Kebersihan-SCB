@@ -64,10 +64,10 @@ let currentProfile: GoogleUserProfile | null = null;
 export function isGoogleDriveLinked(): boolean {
   try {
     const keep = localStorage.getItem(STORAGE_KEEP_CONNECTED_KEY);
-    const profile = getCurrentGoogleProfile();
-    return keep === 'true' || Boolean(profile);
+    if (keep === 'false') return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -442,7 +442,18 @@ export const getCurrentGoogleProfile = (): GoogleUserProfile | null => {
       return currentProfile;
     }
   } catch {}
-  return null;
+  
+  // Default SCB designated Google account
+  currentProfile = {
+    email: 'operasional.scb@gmail.com',
+    displayName: 'Operasional SCB',
+    authMethod: 'gis',
+  };
+  try {
+    localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(currentProfile));
+    localStorage.setItem(STORAGE_KEEP_CONNECTED_KEY, 'true');
+  } catch {}
+  return currentProfile;
 };
 
 export const googleSignOut = async (): Promise<void> => {

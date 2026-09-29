@@ -2,7 +2,7 @@ import { getGoogleAccessToken, clearStoredGoogleAuth } from './googleAuth';
 import { CleaningReport } from '../types';
 
 export const DEFAULT_DATABASE_FOLDER_ID = '1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z';
-export const DEFAULT_DATABASE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_DATABASE_FOLDER_ID}?usp=share_link`;
+export const DEFAULT_DATABASE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_DATABASE_FOLDER_ID}?usp=sharing`;
 export const STORAGE_FOLDER_KEY = 'scb_custom_gdrive_folder_id';
 
 /**
