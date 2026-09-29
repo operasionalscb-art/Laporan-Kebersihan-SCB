@@ -374,3 +374,208 @@ export async function deleteDriveFile(fileId: string): Promise<boolean> {
 
   return true;
 }
+
+export const STORAGE_AUTO_BACKUP_KEY = 'scb_auto_gdrive_backup';
+export const STORAGE_AUTO_PHOTOS_KEY = 'scb_auto_gdrive_photos';
+
+export function isAutoBackupEnabled(): boolean {
+  try {
+    const val = localStorage.getItem(STORAGE_AUTO_BACKUP_KEY);
+    return val === null ? true : val === 'true';
+  } catch {
+    return true;
+  }
+}
+
+export function setAutoBackupEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(STORAGE_AUTO_BACKUP_KEY, String(enabled));
+  } catch {}
+}
+
+export function isAutoPhotosUploadEnabled(): boolean {
+  try {
+    const val = localStorage.getItem(STORAGE_AUTO_PHOTOS_KEY);
+    return val === null ? true : val === 'true';
+  } catch {
+    return true;
+  }
+}
+
+export function setAutoPhotosUploadEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(STORAGE_AUTO_PHOTOS_KEY, String(enabled));
+  } catch {}
+}
+
+/**
+ * Uploads a base64 encoded image or data URL to Google Drive
+ */
+export async function uploadBase64ImageToDrive(
+  base64Data: string,
+  fileName: string,
+  parentFolderId?: string
+): Promise<DriveUploadResult> {
+  let mimeType = 'image/jpeg';
+  let pureBase64 = base64Data;
+
+  const match = base64Data.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.*)$/);
+  if (match) {
+    mimeType = match[1];
+    pureBase64 = match[2];
+  }
+
+  // Convert base64 characters to binary Uint8Array blob
+  const byteCharacters = atob(pureBase64);
+  const byteNumbers = new Uint8Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  const blob = new Blob([byteNumbers], { type: mimeType });
+
+  return uploadFileToDrive(fileName, blob, mimeType, parentFolderId);
+}
+
+/**
+ * Automatically uploads all photos from a cleaning report to Google Drive.
+ * Returns an array of Google Drive webViewLinks for successfully uploaded photos.
+ */
+export async function uploadReportPhotosToDrive(
+  report: CleaningReport,
+  folderId?: string
+): Promise<{ updatedPhotos: string[]; uploadedCount: number; driveLinks: string[] }> {
+  if (!report.fotoBukti || report.fotoBukti.length === 0) {
+    return { updatedPhotos: [], uploadedCount: 0, driveLinks: [] };
+  }
+
+  const token = await getGoogleAccessToken();
+  if (!token) {
+    return { updatedPhotos: report.fotoBukti, uploadedCount: 0, driveLinks: [] };
+  }
+
+  const targetFolder = folderId || getConfiguredFolderId();
+  const updatedPhotos: string[] = [];
+  const driveLinks: string[] = [];
+  let uploadedCount = 0;
+
+  for (let i = 0; i < report.fotoBukti.length; i++) {
+    const photo = report.fotoBukti[i];
+    // If it's already a URL, retain it
+    if (photo.startsWith('http://') || photo.startsWith('https://')) {
+      updatedPhotos.push(photo);
+      driveLinks.push(photo);
+      continue;
+    }
+
+    try {
+      const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
+      const cleanArea = rawArea.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
+      const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
+
+      const uploadResult = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
+      // We retain the Drive web link
+      updatedPhotos.push(uploadResult.webViewLink);
+      driveLinks.push(uploadResult.webViewLink);
+      uploadedCount++;
+    } catch (err) {
+      console.warn(`Gagal mengunggah foto ke-${i + 1} ke Google Drive:`, err);
+      // Fallback: keep original base64 so image is not lost
+      updatedPhotos.push(photo);
+    }
+  }
+
+  return { updatedPhotos, uploadedCount, driveLinks };
+}
+
+/**
+ * Automatically creates and updates the latest backup file in Google Drive
+ */
+export async function executeAutoBackupToDrive(
+  reports: CleaningReport[],
+  folderId?: string
+): Promise<DriveUploadResult> {
+  const token = await getGoogleAccessToken();
+  if (!token) {
+    throw new Error('Akses Google Drive belum aktif.');
+  }
+
+  const payload = {
+    appName: 'SIM-BERSIH SCB',
+    institution: 'Sekolah Cendekia BAZNAS (SCB)',
+    backupTimestamp: new Date().toISOString(),
+    totalReports: reports.length,
+    reports,
+  };
+
+  const jsonString = JSON.stringify(payload, null, 2);
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const fileName = `Backup_Laporan_Kebersihan_SCB_${dateStr}.json`;
+
+  return uploadFileToDrive(fileName, jsonString, 'application/json', folderId);
+}
+
+/**
+ * Batch upload all pending local/base64 photos across all reports into Google Drive
+ */
+export async function batchUploadAllReportsPhotosToDrive(
+  reports: CleaningReport[],
+  onProgress?: (current: number, total: number) => void
+): Promise<{ updatedReports: CleaningReport[]; totalUploaded: number }> {
+  const token = await getGoogleAccessToken();
+  if (!token) {
+    throw new Error('Akses Google Drive belum terautentikasi.');
+  }
+
+  const targetFolder = getConfiguredFolderId();
+  let totalUploaded = 0;
+  const updatedReports: CleaningReport[] = [];
+
+  // Count total photos to process
+  let totalPhotos = 0;
+  for (const r of reports) {
+    totalPhotos += (r.fotoBukti || []).filter((p) => p.startsWith('data:image/')).length;
+  }
+
+  let processedCount = 0;
+
+  for (const report of reports) {
+    if (!report.fotoBukti || report.fotoBukti.length === 0) {
+      updatedReports.push(report);
+      continue;
+    }
+
+    let reportModified = false;
+    const newPhotos: string[] = [];
+
+    for (let i = 0; i < report.fotoBukti.length; i++) {
+      const photo = report.fotoBukti[i];
+      if (photo.startsWith('data:image/')) {
+        try {
+          const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
+          const cleanArea = rawArea.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
+          const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
+
+          const result = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
+          newPhotos.push(result.webViewLink);
+          reportModified = true;
+          totalUploaded++;
+        } catch (e) {
+          console.warn('Batch photo upload item error:', e);
+          newPhotos.push(photo);
+        }
+        processedCount++;
+        if (onProgress) onProgress(processedCount, totalPhotos);
+      } else {
+        newPhotos.push(photo);
+      }
+    }
+
+    if (reportModified) {
+      updatedReports.push({ ...report, fotoBukti: newPhotos });
+    } else {
+      updatedReports.push(report);
+    }
+  }
+
+  return { updatedReports, totalUploaded };
+}

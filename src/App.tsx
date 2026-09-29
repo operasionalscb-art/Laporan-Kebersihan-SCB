@@ -36,6 +36,17 @@ import { AccountManagement } from './components/AccountManagement';
 import { LoginModal } from './components/LoginModal';
 import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
+import { 
+  getGoogleAccessToken, 
+  getSavedToken, 
+  initGoogleAuth 
+} from './services/googleAuth';
+import { 
+  uploadReportPhotosToDrive, 
+  executeAutoBackupToDrive, 
+  isAutoBackupEnabled, 
+  isAutoPhotosUploadEnabled 
+} from './services/googleDriveService';
 import { CheckCircle2, AlertCircle, Building2, Sparkles, UserCheck } from 'lucide-react';
 
 export default function App() {
@@ -144,6 +155,42 @@ export default function App() {
       await saveReportToCloud(saved);
     } catch (e) {
       console.warn('Saved locally, background cloud sync retry in progress:', e);
+    }
+
+    // 3. Automatic Google Drive Photo Upload & Backup
+    const token = await getGoogleAccessToken();
+    if (token) {
+      // Run background upload so officer UI is never blocked
+      (async () => {
+        let currentReport = saved;
+
+        // Auto-upload documentation photos to Google Drive folder
+        if (isAutoPhotosUploadEnabled() && saved.fotoBukti && saved.fotoBukti.length > 0) {
+          try {
+            const { updatedPhotos, uploadedCount } = await uploadReportPhotosToDrive(saved);
+            if (uploadedCount > 0) {
+              currentReport = { ...saved, fotoBukti: updatedPhotos };
+              updateReport(saved.id, { fotoBukti: updatedPhotos });
+              setReports(getReports());
+              await saveReportToCloud(currentReport);
+              showToast(`📸 ${uploadedCount} foto bukti otomatis diunggah ke Google Drive!`, 'success');
+            }
+          } catch (photoErr) {
+            console.warn('Auto upload photos to Drive error:', photoErr);
+          }
+        }
+
+        // Auto-backup updated database to Google Drive folder
+        if (isAutoBackupEnabled()) {
+          try {
+            const allLatestReports = getReports();
+            await executeAutoBackupToDrive(allLatestReports);
+            showToast('☁️ Data laporan otomatis dicadangkan ke Google Drive!', 'info');
+          } catch (backupErr) {
+            console.warn('Auto backup to Google Drive error:', backupErr);
+          }
+        }
+      })();
     }
   };
 
