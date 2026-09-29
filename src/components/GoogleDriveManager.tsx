@@ -5,8 +5,8 @@ import {
   initGoogleAuth, 
   getGoogleAccessToken,
   getCurrentGoogleProfile,
+  getSavedToken,
   parseAuthError,
-  getDiagnosticInfo,
   GoogleUserProfile 
 } from '../services/googleAuth';
 import { 
@@ -39,20 +39,14 @@ import {
   AlertCircle, 
   Loader2, 
   Search, 
-  ShieldCheck, 
   HardDrive,
   FolderOpen,
-  Copy,
-  Check,
-  Globe,
   Settings,
-  HelpCircle,
-  KeyRound,
-  ArrowRight,
   Database,
   Link2,
   RotateCcw,
-  Sparkles
+  Check,
+  LogOut
 } from 'lucide-react';
 
 interface GoogleDriveManagerProps {
@@ -66,8 +60,8 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
   onShowToast,
   onRestoreReports,
 }) => {
-  const [googleProfile, setGoogleProfile] = useState<GoogleUserProfile | null>(null);
-  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [googleProfile, setGoogleProfile] = useState<GoogleUserProfile | null>(() => getCurrentGoogleProfile());
+  const [isConnected, setIsConnected] = useState<boolean>(() => Boolean(getSavedToken()));
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(false);
 
   // Drive state & Database Folder
@@ -88,39 +82,51 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
   const [isBackingUp, setIsBackingUp] = useState<boolean>(false);
   const [isExportingCsv, setIsExportingCsv] = useState<boolean>(false);
 
-  // Diagnostics & Error Modal
-  const [errorDetails, setErrorDetails] = useState<{ title: string; message: string; code: string; isDomainError: boolean } | null>(null);
-  const [isVercelGuideOpen, setIsVercelGuideOpen] = useState<boolean>(false);
-  const [copiedDomain, setCopiedDomain] = useState<boolean>(false);
+  // Error Alert State
+  const [errorDetails, setErrorDetails] = useState<{ title: string; message: string; code?: string } | null>(null);
 
   // Destructive Delete Confirmation Modal State
   const [fileToDelete, setFileToDelete] = useState<DriveFileItem | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
-
-  const diag = getDiagnosticInfo();
 
   useEffect(() => {
     const unsubscribe = initGoogleAuth(
       (profile, token) => {
         setGoogleProfile(profile);
         setIsConnected(true);
+        setErrorDetails(null);
         loadFolderAndFiles(token);
       },
       () => {
         const existing = getCurrentGoogleProfile();
-        if (existing) {
+        const token = getSavedToken();
+        if (existing && token) {
           setGoogleProfile(existing);
           setIsConnected(true);
+          loadFolderAndFiles(token);
         } else {
           setGoogleProfile(null);
           setIsConnected(false);
         }
       }
     );
+
+    // Initial load if already authenticated
+    const activeToken = getSavedToken();
+    if (activeToken) {
+      loadFolderAndFiles(activeToken);
+    }
+
     return () => unsubscribe();
   }, []);
 
   const loadFolderAndFiles = async (token?: string) => {
+    const activeToken = token || (await getGoogleAccessToken());
+    if (!activeToken) {
+      setIsConnected(false);
+      return;
+    }
+
     setIsLoadingFiles(true);
     try {
       const folderId = await getOrCreateScbDriveFolder();
@@ -130,9 +136,19 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
       setFolderUrl(details.webViewLink);
       const files = await listDriveFiles(folderId);
       setDriveFiles(files);
+      setIsConnected(true);
+      setErrorDetails(null);
     } catch (err: any) {
-      console.error(err);
-      onShowToast(err.message || 'Gagal memuat dokumen dari Google Drive', 'error');
+      console.error('Error loading drive files:', err);
+      if (err.message?.includes('terautentikasi') || err.message?.includes('berakhir')) {
+        setIsConnected(false);
+        setErrorDetails({
+          title: 'Perlu Otorisasi Akun Google',
+          message: 'Sesi Google Drive telah berakhir atau belum terhubung. Silakan klik tombol Hubungkan Google Drive.',
+        });
+      } else {
+        onShowToast(err.message || 'Gagal memuat dokumen dari Google Drive', 'error');
+      }
     } finally {
       setIsLoadingFiles(false);
     }
@@ -169,7 +185,7 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
     setFolderUrl(DEFAULT_DATABASE_FOLDER_URL);
     setFolderName('Folder Database SIM-BERSIH SCB');
     setIsFolderModalOpen(false);
-    onShowToast('Folder database dikembalikan ke folder bawaan SCB.', 'info');
+    onShowToast('Folder database dikembalikan ke folder bawaan SCB (1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z).', 'info');
     if (isConnected) {
       await loadFolderAndFiles();
     }
@@ -181,7 +197,7 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
     try {
       const data = await readJsonFromDrive<any>(restoringFile.id);
       if (!data || !Array.isArray(data.reports)) {
-        throw new Error('Format file backup tidak valid. Dokumen harus memuat array "reports".');
+        throw new Error('Format file backup tidak valid. Dokumen harus memuat daftar laporan ("reports").');
       }
       if (onRestoreReports) {
         onRestoreReports(data.reports);
@@ -196,22 +212,26 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
     }
   };
 
-  const handleConnectGoogle = async (method: 'auto' | 'firebase' | 'gis' = 'auto') => {
+  const handleConnectGoogle = async () => {
     setIsLoadingAuth(true);
     setErrorDetails(null);
     try {
-      const result = await googleSignIn(method);
+      const result = await googleSignIn('auto');
       if (result) {
         setGoogleProfile(result.profile);
         setIsConnected(true);
         setErrorDetails(null);
-        onShowToast(`Terhubung dengan Google Drive: ${result.profile.email}`);
+        onShowToast(`Terhubung dengan Google Drive: ${result.profile.email}`, 'success');
         await loadFolderAndFiles(result.accessToken);
       }
     } catch (err: any) {
       console.error('Connection attempt failed:', err);
       const parsed = parseAuthError(err);
-      setErrorDetails(parsed);
+      setErrorDetails({
+        title: parsed.title,
+        message: parsed.message,
+        code: parsed.code,
+      });
       onShowToast(parsed.message, 'error');
     } finally {
       setIsLoadingAuth(false);
@@ -270,15 +290,6 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
     }
   };
 
-  const copyCurrentDomain = () => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(diag.currentHostname);
-      setCopiedDomain(true);
-      setTimeout(() => setCopiedDomain(false), 2500);
-      onShowToast(`Domain ${diag.currentHostname} disalin ke clipboard`);
-    }
-  };
-
   // Mandatory Explicit Confirmation for Destructive Deletion
   const confirmDeleteFile = async () => {
     if (!fileToDelete) return;
@@ -303,7 +314,7 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Banner & Connection Card */}
+      {/* Top Banner & Connection Status Card */}
       <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-5">
         <div className="flex items-start gap-4">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 via-emerald-500 to-amber-500 p-0.5 shadow-sm shrink-0">
@@ -314,15 +325,15 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-bold text-slate-900">
-                Integrasi Google Drive
+                Integrasi Cloud Google Drive
               </h2>
               {isConnected ? (
                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2.5 py-0.5 rounded-full">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  Terhubung ({googleProfile?.authMethod === 'gis' ? 'Direct OAuth' : 'Firebase'})
+                  Terhubung Aktif
                 </span>
               ) : (
-                <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full">
                   Belum Terhubung
                 </span>
               )}
@@ -330,7 +341,7 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
             <p className="text-xs text-slate-500 mt-1 max-w-xl">
               Media penyimpanan cloud resmi untuk sinkronisasi dokumen laporan, foto bukti kebersihan, backup database, dan rekapitulasi Sekolah Cendekia BAZNAS.
             </p>
-            {googleProfile && (
+            {googleProfile && isConnected && (
               <div className="text-[11px] text-slate-600 mt-2 flex items-center gap-2">
                 {googleProfile.photoURL ? (
                   <img src={googleProfile.photoURL} alt="Avatar" className="w-5 h-5 rounded-full border border-slate-200" />
@@ -347,68 +358,49 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
           </div>
         </div>
 
-        {/* Action Buttons: Sign In or Disconnect */}
-        <div className="shrink-0 flex flex-wrap items-center gap-2">
+        {/* Action Button: Connect / Disconnect */}
+        <div className="shrink-0 flex items-center gap-2">
           {isConnected ? (
             <div className="flex items-center gap-2">
               <button
                 onClick={() => loadFolderAndFiles()}
                 disabled={isLoadingFiles}
-                className="p-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-colors"
-                title="Segarkan daftar file"
+                className="p-2.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors border border-slate-200"
+                title="Refresh Dokumen"
               >
-                <RefreshCw className={`w-4 h-4 ${isLoadingFiles ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-4 h-4 ${isLoadingFiles ? 'animate-spin text-emerald-600' : ''}`} />
               </button>
               <button
                 onClick={handleDisconnectGoogle}
-                className="px-3.5 py-2.5 bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-700 text-xs font-semibold rounded-xl border border-slate-200 transition-colors"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-700 text-xs font-semibold rounded-xl border border-slate-200 transition-colors"
               >
-                Putus Sambungan
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Putus Sambungan</span>
               </button>
             </div>
           ) : (
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-              <button
-                onClick={() => handleConnectGoogle('auto')}
-                disabled={isLoadingAuth}
-                className="flex items-center justify-center space-x-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold rounded-xl shadow-xs hover:shadow transition-all disabled:opacity-50"
-              >
-                {isLoadingAuth ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Menghubungkan...</span>
-                  </>
-                ) : (
-                  <>
-                    <Cloud className="w-4 h-4" />
-                    <span>Hubungkan Google Drive</span>
-                  </>
-                )}
-              </button>
-
-              <button
-                onClick={() => handleConnectGoogle('gis')}
-                disabled={isLoadingAuth}
-                title="Metode alternatif jika domain Vercel belum didaftarkan di Firebase"
-                className="flex items-center justify-center space-x-1.5 px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-xl border border-slate-200 transition-all disabled:opacity-50"
-              >
-                <KeyRound className="w-3.5 h-3.5 text-blue-600" />
-                <span>Login Direct OAuth</span>
-              </button>
-
-              <button
-                onClick={() => setIsVercelGuideOpen(true)}
-                className="p-2.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
-                title="Petunjuk Setup Domain Vercel di Firebase"
-              >
-                <HelpCircle className="w-4 h-4" />
-              </button>
-            </div>
+            <button
+              onClick={handleConnectGoogle}
+              disabled={isLoadingAuth}
+              className="flex items-center justify-center space-x-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold rounded-xl shadow-xs hover:shadow transition-all disabled:opacity-50"
+            >
+              {isLoadingAuth ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Menghubungkan...</span>
+                </>
+              ) : (
+                <>
+                  <Cloud className="w-4 h-4" />
+                  <span>Hubungkan Akun Google</span>
+                </>
+              )}
+            </button>
           )}
         </div>
       </div>
 
-      {/* DIAGNOSTIC / ERROR NOTIFICATION FOR VERCEL & FIREBASE */}
+      {/* ERROR NOTIFICATION BANNER */}
       {errorDetails && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 shadow-xs animate-in fade-in duration-150">
           <div className="flex items-start gap-3">
@@ -420,52 +412,24 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
                 <h3 className="text-sm font-bold text-amber-950">
                   {errorDetails.title}
                 </h3>
-                <span className="text-[10px] font-mono bg-amber-100/80 text-amber-900 px-2 py-0.5 rounded">
-                  {errorDetails.code}
-                </span>
               </div>
               <p className="text-xs text-amber-900 mt-1 leading-relaxed">
                 {errorDetails.message}
               </p>
-
-              {/* Action buttons to solve Vercel domain error */}
-              <div className="mt-3.5 pt-3 border-t border-amber-200/60 flex flex-wrap items-center gap-2.5 text-xs">
-                {/* Solusi 1: Direct GIS */}
+              <div className="mt-3 flex items-center gap-2">
                 <button
-                  onClick={() => handleConnectGoogle('gis')}
+                  onClick={handleConnectGoogle}
                   disabled={isLoadingAuth}
-                  className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
                 >
-                  <KeyRound className="w-3.5 h-3.5" />
-                  <span>Solusi Cepat: Hubungkan Lewat Direct OAuth</span>
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>Hubungkan Ulang Google Drive</span>
                 </button>
-
-                {/* Solusi 2: Copy domain */}
                 <button
-                  onClick={copyCurrentDomain}
-                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 font-semibold rounded-lg border border-slate-300 transition-colors flex items-center gap-1.5"
+                  onClick={() => setErrorDetails(null)}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-colors"
                 >
-                  {copiedDomain ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>Salin Domain ({diag.currentHostname})</span>
-                </button>
-
-                {/* Solusi 3: Open Firebase Settings */}
-                <a
-                  href={diag.firebaseConsoleSettingsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5"
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  <span>Buka Authorized Domains Firebase</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-
-                <button
-                  onClick={() => setIsVercelGuideOpen(true)}
-                  className="text-slate-600 hover:text-slate-900 font-semibold underline px-2 py-1"
-                >
-                  Lihat Panduan Vercel
+                  Tutup
                 </button>
               </div>
             </div>
@@ -482,7 +446,7 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                 <Database className="w-3.5 h-3.5" />
-                Folder Database Utama Terhubung
+                Folder Database Utama
               </span>
               <span className="text-[11px] font-mono text-slate-300 bg-white/10 px-2 py-0.5 rounded-md border border-white/10">
                 ID: {driveFolderId || DEFAULT_DATABASE_FOLDER_ID}
@@ -595,7 +559,7 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-slate-800 text-sm">
-                Backup Data Lengkap (JSON & Foto)
+                Backup Data Lengkap (JSON Database)
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
                 Arsipkan seluruh riwayat kebersihan, catatan supervisor, dan status verifikasi ke folder Google Drive.
@@ -625,17 +589,17 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
         </div>
       </div>
 
-      {/* Google Drive Files List in Dedicated SCB Folder */}
+      {/* Google Drive Files List in Database Folder */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <FolderOpen className="w-5 h-5 text-emerald-600 shrink-0" />
             <div>
               <h3 className="font-bold text-slate-800 text-sm">
-                Folder Database: {folderName}
+                Berkas di Folder Database: {folderName}
               </h3>
               <p className="text-[11px] text-slate-500">
-                Berkas tersimpan di target folder (ID: <code className="font-mono text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded">{driveFolderId || DEFAULT_DATABASE_FOLDER_ID}</code>)
+                Target Folder: <code className="font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">{driveFolderId || DEFAULT_DATABASE_FOLDER_ID}</code>
               </p>
             </div>
           </div>
@@ -659,22 +623,25 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
             <Cloud className="w-12 h-12 text-slate-300 mx-auto mb-2" />
             <p className="font-bold text-slate-700 text-sm">Google Drive Belum Terhubung</p>
             <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 mb-4">
-              Hubungkan akun Google Anda dengan menekan tombol di atas untuk mengakses media penyimpanan dokumen dan sinkronisasi data.
+              Hubungkan akun Google Anda untuk mengakses media penyimpanan dokumen, rekapitulasi data, dan pencadangan.
             </p>
-            <div className="flex items-center justify-center gap-2">
-              <button
-                onClick={() => handleConnectGoogle('auto')}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors"
-              >
-                Hubungkan Akun Google
-              </button>
-              <button
-                onClick={() => handleConnectGoogle('gis')}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors"
-              >
-                Gunakan Direct OAuth (Vercel)
-              </button>
-            </div>
+            <button
+              onClick={handleConnectGoogle}
+              disabled={isLoadingAuth}
+              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors inline-flex items-center gap-2"
+            >
+              {isLoadingAuth ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Menghubungkan...</span>
+                </>
+              ) : (
+                <>
+                  <Cloud className="w-4 h-4" />
+                  <span>Hubungkan Akun Google Drive</span>
+                </>
+              )}
+            </button>
           </div>
         ) : isLoadingFiles ? (
           <div className="p-12 text-center text-slate-500 flex items-center justify-center space-x-2">
@@ -785,112 +752,6 @@ export const GoogleDriveManager: React.FC<GoogleDriveManagerProps> = ({
           </div>
         )}
       </div>
-
-      {/* VERCEL DEPLOYMENT & FIREBASE CONFIGURATION GUIDE MODAL */}
-      {isVercelGuideOpen && (
-        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 p-6 space-y-5 animate-in fade-in duration-150 my-auto">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
-                  <Globe className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-900 text-base">
-                    Panduan Integrasi Google di Vercel
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Cara mengatasi notifikasi error Firebase pada domain Vercel
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsVercelGuideOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3.5 text-xs text-slate-600">
-              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-1.5">
-                <span className="font-bold text-slate-800 block">Mengapa terjadi error di Vercel?</span>
-                <p className="leading-relaxed">
-                  Firebase Authentication secara default membatasi domain OAuth untuk keamanan. Ketika aplikasi di-deploy ke Vercel (misal: <code>{diag.currentHostname || 'projek-anda.vercel.app'}</code>), Firebase memerlukan domain tersebut didaftarkan sebagai <strong>Authorized Domain</strong>.
-                </p>
-              </div>
-
-              {/* Opsi 1 */}
-              <div className="border border-emerald-200 bg-emerald-50/50 p-3.5 rounded-xl space-y-2">
-                <span className="font-bold text-emerald-950 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  Opsi 1: Pakai Login Direct OAuth (Langsung Bisa Tanpa Setting)
-                </span>
-                <p className="text-emerald-900 leading-relaxed">
-                  Aplikasi ini sudah dilengkapi dengan Google Identity Services (GIS). Anda cukup menekan tombol <strong>"Login Direct OAuth"</strong>, maka Google Drive akan langsung terhubung tanpa terkendala batasan domain Firebase.
-                </p>
-                <button
-                  onClick={() => {
-                    setIsVercelGuideOpen(false);
-                    handleConnectGoogle('gis');
-                  }}
-                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors flex items-center gap-1.5"
-                >
-                  <KeyRound className="w-3.5 h-3.5" />
-                  <span>Hubungkan Sekarang Lewat Direct OAuth</span>
-                </button>
-              </div>
-
-              {/* Opsi 2 */}
-              <div className="border border-slate-200 p-3.5 rounded-xl space-y-2.5">
-                <span className="font-bold text-slate-900 block">
-                  Opsi 2: Daftarkan Domain Vercel di Firebase Console (Permanen)
-                </span>
-                <ol className="list-decimal list-inside space-y-1.5 text-slate-700">
-                  <li>
-                    Salin domain aktif Anda:
-                    <div className="mt-1 flex items-center gap-2">
-                      <code className="px-2 py-1 bg-slate-100 rounded border border-slate-200 font-mono text-slate-800">
-                        {diag.currentHostname || 'projek-anda.vercel.app'}
-                      </code>
-                      <button
-                        onClick={copyCurrentDomain}
-                        className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 rounded font-semibold text-[11px] flex items-center gap-1"
-                      >
-                        {copiedDomain ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                        <span>Salin</span>
-                      </button>
-                    </div>
-                  </li>
-                  <li>
-                    Buka{' '}
-                    <a
-                      href={diag.firebaseConsoleSettingsUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 font-bold hover:underline inline-flex items-center gap-0.5"
-                    >
-                      <span>Firebase Console Authorized Domains</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </li>
-                  <li>Pilih tab <strong>Authorized domains</strong> lalu klik <strong>Add domain</strong>.</li>
-                  <li>Tempel domain <code>{diag.currentHostname || 'projek-anda.vercel.app'}</code> atau <code>vercel.app</code>, lalu klik <strong>Save</strong>.</li>
-                </ol>
-              </div>
-            </div>
-
-            <div className="pt-2 flex justify-end">
-              <button
-                onClick={() => setIsVercelGuideOpen(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl text-xs transition-colors"
-              >
-                Tutup Panduan
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* MANDATORY EXPLICIT CONFIRMATION MODAL FOR DESTRUCTIVE DELETION */}
       {fileToDelete && (

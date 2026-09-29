@@ -33,8 +33,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [tab, setTab] = useState<'quick_petugas' | 'email_admin'>('quick_petugas');
 
   React.useEffect(() => {
-    if (isOpen && initialTab) {
-      setTab(initialTab);
+    if (isOpen) {
+      if (initialTab) {
+        setTab(initialTab);
+      }
+      setPassword('');
+      setPinInput('');
+      setErrorMessage('');
     }
   }, [isOpen, initialTab]);
   
@@ -43,14 +48,21 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [pinInput, setPinInput] = useState<string>('');
 
   // Email / Password State
-  const [identifier, setIdentifier] = useState<string>('operasional.scb@gmail.com');
-  const [password, setPassword] = useState<string>('admin123');
+  const [identifier, setIdentifier] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
 
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   if (!isOpen) return null;
 
   const officers = users.filter((u) => u.role === 'petugas');
+
+  const handleClose = () => {
+    setPassword('');
+    setPinInput('');
+    setErrorMessage('');
+    onClose();
+  };
 
   const handleQuickLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,6 +86,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
+    setPassword('');
+    setPinInput('');
     onLoginSuccess(officer);
     onClose();
   };
@@ -97,6 +111,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
+    setPassword('');
+    setPinInput('');
     onLoginSuccess(foundUser);
     onClose();
   };
@@ -107,7 +123,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         {/* Header */}
         <div className="bg-gradient-to-r from-emerald-800 to-teal-800 p-5 text-white relative">
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="absolute top-4 right-4 text-emerald-200 hover:text-white p-1 rounded-lg"
           >
             <X className="w-5 h-5" />
@@ -128,6 +144,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           <button
             onClick={() => {
               setTab('quick_petugas');
+              setPassword('');
+              setPinInput('');
               setErrorMessage('');
             }}
             className={`flex-1 py-3 text-center transition-all ${
@@ -141,6 +159,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           <button
             onClick={() => {
               setTab('email_admin');
+              setPassword('');
+              setPinInput('');
               setErrorMessage('');
             }}
             className={`flex-1 py-3 text-center transition-all ${
@@ -238,6 +258,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   placeholder="operasional.scb@gmail.com"
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
+                  autoComplete="username"
                   className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
@@ -249,9 +270,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 <input
                   type="password"
                   required
-                  placeholder="••••••••"
+                  placeholder="Masukkan kata sandi"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
                   className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>

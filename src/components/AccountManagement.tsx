@@ -57,7 +57,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
       name: '',
       email: '',
       username: '',
-      password: 'password123',
+      password: '',
       pin: '1234',
       role: 'petugas',
       phone: '',

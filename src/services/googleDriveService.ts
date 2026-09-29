@@ -1,4 +1,4 @@
-import { getGoogleAccessToken } from './googleAuth';
+import { getGoogleAccessToken, clearStoredGoogleAuth } from './googleAuth';
 import { CleaningReport } from '../types';
 
 export const DEFAULT_DATABASE_FOLDER_ID = '1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z';
@@ -29,7 +29,7 @@ export function extractFolderId(input: string): string {
 }
 
 /**
- * Retrieves the currently active Google Drive storage folder ID (defaults to user configured ID).
+ * Retrieves the currently active Google Drive storage folder ID (defaults to designated SCB database folder).
  */
 export function getConfiguredFolderId(): string {
   try {
@@ -86,8 +86,7 @@ export interface DriveUploadResult {
 }
 
 /**
- * Searches or lists files in user's Google Drive.
- * Defaults to searching within or listing SCB Cleaning documents.
+ * Searches or lists files in the configured Google Drive database folder.
  */
 export async function listDriveFiles(
   folderId?: string,
@@ -95,7 +94,7 @@ export async function listDriveFiles(
 ): Promise<DriveFileItem[]> {
   const token = await getGoogleAccessToken();
   if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi. Silakan Hubungkan Akun Google.');
+    throw new Error('Akses Google Drive belum terautentikasi. Silakan klik tombol "Hubungkan Akun Google".');
   }
 
   const targetFolderId = folderId || getConfiguredFolderId();
@@ -124,6 +123,10 @@ export async function listDriveFiles(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      clearStoredGoogleAuth();
+      throw new Error('Sesi Google Drive telah berakhir. Silakan klik "Hubungkan Akun Google" untuk memperbarui sesi.');
+    }
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error?.message || `Gagal memuat file Google Drive (${response.status})`);
   }
@@ -169,6 +172,9 @@ export async function getDriveFolderDetails(folderId: string): Promise<{
         accessible: !data.trashed,
       };
     }
+    if (res.status === 401) {
+      clearStoredGoogleAuth();
+    }
   } catch (err) {
     console.warn('Could not fetch folder details from Drive API:', err);
   }
@@ -182,62 +188,10 @@ export async function getDriveFolderDetails(folderId: string): Promise<{
 }
 
 /**
- * Finds or uses the designated database folder in Google Drive:
- * Defaults to the configured folder (1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z).
+ * Returns the designated database storage folder ID in Google Drive.
  */
 export async function getOrCreateScbDriveFolder(): Promise<string> {
-  const configuredId = getConfiguredFolderId();
-  if (configuredId) {
-    return configuredId;
-  }
-
-  const token = await getGoogleAccessToken();
-  if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi.');
-  }
-
-  const folderName = 'SIM-BERSIH SCB (Laporan Kebersihan)';
-
-  // 1. Search for existing folder
-  const searchParams = new URLSearchParams({
-    q: `mimeType = 'application/vnd.google-apps.folder' and name = '${folderName}' and trashed = false`,
-    fields: 'files(id, name)',
-    supportsAllDrives: 'true',
-    includeItemsFromAllDrives: 'true',
-  });
-
-  const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?${searchParams.toString()}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (searchRes.ok) {
-    const data = await searchRes.json();
-    if (data.files && data.files.length > 0) {
-      return data.files[0].id;
-    }
-  }
-
-  // 2. Create if not found
-  const createRes = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      name: folderName,
-      mimeType: 'application/vnd.google-apps.folder',
-      description: 'Folder penyimpanan otomatis dokumen, rekapitulasi, dan foto laporan kebersihan Sekolah Cendekia BAZNAS',
-    }),
-  });
-
-  if (!createRes.ok) {
-    const err = await createRes.json().catch(() => ({}));
-    throw new Error(err.error?.message || 'Gagal membuat folder Google Drive');
-  }
-
-  const createdData = await createRes.json();
-  return createdData.id;
+  return getConfiguredFolderId() || DEFAULT_DATABASE_FOLDER_ID;
 }
 
 /**
@@ -246,7 +200,7 @@ export async function getOrCreateScbDriveFolder(): Promise<string> {
 export async function readJsonFromDrive<T = any>(fileId: string): Promise<T> {
   const token = await getGoogleAccessToken();
   if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi.');
+    throw new Error('Akses Google Drive belum terautentikasi. Silakan hubungkan akun Google.');
   }
 
   const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
@@ -254,6 +208,10 @@ export async function readJsonFromDrive<T = any>(fileId: string): Promise<T> {
   });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearStoredGoogleAuth();
+      throw new Error('Sesi Google Drive telah berakhir. Silakan hubungkan kembali akun Google.');
+    }
     throw new Error(`Gagal mengunduh file dari Google Drive (${res.status})`);
   }
 
@@ -261,7 +219,7 @@ export async function readJsonFromDrive<T = any>(fileId: string): Promise<T> {
 }
 
 /**
- * Uploads a text/JSON/CSV/blob file to Google Drive using multipart upload.
+ * Uploads a text/JSON/CSV file to Google Drive using multipart upload.
  */
 export async function uploadFileToDrive(
   name: string,
@@ -271,7 +229,7 @@ export async function uploadFileToDrive(
 ): Promise<DriveUploadResult> {
   const token = await getGoogleAccessToken();
   if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi.');
+    throw new Error('Akses Google Drive belum terautentikasi. Silakan klik "Hubungkan Akun Google".');
   }
 
   const metadata: any = {
@@ -313,6 +271,10 @@ export async function uploadFileToDrive(
   );
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearStoredGoogleAuth();
+      throw new Error('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
+    }
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error?.message || `Gagal mengunggah file ke Google Drive (${res.status})`);
   }
@@ -323,19 +285,6 @@ export async function uploadFileToDrive(
     name: result.name,
     webViewLink: result.webViewLink || `https://drive.google.com/file/d/${result.id}/view`,
   };
-}
-
-/**
- * Converts a data URL (from report photo) to a Blob and uploads it to Google Drive
- */
-export async function uploadBase64PhotoToDrive(
-  dataUrl: string,
-  fileName: string,
-  folderId?: string
-): Promise<DriveUploadResult> {
-  const res = await fetch(dataUrl);
-  const blob = await res.blob();
-  return uploadFileToDrive(fileName, blob, 'image/jpeg', folderId);
 }
 
 /**
@@ -401,7 +350,7 @@ export async function exportCsvToGoogleDrive(
 }
 
 /**
- * Mandatory explicit user confirmation before deleting a file in Google Drive
+ * Explicit user confirmation before deleting a file in Google Drive
  */
 export async function deleteDriveFile(fileId: string): Promise<boolean> {
   const token = await getGoogleAccessToken();
@@ -409,12 +358,16 @@ export async function deleteDriveFile(fileId: string): Promise<boolean> {
     throw new Error('Akses Google Drive belum terautentikasi.');
   }
 
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
   });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearStoredGoogleAuth();
+      throw new Error('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
+    }
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error?.message || `Gagal menghapus file (${res.status})`);
   }

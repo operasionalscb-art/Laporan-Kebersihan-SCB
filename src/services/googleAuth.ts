@@ -16,21 +16,17 @@ export interface GoogleUserProfile {
   authMethod: 'firebase' | 'gis';
 }
 
+// Clean and standard Google Drive & Profile scopes
 export const SCOPES = [
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/drive.activity',
-  'https://www.googleapis.com/auth/drive.activity.readonly',
-  'https://www.googleapis.com/auth/drive.appdata',
-  'https://www.googleapis.com/auth/drive.apps.readonly',
   'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/drive.install',
-  'https://www.googleapis.com/auth/drive.meet.readonly',
-  'https://www.googleapis.com/auth/drive.metadata',
-  'https://www.googleapis.com/auth/drive.metadata.readonly',
-  'https://www.googleapis.com/auth/drive.photos.readonly',
-  'https://www.googleapis.com/auth/drive.readonly',
-  'https://www.googleapis.com/auth/drive.scripts',
+  'https://www.googleapis.com/auth/drive',
+  'email',
+  'profile',
 ];
+
+const STORAGE_ACCESS_TOKEN_KEY = 'scb_gdrive_access_token';
+const STORAGE_PROFILE_KEY = 'scb_gdrive_profile';
+const STORAGE_EXPIRY_KEY = 'scb_gdrive_token_expiry';
 
 // Combine config from json and Vite environment variables
 export const firebaseConfig = {
@@ -40,7 +36,7 @@ export const firebaseConfig = {
   storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) || (rawConfig as any)?.storageBucket || '',
   messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || (rawConfig as any)?.messagingSenderId || '',
   appId: (import.meta.env.VITE_FIREBASE_APP_ID as string) || (rawConfig as any)?.appId || '',
-  oAuthClientId: (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || (rawConfig as any)?.oAuthClientId || '',
+  oAuthClientId: (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || (rawConfig as any)?.oAuthClientId || '762855733058-elkdt6p55i1e21jnoib6jg8p7g5nb0uc.apps.googleusercontent.com',
 };
 
 // Initialize Firebase App safely
@@ -60,6 +56,49 @@ SCOPES.forEach((scope) => provider.addScope(scope));
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 let currentProfile: GoogleUserProfile | null = null;
+
+/**
+ * Storage helpers to persist authentication across page refreshes
+ */
+export function getSavedToken(): string | null {
+  try {
+    const token = localStorage.getItem(STORAGE_ACCESS_TOKEN_KEY);
+    const expiryStr = localStorage.getItem(STORAGE_EXPIRY_KEY);
+    if (!token) return null;
+    if (expiryStr) {
+      const expiry = parseInt(expiryStr, 10);
+      if (Date.now() > expiry) {
+        clearStoredGoogleAuth();
+        return null;
+      }
+    }
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+export function saveGoogleAuth(token: string, profile: GoogleUserProfile, expiresInSeconds = 3500) {
+  cachedAccessToken = token;
+  currentProfile = profile;
+  try {
+    localStorage.setItem(STORAGE_ACCESS_TOKEN_KEY, token);
+    localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(profile));
+    localStorage.setItem(STORAGE_EXPIRY_KEY, String(Date.now() + expiresInSeconds * 1000));
+  } catch (e) {
+    console.warn('Could not persist Google auth:', e);
+  }
+}
+
+export function clearStoredGoogleAuth() {
+  cachedAccessToken = null;
+  currentProfile = null;
+  try {
+    localStorage.removeItem(STORAGE_ACCESS_TOKEN_KEY);
+    localStorage.removeItem(STORAGE_PROFILE_KEY);
+    localStorage.removeItem(STORAGE_EXPIRY_KEY);
+  } catch {}
+}
 
 export const getDiagnosticInfo = () => {
   const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
@@ -81,7 +120,7 @@ export const getDiagnosticInfo = () => {
 };
 
 /**
- * Parses Firebase error into human-readable details and Vercel-specific recommendations
+ * Parses Auth error into human-readable details
  */
 export const parseAuthError = (error: any): { title: string; message: string; code: string; isDomainError: boolean } => {
   const code = error?.code || '';
@@ -91,31 +130,22 @@ export const parseAuthError = (error: any): { title: string; message: string; co
     const { currentHostname, projectId } = getDiagnosticInfo();
     return {
       code: 'auth/unauthorized-domain',
-      title: 'Domain Vercel Belum Diizinkan di Firebase',
-      message: `Domain "${currentHostname}" belum didaftarkan di Authorized Domains Firebase Project (${projectId}).`,
+      title: 'Domain Belum Diizinkan di Firebase',
+      message: `Domain "${currentHostname}" belum didaftarkan di Authorized Domains Firebase Project (${projectId}). Gunakan metode Direct OAuth.`,
       isDomainError: true,
     };
   }
 
-  if (code === 'auth/operation-not-allowed') {
-    return {
-      code: 'auth/operation-not-allowed',
-      title: 'Provider Google Belum Aktif',
-      message: 'Metode login Google belum diaktifkan di Firebase Console -> Authentication -> Sign-in method.',
-      isDomainError: false,
-    };
-  }
-
-  if (code === 'auth/popup-blocked') {
+  if (code === 'auth/popup-blocked' || rawMsg.includes('popup')) {
     return {
       code: 'auth/popup-blocked',
       title: 'Jendela Pop-up Terblokir',
-      message: 'Browser Anda memblokir jendela login Google. Silakan klik ikon gembok/izin pop-up di bilah URL browser Anda.',
+      message: 'Browser Anda memblokir jendela login Google. Silakan klik ikon izin pop-up di bilah URL browser Anda.',
       isDomainError: false,
     };
   }
 
-  if (code === 'auth/popup-closed-by-user') {
+  if (code === 'auth/popup-closed-by-user' || rawMsg.includes('closed')) {
     return {
       code: 'auth/popup-closed-by-user',
       title: 'Login Dibatalkan',
@@ -126,81 +156,63 @@ export const parseAuthError = (error: any): { title: string; message: string; co
 
   return {
     code,
-    title: 'Terjadi Kesalahan Autentikasi',
+    title: 'Autentikasi Google Drive',
     message: rawMsg || 'Gagal menghubungkan Google Drive.',
     isDomainError: false,
   };
 };
 
 /**
- * Initializes Google Auth Listener
+ * Initializes Google Auth Listener with persistent session restoration
  */
 export const initGoogleAuth = (
   onAuthSuccess?: (profile: GoogleUserProfile, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  // 1. Immediately check persisted session from localStorage
+  const savedToken = getSavedToken();
+  const savedProfile = getCurrentGoogleProfile();
+
+  if (savedToken && savedProfile) {
+    cachedAccessToken = savedToken;
+    currentProfile = savedProfile;
+    if (onAuthSuccess) {
+      onAuthSuccess(savedProfile, savedToken);
+    }
+  }
+
+  // 2. Also listen for Firebase Auth state changes
   if (!auth) {
-    if (onAuthFailure) onAuthFailure();
+    if (!savedToken && onAuthFailure) onAuthFailure();
     return () => {};
   }
 
   return onAuthStateChanged(auth, async (user: FirebaseUser | null) => {
     if (user) {
-      if (cachedAccessToken) {
+      const activeToken = cachedAccessToken || getSavedToken();
+      if (activeToken) {
         currentProfile = {
-          email: user.email || '',
-          displayName: user.displayName || user.email || 'Akun Google',
-          photoURL: user.photoURL || undefined,
+          email: user.email || currentProfile?.email || '',
+          displayName: user.displayName || user.email || currentProfile?.displayName || 'Akun Google',
+          photoURL: user.photoURL || currentProfile?.photoURL,
           authMethod: 'firebase',
         };
-        if (onAuthSuccess) onAuthSuccess(currentProfile, cachedAccessToken);
-      } else if (!isSigningIn) {
+        saveGoogleAuth(activeToken, currentProfile);
+        if (onAuthSuccess) onAuthSuccess(currentProfile, activeToken);
+      }
+    } else {
+      const activeToken = getSavedToken();
+      if (!activeToken) {
+        clearStoredGoogleAuth();
         if (onAuthFailure) onAuthFailure();
       }
-    } else if (currentProfile?.authMethod !== 'gis') {
-      cachedAccessToken = null;
-      currentProfile = null;
-      if (onAuthFailure) onAuthFailure();
     }
   });
 };
 
 /**
- * Sign in using Firebase Auth with GoogleAuthProvider
- */
-export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
-  if (!auth) {
-    throw new Error('Firebase Auth instance is not initialized.');
-  }
-
-  try {
-    isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('Gagal mendapatkan access token Google Drive dari Firebase.');
-    }
-
-    cachedAccessToken = credential.accessToken;
-    currentProfile = {
-      email: result.user.email || '',
-      displayName: result.user.displayName || result.user.email || 'Pengguna Google',
-      photoURL: result.user.photoURL || undefined,
-      authMethod: 'firebase',
-    };
-
-    return { profile: currentProfile, accessToken: cachedAccessToken };
-  } catch (error: any) {
-    console.error('Firebase Auth Error:', error);
-    throw error;
-  } finally {
-    isSigningIn = false;
-  }
-};
-
-/**
  * Direct Google Identity Services (GIS) Token Client.
- * Bypasses Firebase Authorized Domain restrictions by talking directly to Google OAuth 2.0.
+ * Works seamlessly in client-side SPA without requiring Firebase Authorized Domains.
  */
 export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
   const clientId = firebaseConfig.oAuthClientId;
@@ -244,29 +256,35 @@ export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; acc
             return;
           }
 
-          cachedAccessToken = response.access_token;
+          const accessToken = response.access_token;
+          const expiresIn = response.expires_in ? parseInt(response.expires_in, 10) : 3500;
 
           // Fetch basic user profile from Google UserInfo endpoint
+          let profile: GoogleUserProfile = {
+            email: 'operasional.scb@gmail.com',
+            displayName: 'Pengguna Google Drive',
+            authMethod: 'gis',
+          };
+
           try {
             const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-              headers: { Authorization: `Bearer ${cachedAccessToken}` },
+              headers: { Authorization: `Bearer ${accessToken}` },
             });
-            const userinfo = await userinfoRes.json();
-            currentProfile = {
-              email: userinfo.email || 'Akun Google Drive',
-              displayName: userinfo.name || userinfo.email || 'Pengguna Google Drive',
-              photoURL: userinfo.picture,
-              authMethod: 'gis',
-            };
+            if (userinfoRes.ok) {
+              const userinfo = await userinfoRes.json();
+              profile = {
+                email: userinfo.email || 'operasional.scb@gmail.com',
+                displayName: userinfo.name || userinfo.email || 'Pengguna Google Drive',
+                photoURL: userinfo.picture,
+                authMethod: 'gis',
+              };
+            }
           } catch {
-            currentProfile = {
-              email: 'Akun Google Drive',
-              displayName: 'Pengguna Google Drive',
-              authMethod: 'gis',
-            };
+            // Keep default profile if userinfo fetch fails
           }
 
-          resolve({ profile: currentProfile, accessToken: response.access_token });
+          saveGoogleAuth(accessToken, profile, expiresIn);
+          resolve({ profile, accessToken });
         },
       });
 
@@ -278,9 +296,41 @@ export const signInWithGIS = async (): Promise<{ profile: GoogleUserProfile; acc
 };
 
 /**
+ * Sign in using Firebase Auth with GoogleAuthProvider
+ */
+export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
+  if (!auth) {
+    throw new Error('Firebase Auth instance is not initialized.');
+  }
+
+  try {
+    isSigningIn = true;
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) {
+      throw new Error('Gagal mendapatkan access token Google Drive dari Firebase.');
+    }
+
+    const profile: GoogleUserProfile = {
+      email: result.user.email || 'operasional.scb@gmail.com',
+      displayName: result.user.displayName || result.user.email || 'Pengguna Google',
+      photoURL: result.user.photoURL || undefined,
+      authMethod: 'firebase',
+    };
+
+    saveGoogleAuth(credential.accessToken, profile, 3500);
+    return { profile, accessToken: credential.accessToken };
+  } catch (error: any) {
+    console.error('Firebase Auth Error:', error);
+    throw error;
+  } finally {
+    isSigningIn = false;
+  }
+};
+
+/**
  * Unified Sign In:
- * Tries Firebase Auth first. If it encounters auth/unauthorized-domain (common on Vercel),
- * it seamlessly attempts Direct GIS OAuth or throws structured error.
+ * Uses Google Identity Services directly for seamless SPA auth, with Firebase as fallback.
  */
 export const googleSignIn = async (
   preferredMethod: 'auto' | 'firebase' | 'gis' = 'auto'
@@ -293,31 +343,42 @@ export const googleSignIn = async (
     return signInWithFirebase();
   }
 
-  // 'auto' mode:
+  // 'auto' mode: Prefer GIS for Google Drive API scopes (avoids Firebase domain restrictions)
   try {
-    return await signInWithFirebase();
-  } catch (firebaseErr: any) {
-    const parsed = parseAuthError(firebaseErr);
-    // If domain unauthorized (common on Vercel deployment), auto fallback to direct GIS
-    if (parsed.isDomainError) {
-      console.warn('Firebase unauthorized domain detected. Falling back to Google Identity Services token client...');
-      try {
-        return await signInWithGIS();
-      } catch (gisErr) {
-        // If GIS also fails, throw original firebase error so user gets full domain diagnostic
-        throw firebaseErr;
-      }
+    return await signInWithGIS();
+  } catch (gisErr: any) {
+    console.warn('GIS sign in attempt had error, falling back to Firebase...', gisErr);
+    try {
+      return await signInWithFirebase();
+    } catch (firebaseErr: any) {
+      // Throw the most descriptive error
+      throw parseAuthError(gisErr?.message ? gisErr : firebaseErr);
     }
-    throw firebaseErr;
   }
 };
 
 export const getGoogleAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  if (cachedAccessToken) {
+    return cachedAccessToken;
+  }
+  const saved = getSavedToken();
+  if (saved) {
+    cachedAccessToken = saved;
+    return saved;
+  }
+  return null;
 };
 
 export const getCurrentGoogleProfile = (): GoogleUserProfile | null => {
-  return currentProfile;
+  if (currentProfile) return currentProfile;
+  try {
+    const raw = localStorage.getItem(STORAGE_PROFILE_KEY);
+    if (raw) {
+      currentProfile = JSON.parse(raw);
+      return currentProfile;
+    }
+  } catch {}
+  return null;
 };
 
 export const googleSignOut = async (): Promise<void> => {
@@ -330,12 +391,12 @@ export const googleSignOut = async (): Promise<void> => {
   }
 
   // Revoke token if GIS was used
-  if (cachedAccessToken && typeof (window as any).google?.accounts?.oauth2?.revoke === 'function') {
+  const token = cachedAccessToken || getSavedToken();
+  if (token && typeof (window as any).google?.accounts?.oauth2?.revoke === 'function') {
     try {
-      (window as any).google.accounts.oauth2.revoke(cachedAccessToken, () => {});
+      (window as any).google.accounts.oauth2.revoke(token, () => {});
     } catch {}
   }
 
-  cachedAccessToken = null;
-  currentProfile = null;
+  clearStoredGoogleAuth();
 };
