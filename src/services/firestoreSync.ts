@@ -26,6 +26,29 @@ let isReportsSeeded = false;
 let isUsersSeeded = false;
 
 /**
+ * Strips any undefined fields before writing to Firestore,
+ * preventing 'Unsupported field value: undefined' errors.
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data.map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  if (typeof data === 'object') {
+    const clean: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data as Record<string, any>)) {
+      if (value !== undefined) {
+        clean[key] = sanitizeForFirestore(value);
+      }
+    }
+    return clean as T;
+  }
+  return data;
+}
+
+/**
  * Subscribes to real-time reports from Firestore.
  * Automatically synchronizes across all devices (mobile, laptop, Vercel).
  */
@@ -49,7 +72,7 @@ export function subscribeReports(
           const batch = writeBatch(db);
           for (const rep of initialToSeed) {
             const docRef = doc(db, REPORTS_COLLECTION, rep.id);
-            batch.set(docRef, rep);
+            batch.set(docRef, sanitizeForFirestore(rep));
           }
           await batch.commit();
         } catch (e) {
@@ -96,7 +119,7 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
   // Sync to Firestore
   try {
     const docRef = doc(db, REPORTS_COLLECTION, report.id);
-    await setDoc(docRef, report, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(report), { merge: true });
   } catch (err) {
     console.error('Failed to sync report to Firestore cloud:', err);
     throw err;
@@ -141,7 +164,7 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
       const chunk = reports.slice(i, i + chunkSize);
       const batch = writeBatch(db);
       for (const rep of chunk) {
-        batch.set(doc(db, REPORTS_COLLECTION, rep.id), rep);
+        batch.set(doc(db, REPORTS_COLLECTION, rep.id), sanitizeForFirestore(rep));
       }
       await batch.commit();
     }
@@ -170,7 +193,7 @@ export function subscribeUsers(
         try {
           const batch = writeBatch(db);
           for (const u of initialToSeed) {
-            batch.set(doc(db, USERS_COLLECTION, u.id), u);
+            batch.set(doc(db, USERS_COLLECTION, u.id), sanitizeForFirestore(u));
           }
           await batch.commit();
         } catch (e) {
@@ -211,7 +234,7 @@ export async function saveUserToCloud(user: User): Promise<void> {
 
   try {
     const docRef = doc(db, USERS_COLLECTION, user.id);
-    await setDoc(docRef, user, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(user), { merge: true });
   } catch (err) {
     console.error('Failed to save user to Firestore:', err);
   }
