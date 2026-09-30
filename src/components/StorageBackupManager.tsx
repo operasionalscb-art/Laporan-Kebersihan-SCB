@@ -12,6 +12,8 @@ import {
 } from '../services/googleDriveService';
 import { 
   googleSignIn, 
+  getGoogleAccessToken,
+  getSavedToken,
   getCurrentGoogleProfile,
   GoogleUserProfile 
 } from '../services/googleAuth';
@@ -80,7 +82,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
     displayName: 'Operasional SCB',
     authMethod: 'gis',
   });
-  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(true);
+  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => Boolean(getSavedToken()));
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
 
   // Auto-backup & Auto-upload photo toggles
@@ -270,19 +272,29 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
     }
   };
 
-  // Refresh or reconnect Google Drive session
-  const handleRefreshGoogleAuth = async () => {
+  // Connect or refresh Google Drive session
+  const handleConnectGoogleAuth = async () => {
     setIsLoadingGoogle(true);
     try {
-      const result = await googleSignIn('auto');
-      if (result) {
+      const result = await googleSignIn('gis');
+      if (result?.accessToken) {
         setGoogleProfile(result.profile);
         setIsGoogleConnected(true);
-        onShowToast(`Sesi Google Drive berhasil diperbarui: ${result.profile.email}`, 'success');
+        onShowToast(`Koneksi aktif! Akun ${result.profile.email} berhasil diotorisasi.`, 'success');
+
+        // Immediately backup current reports into Google Drive folder!
+        if (reports.length > 0) {
+          try {
+            const res = await executeAutoBackupToDrive(reports, folderId);
+            onShowToast(`☁️ Berkas cadangan (${res.name}) otomatis disimpan di folder Google Drive!`, 'success');
+          } catch (syncErr: any) {
+            console.warn('Initial backup after connect error:', syncErr);
+          }
+        }
       }
     } catch (err: any) {
       console.warn('Google sign in error:', err);
-      onShowToast(err.message || 'Gagal memperbarui sesi Google Drive.', 'error');
+      onShowToast(err.message || 'Gagal menghubungkan Google Drive.', 'error');
     } finally {
       setIsLoadingGoogle(false);
     }
@@ -316,14 +328,19 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
 
   // 1-Click Manual Drive Backup
   const handleManualDriveBackup = async () => {
-    if (!isGoogleConnected) {
-      onShowToast('Silakan klik "Hubungkan Akun Google" terlebih dahulu.', 'error');
-      return;
-    }
-
     setIsBackingUpToDrive(true);
     try {
+      let token = await getGoogleAccessToken();
+      if (!token) {
+        onShowToast('Membuka otorisasi Google Drive...', 'info');
+        const loginRes = await googleSignIn('gis');
+        token = loginRes?.accessToken;
+        setIsGoogleConnected(true);
+        setGoogleProfile(loginRes.profile);
+      }
+
       const res = await executeAutoBackupToDrive(reports, folderId);
+      setIsGoogleConnected(true);
       onShowToast(`Berkas cadangan berhasil diunggah ke Google Drive: ${res.name}`, 'success');
     } catch (err: any) {
       console.error(err);
@@ -335,11 +352,6 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
 
   // 1-Click Batch Upload Photos to Google Drive
   const handleBatchUploadPhotos = async () => {
-    if (!isGoogleConnected) {
-      onShowToast('Silakan klik "Hubungkan Akun Google" terlebih dahulu.', 'error');
-      return;
-    }
-
     if (pendingLocalPhotosCount === 0) {
       onShowToast('Semua foto sudah tersimpan di Google Drive!', 'info');
       return;
@@ -349,6 +361,15 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
     setBatchProgress({ current: 0, total: pendingLocalPhotosCount });
 
     try {
+      let token = await getGoogleAccessToken();
+      if (!token) {
+        onShowToast('Membuka otorisasi Google Drive...', 'info');
+        const loginRes = await googleSignIn('gis');
+        token = loginRes?.accessToken;
+        setIsGoogleConnected(true);
+        setGoogleProfile(loginRes.profile);
+      }
+
       const result = await batchUploadAllReportsPhotosToDrive(reports, (cur, tot) => {
         setBatchProgress({ current: cur, total: tot });
       });
@@ -357,6 +378,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
         onRestoreReports(result.updatedReports);
       }
 
+      setIsGoogleConnected(true);
       onShowToast(`Berhasil mengunggah ${result.totalUploaded} foto ke folder Google Drive!`, 'success');
     } catch (err: any) {
       console.error(err);
@@ -660,10 +682,17 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
                     <h3 className="font-bold text-slate-900 text-base">
                       Cloud Google Drive SCB
                     </h3>
-                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2.5 py-0.5 rounded-full">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      Tersimpan Permanen
-                    </span>
+                    {isGoogleConnected ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2.5 py-0.5 rounded-full">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        Tersimpan & Aktif
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-300 px-2.5 py-0.5 rounded-full">
+                        <AlertCircle className="w-3 h-3 text-amber-600" />
+                        Perlu Diaktifkan
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Penyimpanan otomatis berkas cadangan data (.JSON) dan foto dokumentasi ke folder resmi SCB.
@@ -672,47 +701,84 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
               </div>
             </div>
 
-            {/* Permanent SCB Google Account Box */}
-            <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-emerald-600 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs">
-                    G
+            {/* Google Drive Account Authorization Box */}
+            {!isGoogleConnected ? (
+              <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/70 space-y-3">
+                <div className="flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0 mt-0.5">
+                    <AlertCircle className="w-5 h-5 text-amber-600" />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-slate-800">
-                        Operasional SCB
-                      </span>
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-white border border-emerald-200 px-1.5 py-0.2 rounded-full">
-                        <Check className="w-2.5 h-2.5" />
-                        Terhubung
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-slate-500 block font-mono">
-                      operasional.scb@gmail.com
-                    </span>
+                    <h4 className="text-xs font-bold text-amber-950">
+                      Otorisasi Google Drive Diperlukan (1x di Browser Ini)
+                    </h4>
+                    <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+                      Agar laporan kebersihan dan foto dokumentasi <strong>otomatis tersimpan langsung di folder Google Drive resmi</strong>, silakan izinkan akses ke akun <strong>operasional.scb@gmail.com</strong> dengan menekan tombol di bawah.
+                    </p>
                   </div>
                 </div>
 
                 <button
-                  onClick={handleRefreshGoogleAuth}
+                  type="button"
+                  onClick={handleConnectGoogleAuth}
                   disabled={isLoadingGoogle}
-                  className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-white hover:bg-emerald-100 rounded-lg transition-colors border border-emerald-300 flex items-center gap-1.5"
-                  title="Perbarui Sesi Google Drive"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl shadow-xs transition-colors"
                 >
-                  <RefreshCw className={`w-3 h-3 ${isLoadingGoogle ? 'animate-spin' : ''}`} />
-                  <span>{isLoadingGoogle ? 'Memperbarui...' : 'Perbarui Sesi'}</span>
+                  {isLoadingGoogle ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Menghubungkan ke Google Drive...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Cloud className="w-4 h-4" />
+                      <span>Aktifkan Sinkronisasi Otomatis Google Drive</span>
+                    </>
+                  )}
                 </button>
               </div>
+            ) : (
+              <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-emerald-600 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs">
+                      G
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-slate-800">
+                          {googleProfile.displayName || 'Operasional SCB'}
+                        </span>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-white border border-emerald-200 px-1.5 py-0.2 rounded-full">
+                          <Check className="w-2.5 h-2.5" />
+                          Terhubung & Aktif
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-500 block font-mono">
+                        {googleProfile.email || 'operasional.scb@gmail.com'}
+                      </span>
+                    </div>
+                  </div>
 
-              <div className="flex items-center justify-between pt-1 border-t border-emerald-200/60 text-[11px] text-emerald-800">
-                <span className="flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Akun Google Drive resmi tersimpan aktif untuk sinkronisasi otomatis.</span>
-                </span>
+                  <button
+                    onClick={handleConnectGoogleAuth}
+                    disabled={isLoadingGoogle}
+                    className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-white hover:bg-emerald-100 rounded-lg transition-colors border border-emerald-300 flex items-center gap-1.5"
+                    title="Perbarui Sesi Google Drive"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingGoogle ? 'animate-spin' : ''}`} />
+                    <span>{isLoadingGoogle ? 'Memperbarui...' : 'Perbarui Sesi'}</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between pt-1 border-t border-emerald-200/60 text-[11px] text-emerald-800">
+                  <span className="flex items-center gap-1">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Sinkronisasi otomatis aktif. Setiap laporan baru akan langsung tersimpan di folder Google Drive.</span>
+                  </span>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* AUTOMATION TOGGLES SECTION */}
             <div className="space-y-2.5">

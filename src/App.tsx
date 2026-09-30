@@ -192,11 +192,14 @@ export default function App() {
             const allLatestReports = getReports();
             await executeAutoBackupToDrive(allLatestReports);
             showToast('☁️ Data laporan otomatis dicadangkan ke Google Drive!', 'info');
-          } catch (backupErr) {
+          } catch (backupErr: any) {
             console.warn('Auto backup to Google Drive error:', backupErr);
+            showToast('⚠️ Gagal menyimpan ke Google Drive: ' + (backupErr?.message || 'Periksa izin akun'), 'error');
           }
         }
       })();
+    } else if (isAutoBackupEnabled()) {
+      showToast('ℹ️ Laporan tersimpan di sistem. Buka tab Cadangan Data & klik "Aktifkan" agar data otomatis terunggah ke Google Drive.', 'info');
     }
   };
 
@@ -211,6 +214,14 @@ export default function App() {
       } catch (e) {
         console.warn('Updated locally, background cloud sync error:', e);
       }
+
+      if (isAutoBackupEnabled()) {
+        getGoogleAccessToken().then((token) => {
+          if (token) {
+            executeAutoBackupToDrive(getReports()).catch((e) => console.warn('Auto backup on update error:', e));
+          }
+        });
+      }
     }
   };
 
@@ -223,6 +234,14 @@ export default function App() {
       await deleteReportFromCloud(id);
     } catch (e) {
       console.warn('Deleted locally, background cloud sync error:', e);
+    }
+
+    if (isAutoBackupEnabled()) {
+      getGoogleAccessToken().then((token) => {
+        if (token) {
+          executeAutoBackupToDrive(getReports()).catch((e) => console.warn('Auto backup on delete error:', e));
+        }
+      });
     }
   };
 

@@ -277,7 +277,13 @@ export const signInWithGIS = async (
         prompt: silent ? '' : undefined,
         callback: async (response: any) => {
           if (response.error) {
-            reject(new Error(response.error_description || response.error));
+            if (response.error === 'immediate_failed') {
+              reject(new Error('Sesi Google Drive memerlukan otorisasi manual (klik tombol Aktifkan).'));
+            } else if (response.error === 'access_denied') {
+              reject(new Error('Izin akses Google Drive ditolak oleh pengguna. Silakan izinkan akses agar data otomatis tersimpan di folder.'));
+            } else {
+              reject(new Error(response.error_description || response.error));
+            }
             return;
           }
 
@@ -318,7 +324,10 @@ export const signInWithGIS = async (
         },
       });
 
-      client.requestAccessToken({ prompt: silent ? '' : undefined });
+      client.requestAccessToken({ 
+        prompt: silent ? '' : undefined,
+        hint: 'operasional.scb@gmail.com',
+      });
     } catch (err) {
       reject(err);
     }
