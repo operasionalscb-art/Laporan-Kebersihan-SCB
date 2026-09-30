@@ -15,6 +15,10 @@ import {
   getGoogleAccessToken,
   getSavedToken,
   getCurrentGoogleProfile,
+  getActiveOAuthClientId,
+  setActiveOAuthClientId,
+  getDiagnosticInfo,
+  parseAuthError,
   GoogleUserProfile 
 } from '../services/googleAuth';
 import { 
@@ -42,7 +46,8 @@ import {
   Camera,
   Image as ImageIcon,
   Loader2,
-  CheckCheck
+  CheckCheck,
+  Copy
 } from 'lucide-react';
 
 interface StorageBackupManagerProps {
@@ -84,6 +89,10 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   });
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => Boolean(getSavedToken()));
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
+  const [isVercelModalOpen, setIsVercelModalOpen] = useState(false);
+  const [customClientIdInput, setCustomClientIdInput] = useState(() => getActiveOAuthClientId());
+  const [isCopiedOrigin, setIsCopiedOrigin] = useState(false);
+  const diagnostic = useMemo(() => getDiagnosticInfo(), []);
 
   // Auto-backup & Auto-upload photo toggles
   const [autoBackupEnabled, setAutoBackupState] = useState<boolean>(() => isAutoBackupEnabled());
@@ -276,7 +285,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   const handleConnectGoogleAuth = async () => {
     setIsLoadingGoogle(true);
     try {
-      const result = await googleSignIn('gis');
+      const result = await googleSignIn('auto');
       if (result?.accessToken) {
         setGoogleProfile(result.profile);
         setIsGoogleConnected(true);
@@ -294,10 +303,30 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       }
     } catch (err: any) {
       console.warn('Google sign in error:', err);
-      onShowToast(err.message || 'Gagal menghubungkan Google Drive.', 'error');
+      const parsed = parseAuthError(err);
+      if (parsed.isDomainError || diagnostic.isVercel) {
+        setIsVercelModalOpen(true);
+      }
+      onShowToast(parsed.message || 'Gagal menghubungkan Google Drive.', 'error');
     } finally {
       setIsLoadingGoogle(false);
     }
+  };
+
+  const handleCopyOrigin = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(diagnostic.currentOrigin);
+      setIsCopiedOrigin(true);
+      setTimeout(() => setIsCopiedOrigin(false), 2500);
+      onShowToast('Domain Vercel disalin ke clipboard!', 'success');
+    }
+  };
+
+  const handleSaveCustomClientId = (e: React.FormEvent) => {
+    e.preventDefault();
+    setActiveOAuthClientId(customClientIdInput.trim());
+    setIsVercelModalOpen(false);
+    onShowToast('OAuth Client ID berhasil disimpan. Silakan coba hubungkan lagi.', 'success');
   };
 
   // Toggle Auto-Backup
@@ -736,6 +765,18 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
                     </>
                   )}
                 </button>
+
+                <div className="pt-1.5 flex items-center justify-between text-[11px] text-amber-900 border-t border-amber-200/80">
+                  <span>Menggunakan domain Vercel?</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsVercelModalOpen(true)}
+                    className="font-bold underline hover:text-amber-950 flex items-center gap-1"
+                  >
+                    <span>Panduan Konfigurasi Vercel</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-2.5">
@@ -979,6 +1020,138 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Unduh Cadangan & Reset</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PANDUAN DEPLOYMENT VERCEL */}
+      {isVercelModalOpen && (
+        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-800 flex items-center justify-center shrink-0">
+                  <Cloud className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-base">
+                    Panduan Koneksi Google Drive di Vercel
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Solusi agar sinkronisasi Google Drive berjalan lancar di domain Vercel Anda
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsVercelModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+              <span className="text-[11px] font-bold text-slate-700 block">
+                1. Domain / Origin Vercel Anda Saat Ini:
+              </span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={diagnostic.currentOrigin || window.location.origin}
+                  className="flex-1 px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg select-all"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyOrigin}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg flex items-center gap-1 shrink-0 transition-colors"
+                >
+                  {isCopiedOrigin ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{isCopiedOrigin ? 'Tersalin' : 'Salin URL'}</span>
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Google mengharuskan setiap URL domain aplikasi didaftarkan ke daftar izin (whitelist) demi keamanan OAuth.
+              </p>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-700">
+              <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl space-y-1.5">
+                <div className="font-bold text-blue-900 flex items-center justify-between">
+                  <span>Langkah A: Daftarkan di Google Cloud Console (Wajib)</span>
+                  <a
+                    href={`https://console.cloud.google.com/apis/credentials?project=${diagnostic.projectId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-blue-700 hover:underline flex items-center gap-1 font-semibold"
+                  >
+                    <span>Buka Google Cloud</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <ol className="list-decimal pl-4 space-y-1 text-[11px] text-slate-600">
+                  <li>Buka link Google Cloud Console di atas.</li>
+                  <li>Pilih Client ID OAuth 2.0 Web Client Anda.</li>
+                  <li>Di bagian <strong>Authorized JavaScript origins</strong>, klik <strong>+ ADD URI</strong>.</li>
+                  <li>Tempelkan URL domain Vercel Anda yang telah disalin di atas (<code className="bg-white px-1 border border-slate-200 rounded">{diagnostic.currentOrigin}</code>).</li>
+                  <li>Klik tombol <strong>SAVE</strong> di bagian bawah halaman.</li>
+                </ol>
+              </div>
+
+              <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1.5">
+                <div className="font-bold text-emerald-900 flex items-center justify-between">
+                  <span>Langkah B: Daftarkan di Firebase Console</span>
+                  <a
+                    href={`https://console.firebase.google.com/project/${diagnostic.projectId}/authentication/settings`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-emerald-700 hover:underline flex items-center gap-1 font-semibold"
+                  >
+                    <span>Buka Firebase Console</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <ol className="list-decimal pl-4 space-y-1 text-[11px] text-slate-600">
+                  <li>Buka link Firebase Console di atas.</li>
+                  <li>Masuk ke tab <strong>Authorized Domains</strong>.</li>
+                  <li>Klik <strong>Add domain</strong> dan masukkan hostname Vercel Anda (<code className="bg-white px-1 border border-slate-200 rounded">{diagnostic.currentHostname}</code>).</li>
+                </ol>
+              </div>
+
+              <form onSubmit={handleSaveCustomClientId} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                <span className="font-bold text-slate-800 text-xs block">
+                  Opsi Tambahan: Pakai Google OAuth Client ID Sendiri
+                </span>
+                <p className="text-[11px] text-slate-500">
+                  Jika Anda membuat OAuth Client ID baru khusus untuk deployment Vercel Anda, tempelkan ID-nya di sini:
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={customClientIdInput}
+                    onChange={(e) => setCustomClientIdInput(e.target.value)}
+                    placeholder="xxxx.apps.googleusercontent.com"
+                    className="flex-1 px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  />
+                  <button
+                    type="submit"
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg"
+                  >
+                    Simpan
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div className="pt-2 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setIsVercelModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl shadow-xs transition-colors"
+              >
+                Tutup Panduan
               </button>
             </div>
           </div>

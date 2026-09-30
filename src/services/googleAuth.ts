@@ -40,6 +40,24 @@ export const firebaseConfig = {
   oAuthClientId: (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || (rawConfig as any)?.oAuthClientId || '794504611984-mdpandmt1r8vl85anr79ct8m66ml5941.apps.googleusercontent.com',
 };
 
+export function getActiveOAuthClientId(): string {
+  try {
+    const custom = localStorage.getItem('scb_custom_oauth_client_id');
+    if (custom && custom.trim()) return custom.trim();
+  } catch {}
+  return firebaseConfig.oAuthClientId;
+}
+
+export function setActiveOAuthClientId(clientId: string): void {
+  try {
+    if (clientId && clientId.trim()) {
+      localStorage.setItem('scb_custom_oauth_client_id', clientId.trim());
+    } else {
+      localStorage.removeItem('scb_custom_oauth_client_id');
+    }
+  } catch {}
+}
+
 // Initialize Firebase App safely
 let authInstance: ReturnType<typeof getAuth> | null = null;
 try {
@@ -149,17 +167,24 @@ export const getDiagnosticInfo = () => {
 /**
  * Parses Auth error into human-readable details
  */
-export const parseAuthError = (error: any): { title: string; message: string; code: string; isDomainError: boolean } => {
+export const parseAuthError = (error: any): { title: string; message: string; code: string; isDomainError: boolean; originUrl?: string } => {
   const code = error?.code || '';
   const rawMsg = error?.message || String(error);
+  const { currentHostname, currentOrigin, projectId } = getDiagnosticInfo();
 
-  if (code === 'auth/unauthorized-domain' || rawMsg.includes('unauthorized-domain')) {
-    const { currentHostname, projectId } = getDiagnosticInfo();
+  if (
+    code === 'auth/unauthorized-domain' || 
+    rawMsg.includes('unauthorized-domain') || 
+    rawMsg.includes('ORIGIN_MISMATCH') ||
+    rawMsg.toLowerCase().includes('origin') ||
+    rawMsg.toLowerCase().includes('idpiframe')
+  ) {
     return {
       code: 'auth/unauthorized-domain',
-      title: 'Domain Belum Diizinkan di Firebase',
-      message: `Domain "${currentHostname}" belum didaftarkan di Authorized Domains Firebase Project (${projectId}). Gunakan metode Direct OAuth.`,
+      title: 'Domain Belum Diizinkan di Google Cloud / Firebase',
+      message: `Domain "${currentOrigin || currentHostname}" belum didaftarkan di "Authorized JavaScript origins" Google Cloud Console atau "Authorized Domains" Firebase.`,
       isDomainError: true,
+      originUrl: currentOrigin,
     };
   }
 
@@ -244,7 +269,7 @@ export const initGoogleAuth = (
 export const signInWithGIS = async (
   silent = false
 ): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
-  const clientId = firebaseConfig.oAuthClientId;
+  const clientId = getActiveOAuthClientId();
   if (!clientId) {
     throw new Error('OAuth Client ID tidak ditemukan.');
   }
