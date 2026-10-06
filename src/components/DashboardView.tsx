@@ -25,35 +25,41 @@ import {
   CheckSquare,
   X,
   ExternalLink,
-  Lock
+  Lock,
+  UserCheck
 } from 'lucide-react';
 
 interface DashboardViewProps {
   reports: CleaningReport[];
   currentUser: User | null;
   officers: User[];
+  allUsers?: User[];
   onAddNewReport: () => void;
   onUpdateReport: (id: string, updates: Partial<CleaningReport>) => void;
   onDeleteReport: (id: string) => void;
   onOpenPrintModal: (filteredReports: CleaningReport[]) => void;
   onOpenLoginModal?: (reason?: string, tab?: 'quick_petugas' | 'email_admin') => void;
+  onSwitchUser?: (user: User) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   reports,
   currentUser,
   officers,
+  allUsers = [],
   onAddNewReport,
   onUpdateReport,
   onDeleteReport,
   onOpenPrintModal,
   onOpenLoginModal,
+  onSwitchUser,
 }) => {
   // Filters state
   const [dateFilter, setDateFilter] = useState<'today' | '7days' | 'month' | 'all'>('today');
   const [selectedOfficer, setSelectedOfficer] = useState<string>('all');
   const [selectedArea, setSelectedArea] = useState<string>('all');
   const [selectedKondisi, setSelectedKondisi] = useState<string>('all');
+  const [selectedStatusVerifikasi, setSelectedStatusVerifikasi] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
 
@@ -61,8 +67,63 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [activeReportDetail, setActiveReportDetail] = useState<CleaningReport | null>(null);
   const [supervisorNoteInput, setSupervisorNoteInput] = useState<string>('');
   const [selectedImagePreview, setSelectedImagePreview] = useState<string | null>(null);
+  const [selectedModalSupervisorId, setSelectedModalSupervisorId] = useState<string>('');
+
+  // Quick Supervisor Verification Modal for non-logged-in supervisors
+  const [quickVerifyTargetReport, setQuickVerifyTargetReport] = useState<{
+    report: CleaningReport;
+    status: 'Disetujui' | 'Perlu Perbaikan';
+  } | null>(null);
+  const [selectedQuickSupervisorId, setSelectedQuickSupervisorId] = useState<string>('');
+  const [quickSupervisorPin, setQuickSupervisorPin] = useState<string>('');
+  const [quickVerifyError, setQuickVerifyError] = useState<string>('');
 
   const todayStr = getTodayDateString();
+
+  // Supervisor / Admin Detection
+  const isSupervisorOrAdmin = useMemo(() => {
+    return (
+      currentUser?.role === 'supervisor' ||
+      currentUser?.role === 'superadmin' ||
+      currentUser?.email === 'operasional.scb@gmail.com'
+    );
+  }, [currentUser]);
+
+  const registeredSupervisors = useMemo(() => {
+    const list = (allUsers || []).filter(
+      (u) =>
+        (u.role === 'supervisor' ||
+          u.role === 'superadmin' ||
+          u.email === 'operasional.scb@gmail.com') &&
+        u.isActive !== false
+    );
+    if (list.length === 0) {
+      return [
+        {
+          id: 'user-supervisor-1',
+          name: 'SUPERVISOR SARPRAS SCB',
+          email: 'supervisor@scb.sch.id',
+          username: 'supervisor',
+          password: 'supervisor123',
+          pin: '1234',
+          role: 'supervisor' as const,
+          phone: '081234567890',
+          isActive: true,
+          createdAt: '2026-01-05',
+          avatarColor: 'from-blue-600 to-indigo-700',
+        },
+      ];
+    }
+    return list;
+  }, [allUsers]);
+
+  // Verification counts for quick badges
+  const verificationCounts = useMemo(() => {
+    const pending = reports.filter((r) => r.statusVerifikasi === 'Menunggu').length;
+    const approved = reports.filter((r) => r.statusVerifikasi === 'Disetujui').length;
+    const needsRepair = reports.filter((r) => r.statusVerifikasi === 'Perlu Perbaikan').length;
+    return { pending, approved, needsRepair };
+  }, [reports]);
 
   // Filtered reports logic
   const filteredReports = useMemo(() => {
@@ -93,6 +154,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         return false;
       }
 
+      // Status Verifikasi filter
+      if (selectedStatusVerifikasi !== 'all' && r.statusVerifikasi !== selectedStatusVerifikasi) {
+        return false;
+      }
+
       // Search Query
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
@@ -107,7 +173,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       return true;
     });
-  }, [reports, dateFilter, selectedOfficer, selectedArea, selectedKondisi, searchQuery, todayStr]);
+  }, [reports, dateFilter, selectedOfficer, selectedArea, selectedKondisi, selectedStatusVerifikasi, searchQuery, todayStr]);
 
   // Operational KPI calculations for today
   const todayReports = useMemo(() => {
@@ -145,22 +211,153 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const handleOpenDetail = (report: CleaningReport) => {
     setActiveReportDetail(report);
     setSupervisorNoteInput(report.catatanSupervisor || '');
+    if (currentUser?.role === 'supervisor' || currentUser?.role === 'superadmin') {
+      setSelectedModalSupervisorId(currentUser.id);
+    } else if (registeredSupervisors.length > 0) {
+      setSelectedModalSupervisorId(registeredSupervisors[0].id);
+    }
   };
 
-  const handleVerifyReport = (status: 'Disetujui' | 'Perlu Perbaikan') => {
-    if (!activeReportDetail) return;
+  // Direct Execution of Verification
+  const handleExecuteVerification = (
+    reportId: string,
+    status: 'Disetujui' | 'Perlu Perbaikan',
+    note?: string,
+    customVerifierName?: string
+  ) => {
+    const report = reports.find((r) => r.id === reportId);
+    if (!report) return;
+
+    let verifierName = customVerifierName;
+    let verifierRole = 'Supervisor';
+
+    if (!verifierName) {
+      if (currentUser) {
+        verifierName = currentUser.name;
+        verifierRole = currentUser.role === 'superadmin' ? 'Superadmin' : 'Supervisor';
+      } else {
+        const firstSup = registeredSupervisors[0];
+        verifierName = firstSup ? firstSup.name : 'SUPERVISOR SARPRAS SCB';
+        verifierRole = 'Supervisor';
+      }
+    } else {
+      const foundUser = (allUsers || []).find((u) => u.name === verifierName);
+      if (foundUser) {
+        verifierRole = foundUser.role === 'superadmin' ? 'Superadmin' : 'Supervisor';
+      } else if (currentUser?.role === 'superadmin') {
+        verifierRole = 'Superadmin';
+      }
+    }
+
+    const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
+    const nowDate = getTodayDateString();
+
+    const noteToSave = note !== undefined ? note : (supervisorNoteInput.trim() || report.catatanSupervisor || '');
+
     const updates: Partial<CleaningReport> = {
       statusVerifikasi: status,
-      catatanSupervisor: supervisorNoteInput.trim() || undefined,
-      diverifikasiOleh: currentUser?.name || 'Supervisor SCB',
-      diverifikasiPada: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+      catatanSupervisor: noteToSave,
+      diverifikasiOleh: `${verifierName} (${verifierRole})`,
+      diverifikasiPada: `${nowDate} ${nowTime} WIB`,
     };
 
-    onUpdateReport(activeReportDetail.id, updates);
-    setActiveReportDetail({
-      ...activeReportDetail,
-      ...updates,
-    });
+    onUpdateReport(reportId, updates);
+
+    if (activeReportDetail && activeReportDetail.id === reportId) {
+      setActiveReportDetail({
+        ...activeReportDetail,
+        ...updates,
+      });
+    }
+  };
+
+  // Direct 1-Click Verification Trigger from Cards / Table
+  const handleDirectCardVerify = (
+    report: CleaningReport,
+    status: 'Disetujui' | 'Perlu Perbaikan'
+  ) => {
+    if (isSupervisorOrAdmin && currentUser) {
+      // Supervisor is already logged in, directly verify without prompt!
+      handleExecuteVerification(report.id, status, undefined, currentUser.name);
+    } else {
+      // Prompt quick supervisor login modal with registered accounts
+      setQuickVerifyTargetReport({ report, status });
+      const firstSupervisor = registeredSupervisors[0];
+      if (firstSupervisor) {
+        setSelectedQuickSupervisorId(firstSupervisor.id);
+      }
+      setQuickSupervisorPin('');
+      setQuickVerifyError('');
+    }
+  };
+
+  // Verification triggered inside Detail Modal
+  const handleVerifyReport = (status: 'Disetujui' | 'Perlu Perbaikan') => {
+    if (!activeReportDetail) return;
+
+    if (isSupervisorOrAdmin && currentUser) {
+      // Direct verification using logged-in supervisor account
+      handleExecuteVerification(
+        activeReportDetail.id,
+        status,
+        supervisorNoteInput.trim() || undefined,
+        currentUser.name
+      );
+    } else {
+      // Direct verification using selected registered supervisor account
+      const selectedSup =
+        registeredSupervisors.find((s) => s.id === selectedModalSupervisorId) ||
+        registeredSupervisors[0];
+
+      if (selectedSup) {
+        if (onSwitchUser) {
+          onSwitchUser(selectedSup);
+        }
+        handleExecuteVerification(
+          activeReportDetail.id,
+          status,
+          supervisorNoteInput.trim() || undefined,
+          selectedSup.name
+        );
+      } else {
+        handleExecuteVerification(
+          activeReportDetail.id,
+          status,
+          supervisorNoteInput.trim() || undefined,
+          'SUPERVISOR SARPRAS SCB'
+        );
+      }
+    }
+  };
+
+  // Confirm Quick Supervisor Verify for non-logged in users
+  const handleConfirmQuickSupervisorVerify = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickVerifyTargetReport) return;
+
+    const supervisorUser = registeredSupervisors.find(
+      (u) => u.id === selectedQuickSupervisorId
+    );
+
+    if (!supervisorUser) {
+      setQuickVerifyError('Pilih akun supervisor terlebih dahulu.');
+      return;
+    }
+
+    // Switch active user to supervisor so session remains active
+    if (onSwitchUser) {
+      onSwitchUser(supervisorUser);
+    }
+
+    // Execute verification immediately with supervisor name
+    handleExecuteVerification(
+      quickVerifyTargetReport.report.id,
+      quickVerifyTargetReport.status,
+      undefined,
+      supervisorUser.name
+    );
+
+    setQuickVerifyTargetReport(null);
   };
 
   const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
@@ -488,7 +685,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {/* Dropdown Filters Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-2 border-t border-slate-100 text-xs">
           {/* Officer filter */}
           <div>
             <label className="block text-[11px] font-semibold text-slate-500 mb-1">
@@ -550,11 +747,59 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <option value="Ada Kerusakan">Ada Kerusakan</option>
             </select>
           </div>
+
+          {/* Status Verifikasi filter */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+              Status Verifikasi:
+            </label>
+            <select
+              value={selectedStatusVerifikasi}
+              onChange={(e) => setSelectedStatusVerifikasi(e.target.value)}
+              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
+            >
+              <option value="all">Semua Status Verifikasi</option>
+              <option value="Menunggu">⏳ Menunggu ({verificationCounts.pending})</option>
+              <option value="Disetujui">✅ Disetujui ({verificationCounts.approved})</option>
+              <option value="Perlu Perbaikan">⚠️ Perlu Perbaikan ({verificationCounts.needsRepair})</option>
+            </select>
+          </div>
         </div>
       </div>
 
+      {/* Supervisor Mode Active Banner */}
+      {isSupervisorOrAdmin && (
+        <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-emerald-50 border border-blue-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-900 text-sm">Mode Verifikasi Langsung Aktif</span>
+                <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold text-[10px] uppercase">
+                  {currentUser?.role === 'superadmin' ? 'Super Admin' : 'Supervisor'}
+                </span>
+              </div>
+              <p className="text-slate-600 mt-0.5">
+                Masuk sebagai: <strong className="text-blue-900">{currentUser?.name}</strong>. Anda dapat langsung menyetujui laporan dengan 1 klik tombol <strong className="text-emerald-700 font-bold">"✓ Setujui"</strong>.
+              </p>
+            </div>
+          </div>
+          {verificationCounts.pending > 0 && (
+            <button
+              onClick={() => setSelectedStatusVerifikasi('Menunggu')}
+              className="shrink-0 px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>{verificationCounts.pending} Laporan Menunggu Verifikasi</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Filter status indicator & reset */}
-      {(selectedOfficer !== 'all' || selectedArea !== 'all' || selectedKondisi !== 'all' || searchQuery || dateFilter !== 'today') && (
+      {(selectedOfficer !== 'all' || selectedArea !== 'all' || selectedKondisi !== 'all' || selectedStatusVerifikasi !== 'all' || searchQuery || dateFilter !== 'today') && (
         <div className="flex items-center justify-between text-xs text-slate-600 bg-emerald-50/60 border border-emerald-100 px-3.5 py-2 rounded-xl">
           <span>
             Menampilkan <strong className="text-emerald-800">{filteredReports.length}</strong> laporan sesuai filter
@@ -564,6 +809,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               setSelectedOfficer('all');
               setSelectedArea('all');
               setSelectedKondisi('all');
+              setSelectedStatusVerifikasi('all');
               setSearchQuery('');
               setDateFilter('today');
             }}
@@ -699,28 +945,55 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
 
                 {/* Card Actions */}
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs gap-2">
                   <button
                     onClick={() => handleOpenDetail(report)}
                     className="flex items-center gap-1 text-emerald-700 font-bold hover:underline"
                   >
                     <Eye className="w-3.5 h-3.5" />
-                    <span>Lihat Detail & Verifikasi</span>
+                    <span>Lihat Detail</span>
                   </button>
 
-                  {isSuperAdmin && (
-                    <button
-                      onClick={() => {
-                        if (confirm(`Hapus laporan ${report.area} oleh ${report.namaPetugas}?`)) {
-                          onDeleteReport(report.id);
-                        }
-                      }}
-                      className="text-slate-400 hover:text-rose-600 p-1"
-                      title="Hapus Laporan (Admin)"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {report.statusVerifikasi === 'Menunggu' ? (
+                      <>
+                        <button
+                          onClick={() => handleDirectCardVerify(report, 'Disetujui')}
+                          className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[10px] shadow-xs flex items-center gap-1 transition-colors"
+                          title="Setujui laporan langsung sesuai akun terdaftar"
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Setujui</span>
+                        </button>
+                        <button
+                          onClick={() => handleDirectCardVerify(report, 'Perlu Perbaikan')}
+                          className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-lg text-[10px] border border-rose-200 flex items-center gap-1 transition-colors"
+                          title="Minta perbaikan langsung sesuai akun terdaftar"
+                        >
+                          <AlertTriangle className="w-3 h-3" />
+                          <span>Perbaikan</span>
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-[10px] text-slate-500 font-medium">
+                        Oleh: <strong>{report.diverifikasiOleh?.split(' ')[0] || 'Supervisor'}</strong>
+                      </span>
+                    )}
+
+                    {isSuperAdmin && (
+                      <button
+                        onClick={() => {
+                          if (confirm(`Hapus laporan ${report.area} oleh ${report.namaPetugas}?`)) {
+                            onDeleteReport(report.id);
+                          }
+                        }}
+                        className="text-slate-400 hover:text-rose-600 p-1"
+                        title="Hapus Laporan (Admin)"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -789,10 +1062,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {report.statusVerifikasi === 'Menunggu' && (
+                          <>
+                            <button
+                              onClick={() => handleDirectCardVerify(report, 'Disetujui')}
+                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-[11px] flex items-center gap-1 transition-colors shadow-xs"
+                              title="Setujui langsung sesuai akun terdaftar"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Setujui</span>
+                            </button>
+                            <button
+                              onClick={() => handleDirectCardVerify(report, 'Perlu Perbaikan')}
+                              className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-lg text-[11px] border border-rose-200 transition-colors"
+                              title="Minta perbaikan langsung sesuai akun terdaftar"
+                            >
+                              Perbaikan
+                            </button>
+                          </>
+                        )}
                         <button
                           onClick={() => handleOpenDetail(report)}
-                          className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold rounded-lg transition-colors"
+                          className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-lg transition-colors"
                         >
                           Detail
                         </button>
@@ -962,6 +1254,52 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   )}
                 </div>
 
+                {/* Verifier Identity Indicator / Registered Account Selection */}
+                {isSupervisorOrAdmin && currentUser ? (
+                  <div className="flex items-center justify-between p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-950">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <div>
+                        <span className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider block">
+                          Akun Verifikator Terdaftar Aktif
+                        </span>
+                        <span>
+                          <strong>{currentUser.name}</strong> ({currentUser.role === 'superadmin' ? 'Superadmin' : 'Supervisor Sarpras'})
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                      Verifikasi Langsung
+                    </span>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg text-xs space-y-1.5">
+                    <div className="flex items-center justify-between text-blue-900 font-bold">
+                      <span className="flex items-center gap-1.5">
+                        <UserCheck className="w-3.5 h-3.5 text-blue-600" />
+                        Pilih Akun Supervisor Terdaftar:
+                      </span>
+                      <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-semibold">
+                        Akun Resmi Terdaftar
+                      </span>
+                    </div>
+                    <select
+                      value={selectedModalSupervisorId || (registeredSupervisors[0]?.id || '')}
+                      onChange={(e) => setSelectedModalSupervisorId(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs bg-white border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium text-slate-800"
+                    >
+                      {registeredSupervisors.map((sup) => (
+                        <option key={sup.id} value={sup.id}>
+                          {sup.name} ({sup.role === 'superadmin' ? 'Superadmin' : 'Supervisor'}) • {sup.email}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-blue-700">
+                      Verifikasi akan langsung dicatat secara resmi menggunakan nama akun supervisor terdaftar di atas.
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
                     Catatan Supervisor / Instruksi Perbaikan:
@@ -970,7 +1308,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     type="text"
                     value={supervisorNoteInput}
                     onChange={(e) => setSupervisorNoteInput(e.target.value)}
-                    placeholder="Contoh: Sudah bersih, mohon pastikan keset selalu kering..."
+                    placeholder="Contoh: Sudah bersih sesuai standar, mohon pastikan keset selalu kering..."
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
@@ -1004,6 +1342,115 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Tutup
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK SUPERVISOR VERIFICATION MODAL */}
+      {quickVerifyTargetReport && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="bg-gradient-to-r from-emerald-800 to-teal-800 p-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-300" />
+                <h3 className="font-bold text-sm sm:text-base">
+                  Verifikasi Akun Supervisor Terdaftar
+                </h3>
+              </div>
+              <button
+                onClick={() => setQuickVerifyTargetReport(null)}
+                className="text-emerald-200 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmQuickSupervisorVerify} className="p-5 space-y-4">
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
+                <div className="flex justify-between text-slate-500">
+                  <span>Area Kamar Mandi:</span>
+                  <strong className="text-slate-900">{quickVerifyTargetReport.report.area}</strong>
+                </div>
+                <div className="flex justify-between text-slate-500">
+                  <span>Petugas Pelaksana:</span>
+                  <strong className="text-slate-900">{quickVerifyTargetReport.report.namaPetugas}</strong>
+                </div>
+                <div className="flex justify-between text-slate-500">
+                  <span>Status Keputusan:</span>
+                  <span
+                    className={`font-bold px-2 py-0.5 rounded text-[11px] ${
+                      quickVerifyTargetReport.status === 'Disetujui'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-rose-100 text-rose-800'
+                    }`}
+                  >
+                    {quickVerifyTargetReport.status === 'Disetujui'
+                      ? '✓ Setujui (Sesuai Standar)'
+                      : '⚠️ Minta Perbaikan Ulang'}
+                  </span>
+                </div>
+              </div>
+
+              {quickVerifyError && (
+                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs">
+                  {quickVerifyError}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Pilih Akun Supervisor / Verifikator Terdaftar:
+                </label>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {registeredSupervisors.map((sup) => (
+                    <label
+                      key={sup.id}
+                      className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer text-xs transition-all ${
+                        selectedQuickSupervisorId === sup.id
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold'
+                          : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="quick_supervisor"
+                          checked={selectedQuickSupervisorId === sup.id}
+                          onChange={() => setSelectedQuickSupervisorId(sup.id)}
+                          className="w-4 h-4 text-emerald-600"
+                        />
+                        <div>
+                          <div className="font-bold text-slate-900">{sup.name}</div>
+                          <div className="text-[10px] text-slate-500">
+                            {sup.email} • {sup.role === 'superadmin' ? 'Superadmin' : 'Supervisor Sarpras'}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-semibold">
+                        Terdaftar
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setQuickVerifyTargetReport(null)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Verifikasi Langsung Sekarang</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

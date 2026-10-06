@@ -335,10 +335,15 @@ export default function App() {
       {/* Main Navbar */}
       <Navbar
         currentUser={currentUser}
+        allUsers={users}
         activeTab={activeTab}
         setActiveTab={handleSafeTabChange}
+        onSwitchUser={(user) => {
+          setCurrentUser(user);
+          showToast(`Berhasil masuk sebagai ${user.name} (${user.role.toUpperCase()})`, 'success');
+        }}
         onLogout={handleLogout}
-        onOpenLoginModal={() => handleOpenLoginModal('Masuk Akun Petugas Kebersihan / Superadmin SCB')}
+        onOpenLoginModal={(reason, tab) => handleOpenLoginModal(reason, tab)}
         onRequestInputReport={handleRequestInputReport}
       />
 
@@ -349,11 +354,16 @@ export default function App() {
             reports={reports}
             currentUser={currentUser}
             officers={officers}
+            allUsers={users}
             onAddNewReport={handleRequestInputReport}
             onUpdateReport={handleUpdateReport}
             onDeleteReport={handleDeleteReport}
             onOpenPrintModal={(filtered) => setPrintReportsData(filtered)}
             onOpenLoginModal={handleOpenLoginModal}
+            onSwitchUser={(user) => {
+              setCurrentUser(user);
+              showToast(`Berhasil masuk sebagai ${user.name} (${user.role.toUpperCase()})`, 'success');
+            }}
           />
         )}
 

@@ -17,7 +17,20 @@ export const INITIAL_USERS: User[] = [
     phone: '081298765432',
     isActive: true,
     createdAt: '2026-01-01',
-    avatarColor: 'from-emerald-600 to-teal-700',
+    avatarColor: 'from-amber-600 to-yellow-700',
+  },
+  {
+    id: 'user-supervisor-1',
+    name: 'SUPERVISOR SARPRAS SCB',
+    email: 'supervisor@scb.sch.id',
+    username: 'supervisor',
+    password: 'supervisor123',
+    pin: '1234',
+    role: 'supervisor',
+    phone: '081234567890',
+    isActive: true,
+    createdAt: '2026-01-05',
+    avatarColor: 'from-blue-600 to-indigo-700',
   },
   {
     id: 'user-officer-1',
@@ -30,7 +43,7 @@ export const INITIAL_USERS: User[] = [
     phone: '085712345678',
     isActive: true,
     createdAt: '2026-01-10',
-    avatarColor: 'from-blue-600 to-indigo-700',
+    avatarColor: 'from-emerald-600 to-teal-700',
   },
   {
     id: 'user-officer-2',
@@ -178,8 +191,33 @@ export function getUsers(): User[] {
       localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(INITIAL_USERS));
       return INITIAL_USERS;
     }
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : INITIAL_USERS;
+    const parsed: User[] = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(INITIAL_USERS));
+      return INITIAL_USERS;
+    }
+
+    // Ensure default supervisor exists in existing saved users
+    const hasSupervisor = parsed.some((u) => u.role === 'supervisor');
+    if (!hasSupervisor) {
+      const defaultSupervisor: User = {
+        id: 'user-supervisor-1',
+        name: 'SUPERVISOR SARPRAS SCB',
+        email: 'supervisor@scb.sch.id',
+        username: 'supervisor',
+        password: 'supervisor123',
+        pin: '1234',
+        role: 'supervisor',
+        phone: '081234567890',
+        isActive: true,
+        createdAt: '2026-01-05',
+        avatarColor: 'from-blue-600 to-indigo-700',
+      };
+      parsed.splice(1, 0, defaultSupervisor);
+      saveUsers(parsed);
+    }
+
+    return parsed;
   } catch (e) {
     console.error('Failed to load users from localStorage', e);
     return INITIAL_USERS;
