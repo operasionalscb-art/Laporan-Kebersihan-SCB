@@ -181,16 +181,63 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return reports.filter((r) => r.tanggal === todayStr);
   }, [reports, todayStr]);
 
+  // Helper to determine if an issue report has received follow-up or resolution
+  const isReportFollowedUp = (report: CleaningReport, allReports: CleaningReport[]) => {
+    // 1. If supervisor already approved / marked as resolved
+    if (report.statusVerifikasi === 'Disetujui') {
+      return true;
+    }
+
+    // 2. If there is a newer report for the exact same area that is 'Bersih', it has been resolved
+    const newerCleanReport = allReports.find((r) => {
+      const isSameArea = r.isAreaOther
+        ? (r.areaCustom || '').trim().toLowerCase() === (report.areaCustom || '').trim().toLowerCase()
+        : r.area === report.area;
+      return (
+        isSameArea &&
+        r.id !== report.id &&
+        (r.timestamp > report.timestamp || (r.tanggal === report.tanggal && r.waktu > report.waktu)) &&
+        r.kondisiAkhir === 'Bersih'
+      );
+    });
+
+    return !!newerCleanReport;
+  };
+
   const stats = useMemo(() => {
     const totalToday = todayReports.length;
     const cleanCount = todayReports.filter((r) => r.kondisiAkhir === 'Bersih').length;
-    const reviewCount = todayReports.filter((r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang').length;
-    const damageCount = todayReports.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length;
+
+    // Calculate issues that have NOT received follow up or resolution
+    const reviewPendingList = reports.filter(
+      (r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang' && !isReportFollowedUp(r, reports)
+    );
+    const damagePendingList = reports.filter(
+      (r) => r.kondisiAkhir === 'Ada Kerusakan' && !isReportFollowedUp(r, reports)
+    );
+
+    const reviewCount = reviewPendingList.length;
+    const damageCount = damagePendingList.length;
+
+    const reviewResolvedCount = reports.filter(
+      (r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang' && isReportFollowedUp(r, reports)
+    ).length;
+    const damageResolvedCount = reports.filter(
+      (r) => r.kondisiAkhir === 'Ada Kerusakan' && isReportFollowedUp(r, reports)
+    ).length;
 
     const cleanPercentage = totalToday > 0 ? Math.round((cleanCount / totalToday) * 100) : 0;
 
-    return { totalToday, cleanCount, reviewCount, damageCount, cleanPercentage };
-  }, [todayReports]);
+    return {
+      totalToday,
+      cleanCount,
+      reviewCount,
+      damageCount,
+      reviewResolvedCount,
+      damageResolvedCount,
+      cleanPercentage,
+    };
+  }, [reports, todayReports]);
 
   // Area coverage status for today
   const areaCoverage = useMemo(() => {
@@ -509,7 +556,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {/* Perlu Pengecekan */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs">
+        <div
+          onClick={() => setSelectedKondisi(selectedKondisi === 'Perlu Pengecekan Ulang' ? 'all' : 'Perlu Pengecekan Ulang')}
+          className={`bg-white p-4 sm:p-5 rounded-2xl border shadow-xs cursor-pointer transition-all hover:shadow-md ${
+            selectedKondisi === 'Perlu Pengecekan Ulang'
+              ? 'border-amber-500 ring-2 ring-amber-400/30 bg-amber-50/20'
+              : 'border-slate-200'
+          }`}
+          title="Klik untuk memfilter laporan yang perlu pengecekan ulang"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
               Perlu Pengecekan
@@ -522,15 +577,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <span className="text-2xl sm:text-3xl font-extrabold text-amber-600">
               {stats.reviewCount}
             </span>
-            <span className="text-xs text-slate-500">lokasi</span>
+            <span className="text-xs text-slate-500">belum follow-up</span>
           </div>
-          <p className="text-[11px] text-amber-700 font-medium mt-1">
-            {stats.reviewCount > 0 ? 'Perlu follow-up perlengkapan' : 'Tidak ada antrean'}
+          <p className="text-[11px] font-medium mt-1 flex items-center gap-1.5">
+            {stats.reviewCount > 0 ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                <span className="text-amber-800 font-semibold">{stats.reviewCount} belum mendapatkan tindak lanjut</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="text-emerald-700 font-semibold">Semua sudah ditindaklanjuti</span>
+              </>
+            )}
           </p>
+          {stats.reviewResolvedCount > 0 && (
+            <p className="text-[10px] text-slate-400 mt-1">
+              ✓ {stats.reviewResolvedCount} laporan terdahulu sudah selesai ditindaklanjuti
+            </p>
+          )}
         </div>
 
         {/* Ada Kerusakan */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs">
+        <div
+          onClick={() => setSelectedKondisi(selectedKondisi === 'Ada Kerusakan' ? 'all' : 'Ada Kerusakan')}
+          className={`bg-white p-4 sm:p-5 rounded-2xl border shadow-xs cursor-pointer transition-all hover:shadow-md ${
+            selectedKondisi === 'Ada Kerusakan'
+              ? 'border-rose-500 ring-2 ring-rose-400/30 bg-rose-50/20'
+              : 'border-slate-200'
+          }`}
+          title="Klik untuk memfilter laporan dengan kerusakan fasilitas"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
               Ada Kerusakan
@@ -543,11 +621,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <span className="text-2xl sm:text-3xl font-extrabold text-rose-600">
               {stats.damageCount}
             </span>
-            <span className="text-xs text-slate-500">fasilitas</span>
+            <span className="text-xs text-slate-500">belum ditindaklanjuti</span>
           </div>
-          <p className="text-[11px] text-rose-700 font-medium mt-1">
-            {stats.damageCount > 0 ? 'Perlu tindakan tim Sarpras' : 'Semua fasilitas prima'}
+          <p className="text-[11px] font-medium mt-1 flex items-center gap-1.5">
+            {stats.damageCount > 0 ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
+                <span className="text-rose-800 font-semibold">{stats.damageCount} belum ada tindak lanjut teknisi</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="text-emerald-700 font-semibold">Semua kerusakan sudah tuntas diperbaiki</span>
+              </>
+            )}
           </p>
+          {stats.damageResolvedCount > 0 && (
+            <p className="text-[10px] text-slate-400 mt-1">
+              ✓ {stats.damageResolvedCount} perbaikan fasilitas telah selesai
+            </p>
+          )}
         </div>
       </div>
 
@@ -901,7 +994,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
 
                 {/* Status Badges Overlay */}
-                <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
+                <div className="absolute top-2.5 left-2.5 flex flex-wrap items-center gap-1.5 max-w-[70%]">
                   <span
                     className={`text-[11px] font-bold px-2 py-0.5 rounded-md shadow-xs ${
                       report.kondisiAkhir === 'Bersih'
@@ -913,6 +1006,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   >
                     {report.kondisiAkhir}
                   </span>
+                  {report.kondisiAkhir !== 'Bersih' && (
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md shadow-xs flex items-center gap-1 ${
+                        !isReportFollowedUp(report, reports)
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-emerald-700 text-white'
+                      }`}
+                    >
+                      {!isReportFollowedUp(report, reports) ? (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                          <span>Belum Follow-Up</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Selesai</span>
+                        </>
+                      )}
+                    </span>
+                  )}
                 </div>
 
                 <div className="absolute top-2.5 right-2.5">
@@ -1066,17 +1180,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <span className="font-medium text-slate-800">{report.area}</span>
                     </td>
                     <td className="py-3 px-4 whitespace-nowrap">
-                      <span
-                        className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
-                          report.kondisiAkhir === 'Bersih'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : report.kondisiAkhir === 'Ada Kerusakan'
-                            ? 'bg-rose-100 text-rose-800'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {report.kondisiAkhir}
-                      </span>
+                      <div className="flex flex-col gap-1 items-start">
+                        <span
+                          className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
+                            report.kondisiAkhir === 'Bersih'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : report.kondisiAkhir === 'Ada Kerusakan'
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {report.kondisiAkhir}
+                        </span>
+                        {report.kondisiAkhir !== 'Bersih' && (
+                          <span
+                            className={`text-[9px] font-bold px-1.5 py-0.2 rounded flex items-center gap-1 ${
+                              !isReportFollowedUp(report, reports)
+                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                            }`}
+                          >
+                            {!isReportFollowedUp(report, reports) ? (
+                              <>
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse" />
+                                <span>Belum Follow-Up</span>
+                              </>
+                            ) : (
+                              <>
+                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                                <span>Selesai</span>
+                              </>
+                            )}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-4 max-w-[200px] truncate">
                       {report.checklist.join(', ')}
@@ -1167,8 +1304,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         : 'bg-amber-100 text-amber-800'
                     }`}
                   >
-                    Verifikasi: {activeReportDetail.statusVerifikasi}
+                    Status: {activeReportDetail.statusVerifikasi}
                   </span>
+                  {activeReportDetail.kondisiAkhir !== 'Bersih' && (
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 ${
+                        !isReportFollowedUp(activeReportDetail, reports)
+                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                          : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                      }`}
+                    >
+                      {!isReportFollowedUp(activeReportDetail, reports) ? (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse" />
+                          <span>Belum Ada Tindak Lanjut</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          <span>Sudah Ditindaklanjuti</span>
+                        </>
+                      )}
+                    </span>
+                  )}
                 </div>
                 <h3 className="text-lg font-bold text-slate-900 mt-0.5">
                   {activeReportDetail.area}
