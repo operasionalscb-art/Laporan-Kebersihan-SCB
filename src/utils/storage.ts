@@ -1,9 +1,34 @@
 import { CleaningReport, User } from '../types';
 import { createSamplePhotoUrl } from './imageCompressor';
+import { saveReportsToIDB, loadReportsFromIDB, saveUsersToIDB, loadUsersFromIDB } from './indexedDb';
 
 const STORAGE_USERS_KEY = 'scb_cleaning_users_v2';
 const STORAGE_REPORTS_KEY = 'scb_cleaning_reports_v2';
 const STORAGE_CURRENT_USER_KEY = 'scb_current_user_v2';
+
+// In-memory cache for ultra-fast, zero-quota-limit access
+let inMemoryReports: CleaningReport[] | null = null;
+
+// Trigger IDB background hydration once
+if (typeof window !== 'undefined') {
+  loadReportsFromIDB().then((idbReports) => {
+    if (idbReports && idbReports.length > 0) {
+      if (!inMemoryReports || inMemoryReports.length === 0) {
+        inMemoryReports = idbReports;
+      } else {
+        // Merge full photos from IDB into inMemoryReports in case localStorage had stripped them
+        const idbMap = new Map(idbReports.map((r) => [r.id, r]));
+        inMemoryReports = inMemoryReports.map((r) => {
+          const fromIdb = idbMap.get(r.id);
+          if (fromIdb && fromIdb.fotoBukti && fromIdb.fotoBukti.length > 0 && (!r.fotoBukti || r.fotoBukti.length === 0)) {
+            return { ...r, fotoBukti: fromIdb.fotoBukti };
+          }
+          return r;
+        });
+      }
+    }
+  }).catch(() => {});
+}
 
 export const INITIAL_USERS: User[] = [
   {
@@ -227,8 +252,9 @@ export function getUsers(): User[] {
 export function saveUsers(users: User[]): void {
   try {
     localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(users));
+    saveUsersToIDB(users).catch(() => {});
   } catch (e) {
-    console.error('Failed to save users to localStorage', e);
+    console.warn('Failed to save users to localStorage', e);
   }
 }
 
@@ -263,27 +289,100 @@ export function deleteUser(id: string): boolean {
 }
 
 // Reports storage
+
+/**
+ * Safely writes reports to localStorage with smart quota fallbacks.
+ * Prevents QuotaExceededError by pruning large base64 strings if necessary,
+ * while the complete photos and records are safely preserved in memory and IndexedDB.
+ */
+function safelySaveToLocalStorage(reports: CleaningReport[]): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+
+  // Attempt 1: Try saving the full reports directly
+  try {
+    localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(reports));
+    return;
+  } catch {
+    // Quota exceeded or error - proceed to fallbacks
+  }
+
+  // Attempt 2: Keep photos for the 3 newest reports, strip large base64 strings from older reports
+  try {
+    const trimmedOlderPhotos = reports.map((r, index) => {
+      if (index < 3) return r;
+      return {
+        ...r,
+        fotoBukti: r.fotoBukti
+          ? r.fotoBukti.filter((f) => f.length < 500 || f.startsWith('data:image/svg+xml'))
+          : [],
+      };
+    });
+    localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(trimmedOlderPhotos));
+    return;
+  } catch {
+    // Still exceeded quota
+  }
+
+  // Attempt 3: Strip large base64 data URLs from all reports in localStorage copy
+  try {
+    const withoutHeavyPhotos = reports.map((r) => ({
+      ...r,
+      fotoBukti: r.fotoBukti
+        ? r.fotoBukti.filter((f) => f.length < 500 || f.startsWith('data:image/svg+xml'))
+        : [],
+    }));
+    localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(withoutHeavyPhotos));
+    return;
+  } catch {
+    // Still exceeded quota
+  }
+
+  // Attempt 4: Keep only recent 25 reports without heavy photos
+  try {
+    const compactReports = reports.slice(0, 25).map((r) => ({
+      ...r,
+      fotoBukti: [],
+    }));
+    localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(compactReports));
+  } catch {
+    console.warn('LocalStorage quota reached. Active reports are maintained in memory and IndexedDB.');
+  }
+}
+
 export function getReports(): CleaningReport[] {
+  // If memory cache is populated, return it immediately
+  if (inMemoryReports && inMemoryReports.length > 0) {
+    return inMemoryReports;
+  }
+
   try {
     const raw = localStorage.getItem(STORAGE_REPORTS_KEY);
     if (!raw) {
-      localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(INITIAL_REPORTS));
-      return INITIAL_REPORTS;
+      inMemoryReports = [...INITIAL_REPORTS];
+      safelySaveToLocalStorage(INITIAL_REPORTS);
+      saveReportsToIDB(INITIAL_REPORTS).catch(() => {});
+      return inMemoryReports;
     }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : INITIAL_REPORTS;
+    const result = Array.isArray(parsed) && parsed.length > 0 ? parsed : INITIAL_REPORTS;
+    inMemoryReports = [...result];
+    return inMemoryReports;
   } catch (e) {
-    console.error('Failed to load reports from localStorage', e);
-    return INITIAL_REPORTS;
+    console.warn('Fallback loading reports from initial data', e);
+    inMemoryReports = [...INITIAL_REPORTS];
+    return inMemoryReports;
   }
 }
 
 export function saveReports(reports: CleaningReport[]): void {
-  try {
-    localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(reports));
-  } catch (e) {
-    console.error('Failed to save reports to localStorage', e);
-  }
+  // 1. Instantly update in-memory cache
+  inMemoryReports = [...reports];
+
+  // 2. Persist full data asynchronously to IndexedDB (no 5MB quota limit)
+  saveReportsToIDB(reports).catch(() => {});
+
+  // 3. Persist to localStorage with smart quota-safe fallback
+  safelySaveToLocalStorage(reports);
 }
 
 export function addReport(report: Omit<CleaningReport, 'id' | 'timestamp'> & { id?: string; timestamp?: number }): CleaningReport {
@@ -338,9 +437,16 @@ export function clearCurrentUser(): void {
 }
 
 export function resetAllData(): void {
-  localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(INITIAL_USERS));
-  localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(INITIAL_REPORTS));
-  localStorage.removeItem(STORAGE_CURRENT_USER_KEY);
+  inMemoryReports = [...INITIAL_REPORTS];
+  try {
+    localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(INITIAL_USERS));
+    safelySaveToLocalStorage(INITIAL_REPORTS);
+    localStorage.removeItem(STORAGE_CURRENT_USER_KEY);
+    saveReportsToIDB(INITIAL_REPORTS).catch(() => {});
+    saveUsersToIDB(INITIAL_USERS).catch(() => {});
+  } catch (e) {
+    console.warn('Reset local storage notice:', e);
+  }
 }
 
 // Export to CSV

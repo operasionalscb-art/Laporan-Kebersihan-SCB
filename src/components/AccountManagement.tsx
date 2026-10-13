@@ -122,10 +122,10 @@ export const ROLE_PERMISSIONS_DATA: RolePermissionFeature[] = [
   {
     id: 'verify_report',
     category: 'Monitoring & Verifikasi',
-    name: 'Verifikasi & Validasi Laporan',
-    description: 'Menyetujui (Disetujui) atau menolak laporan petugas dan meminta perbaikan ulang (Perlu Perbaikan).',
-    user: { allowed: false, label: 'Tidak Diizinkan', note: 'Petugas tidak dapat memvalidasi laporan sendiri' },
-    supervisor: { allowed: true, label: 'Tugas Utama', note: 'Penanggung jawab kebersihan & mutu' },
+    name: 'Persetujuan & Verifikasi Laporan',
+    description: 'Menyetujui (Disetujui) atau meminta perbaikan ulang laporan petugas (Perlu Perbaikan). Wewenang resmi level supervisor.',
+    user: { allowed: false, label: 'Tidak Diizinkan', note: 'Petugas tidak dapat menyetujui laporan sendiri' },
+    supervisor: { allowed: true, label: 'Tugas Utama', note: 'Wewenang resmi persetujuan mutu' },
     admin: { allowed: true, label: 'Diizinkan', note: 'Dapat memverifikasi jika supervisor berhalangan' },
   },
   {

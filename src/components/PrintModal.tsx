@@ -109,7 +109,15 @@ export const PrintModal: React.FC<PrintModalProps> = ({
                   <td className="p-2 border-r border-slate-300 font-semibold">{report.namaPetugas}</td>
                   <td className="p-2 border-r border-slate-300 font-medium">{report.area}</td>
                   <td className="p-2 border-r border-slate-300">
-                    <span className="font-semibold">{report.kondisiAkhir}</span>
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                      report.kondisiAkhir === 'Bersih'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : report.kondisiAkhir === 'Ada Kerusakan'
+                        ? 'bg-rose-100 text-rose-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      {report.kondisiAkhir}
+                    </span>
                   </td>
                   <td className="p-2 border-r border-slate-300 text-[11px]">
                     {report.checklist.join(', ')}
