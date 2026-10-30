@@ -13,18 +13,21 @@ let inMemoryReports: CleaningReport[] | null = null;
 if (typeof window !== 'undefined') {
   loadReportsFromIDB().then((idbReports) => {
     if (idbReports && idbReports.length > 0) {
+      const cleanIdb = idbReports.filter((r) => !['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(r.id));
       if (!inMemoryReports || inMemoryReports.length === 0) {
-        inMemoryReports = idbReports;
+        inMemoryReports = cleanIdb;
       } else {
         // Merge full photos from IDB into inMemoryReports in case localStorage had stripped them
-        const idbMap = new Map(idbReports.map((r) => [r.id, r]));
-        inMemoryReports = inMemoryReports.map((r) => {
-          const fromIdb = idbMap.get(r.id);
-          if (fromIdb && fromIdb.fotoBukti && fromIdb.fotoBukti.length > 0 && (!r.fotoBukti || r.fotoBukti.length === 0)) {
-            return { ...r, fotoBukti: fromIdb.fotoBukti };
-          }
-          return r;
-        });
+        const idbMap = new Map(cleanIdb.map((r) => [r.id, r]));
+        inMemoryReports = inMemoryReports
+          .filter((r) => !['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(r.id))
+          .map((r) => {
+            const fromIdb = idbMap.get(r.id);
+            if (fromIdb && fromIdb.fotoBukti && fromIdb.fotoBukti.length > 0 && (!r.fotoBukti || r.fotoBukti.length === 0)) {
+              return { ...r, fotoBukti: fromIdb.fotoBukti };
+            }
+            return r;
+          });
       }
     }
   }).catch(() => {});
@@ -128,85 +131,7 @@ export function getCurrentTimeString(): string {
   return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
 }
 
-export const INITIAL_REPORTS: CleaningReport[] = [
-  {
-    id: 'rep-1',
-    tanggal: getTodayDateString(),
-    waktu: '07:30',
-    timestamp: Date.now() - 3600000 * 3,
-    petugasId: 'user-officer-1',
-    namaPetugas: 'IDAY M YUSUF',
-    area: 'KM MASJID PUTRA',
-    isAreaOther: false,
-    checklist: ['Kloset Bersih', 'Kran Ada', 'Ember Ada', 'Air ada', 'Gayung Ada'],
-    kondisiAkhir: 'Bersih',
-    keteranganTambahan: 'Kamar mandi sudah disikat wangi, bak air telah dikuras penuh.',
-    fotoBukti: [
-      createSamplePhotoUrl('KM MASJID PUTRA', 'Kondisi: Bersih & Rapi - IDAY M YUSUF', '#059669'),
-    ],
-    statusVerifikasi: 'Disetujui',
-    catatanSupervisor: 'Bagus, kebersihan sangat terjaga menjelang shalat Dhuha.',
-    diverifikasiOleh: 'Superadmin Operasional SCB',
-    diverifikasiPada: '08:15',
-  },
-  {
-    id: 'rep-2',
-    tanggal: getTodayDateString(),
-    waktu: '08:05',
-    timestamp: Date.now() - 3600000 * 2,
-    petugasId: 'user-officer-2',
-    namaPetugas: 'ABDUL KODIR',
-    area: 'KM KANTOR UTAMA',
-    isAreaOther: false,
-    checklist: ['Kloset Bersih', 'Kran Ada', 'Ember Ada', 'Air ada', 'Gayung Ada'],
-    kondisiAkhir: 'Bersih',
-    keteranganTambahan: 'Lantai dipel kering dan diberi pengharum ruangan.',
-    fotoBukti: [
-      createSamplePhotoUrl('KM KANTOR UTAMA', 'Kondisi: Bersih - ABDUL KODIR', '#0284c7'),
-    ],
-    statusVerifikasi: 'Disetujui',
-    catatanSupervisor: 'Sesuai standar operasional.',
-    diverifikasiOleh: 'Superadmin Operasional SCB',
-    diverifikasiPada: '08:40',
-  },
-  {
-    id: 'rep-3',
-    tanggal: getTodayDateString(),
-    waktu: '08:45',
-    timestamp: Date.now() - 3600000 * 1,
-    petugasId: 'user-officer-1',
-    namaPetugas: 'IDAY M YUSUF',
-    area: 'T WUDHU KLINIK',
-    isAreaOther: false,
-    checklist: ['Kloset Bersih', 'Ember Ada', 'Air ada'],
-    kondisiAkhir: 'Ada Kerusakan',
-    keteranganTambahan: 'Kran no. 2 dari kiri dol / bocor air menetes terus, perlu diganti seal atau kran baru oleh tim sarpras.',
-    fotoBukti: [
-      createSamplePhotoUrl('T WUDHU KLINIK', 'PERHATIAN: Kran Bocor - IDAY M YUSUF', '#dc2626'),
-    ],
-    statusVerifikasi: 'Perlu Perbaikan',
-    catatanSupervisor: 'Sudah diteruskan ke teknisi sarpras untuk penggantian kran.',
-    diverifikasiOleh: 'Superadmin Operasional SCB',
-    diverifikasiPada: '09:00',
-  },
-  {
-    id: 'rep-4',
-    tanggal: getTodayDateString(),
-    waktu: '09:15',
-    timestamp: Date.now() - 1800000,
-    petugasId: 'user-officer-3',
-    namaPetugas: 'WAHYUDIN',
-    area: 'KM KELAS PUTRA',
-    isAreaOther: false,
-    checklist: ['Kloset Bersih', 'Kran Ada', 'Air ada', 'Gayung Ada'],
-    kondisiAkhir: 'Perlu Pengecekan Ulang',
-    keteranganTambahan: 'Ember plastik retak di bagian samping bawah, sabun cuci tangan habis.',
-    fotoBukti: [
-      createSamplePhotoUrl('KM KELAS PUTRA', 'Perlu Pengecekan: Ember Retak - WAHYUDIN', '#d97706'),
-    ],
-    statusVerifikasi: 'Menunggu',
-  },
-];
+export const INITIAL_REPORTS: CleaningReport[] = [];
 
 // User storage
 export function getUsers(): User[] {
@@ -350,26 +275,32 @@ function safelySaveToLocalStorage(reports: CleaningReport[]): void {
 }
 
 export function getReports(): CleaningReport[] {
-  // If memory cache is populated, return it immediately
-  if (inMemoryReports && inMemoryReports.length > 0) {
+  // If memory cache is populated, filter out legacy demo reports and return
+  if (inMemoryReports !== null) {
+    const nonDemo = inMemoryReports.filter((r) => !['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(r.id));
+    if (nonDemo.length !== inMemoryReports.length) {
+      inMemoryReports = nonDemo;
+      safelySaveToLocalStorage(nonDemo);
+      saveReportsToIDB(nonDemo).catch(() => {});
+    }
     return inMemoryReports;
   }
 
   try {
     const raw = localStorage.getItem(STORAGE_REPORTS_KEY);
     if (!raw) {
-      inMemoryReports = [...INITIAL_REPORTS];
-      safelySaveToLocalStorage(INITIAL_REPORTS);
-      saveReportsToIDB(INITIAL_REPORTS).catch(() => {});
+      inMemoryReports = [];
       return inMemoryReports;
     }
     const parsed = JSON.parse(raw);
-    const result = Array.isArray(parsed) && parsed.length > 0 ? parsed : INITIAL_REPORTS;
+    const result: CleaningReport[] = Array.isArray(parsed)
+      ? parsed.filter((r: CleaningReport) => !['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(r.id))
+      : [];
     inMemoryReports = [...result];
     return inMemoryReports;
   } catch (e) {
-    console.warn('Fallback loading reports from initial data', e);
-    inMemoryReports = [...INITIAL_REPORTS];
+    console.warn('Fallback loading reports', e);
+    inMemoryReports = [];
     return inMemoryReports;
   }
 }

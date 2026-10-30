@@ -64,26 +64,17 @@ export function subscribeReports(
     async (snapshot) => {
       if (snapshot.empty && !isReportsSeeded) {
         isReportsSeeded = true;
-        // Check if there are local reports to seed Firestore with
-        const localReports = getReportsFromStorage();
-        const initialToSeed = localReports && localReports.length > 0 ? localReports : INITIAL_REPORTS;
-        
-        try {
-          const batch = writeBatch(db);
-          for (const rep of initialToSeed) {
-            const docRef = doc(db, REPORTS_COLLECTION, rep.id);
-            batch.set(docRef, sanitizeForFirestore(rep));
-          }
-          await batch.commit();
-        } catch (e) {
-          console.warn('Could not auto-seed reports to Firestore:', e);
-        }
         return;
       }
 
       const reportsList: CleaningReport[] = [];
       snapshot.forEach((docSnap) => {
-        reportsList.push(docSnap.data() as CleaningReport);
+        if (['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(docSnap.id)) {
+          // Delete legacy demo reports from Firestore
+          deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id)).catch(() => {});
+        } else {
+          reportsList.push(docSnap.data() as CleaningReport);
+        }
       });
 
       // Sort by timestamp descending (newest first)

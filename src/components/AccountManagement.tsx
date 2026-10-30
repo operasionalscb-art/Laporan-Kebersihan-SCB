@@ -160,11 +160,11 @@ export const ROLE_PERMISSIONS_DATA: RolePermissionFeature[] = [
   {
     id: 'login_pin',
     category: 'Pengelolaan Akun',
-    name: 'Login Cepat PIN & Ganti Akun',
-    description: 'Masuk dengan 4 digit PIN petugas di ponsel lapangan tanpa repot mengetik email panjang.',
-    user: { allowed: true, label: 'Diizinkan', note: 'Login cepat khusus petugas lapangan' },
-    supervisor: { allowed: true, label: 'Diizinkan', note: 'Dapat menggunakan PIN cepat atau Sandi' },
-    admin: { allowed: true, label: 'Diizinkan', note: 'Akses login cepat atau email superadmin' },
+    name: 'Pilih Akun Langsung & Masuk Cepat',
+    description: 'Masuk langsung dengan memilih nama petugas/supervisor di perangkat tanpa repot mengetik email panjang atau PIN.',
+    user: { allowed: true, label: 'Diizinkan', note: 'Pilih nama langsung untuk petugas' },
+    supervisor: { allowed: true, label: 'Diizinkan', note: 'Pilih akun langsung atau login sandi' },
+    admin: { allowed: true, label: 'Diizinkan', note: 'Akses penuh akun operasional' },
   },
   {
     id: 'access_account_menu',
@@ -179,7 +179,7 @@ export const ROLE_PERMISSIONS_DATA: RolePermissionFeature[] = [
     id: 'add_user',
     category: 'Pengelolaan Akun',
     name: 'Tambah Akun Petugas & Supervisor Baru',
-    description: 'Mendaftarkan petugas kebersihan baru, menentukan username login, PIN, peran, dan nomor WhatsApp.',
+    description: 'Mendaftarkan petugas kebersihan baru, menentukan username login, peran, dan nomor WhatsApp.',
     user: { allowed: false, label: 'Tidak Diizinkan', note: 'Hanya Super Admin yang berwenang' },
     supervisor: { allowed: false, label: 'Tidak Diizinkan', note: 'Hanya Super Admin yang berwenang' },
     admin: { allowed: true, label: 'Diizinkan', note: 'Kelola seluruh daftar personil' },
@@ -187,11 +187,11 @@ export const ROLE_PERMISSIONS_DATA: RolePermissionFeature[] = [
   {
     id: 'edit_reset_pin',
     category: 'Pengelolaan Akun',
-    name: 'Edit Data Pengguna & Reset PIN/Sandi',
-    description: 'Mengubah nama personil, mengganti peran (role), mereset PIN yang terlupa, dan memperbarui kontak.',
-    user: { allowed: 'partial', label: 'PIN Pribadi', note: 'Hanya mengetahui PIN akunnya sendiri' },
-    supervisor: { allowed: 'partial', label: 'PIN Pribadi', note: 'Hanya mengetahui PIN akunnya sendiri' },
-    admin: { allowed: true, label: 'Bebas Reset', note: 'Dapat mereset PIN/sandi semua akun' },
+    name: 'Edit Data Pengguna & Pengaturan Akun',
+    description: 'Mengubah nama personil, mengganti peran (role), memperbarui kontak dan sandi pengelola.',
+    user: { allowed: 'partial', label: 'Profil Sendiri', note: 'Hanya melihat profil akunnya sendiri' },
+    supervisor: { allowed: 'partial', label: 'Profil Sendiri', note: 'Hanya melihat profil akunnya sendiri' },
+    admin: { allowed: true, label: 'Bebas Edit', note: 'Dapat mengelola semua akun' },
   },
   {
     id: 'toggle_user_status',
@@ -467,8 +467,8 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
               <p className="text-emerald-800">
                 Akun bawaan: <strong>IDAY M YUSUF</strong> (username: <code>iday</code>),{' '}
                 <strong>ABDUL KODIR</strong> (username: <code>kodir</code>), dan{' '}
-                <strong>WAHYUDIN</strong> (username: <code>wahyudin</code>) dengan PIN standar <code>1234</code>.
-                Petugas dapat langsung memilih akun untuk input laporan kebersihan harian.
+                <strong>WAHYUDIN</strong> (username: <code>wahyudin</code>).
+                Petugas dan Supervisor dapat langsung memilih akun tanpa perlu PIN.
               </p>
             </div>
           </div>
@@ -500,7 +500,6 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                     <th className="py-3 px-4">Nama Lengkap</th>
                     <th className="py-3 px-4">Username / Email</th>
                     <th className="py-3 px-4">Peran (Role)</th>
-                    <th className="py-3 px-4">PIN / Sandi</th>
                     <th className="py-3 px-4">Kontak / No WA</th>
                     <th className="py-3 px-4">Status</th>
                     <th className="py-3 px-4 text-right">Aksi</th>
@@ -557,10 +556,6 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                           >
                             {isSuper ? 'Super Admin' : user.role === 'supervisor' ? 'Supervisor' : 'Petugas Kebersihan'}
                           </span>
-                        </td>
-
-                        <td className="py-3.5 px-4 whitespace-nowrap font-mono text-xs text-slate-600">
-                          PIN: <span className="font-bold text-slate-900 bg-slate-100 px-1.5 py-0.5 rounded">{user.pin}</span>
                         </td>
 
                         <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
@@ -945,7 +940,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-500 gap-2">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                <span>Seluruh hak akses dikontrol secara otomatis dan terlindungi oleh sistem enkripsi PIN/Sandi.</span>
+                <span>Seluruh hak akses dikontrol secara otomatis sesuai peran (Petugas, Supervisor, Super Admin).</span>
               </div>
               <button
                 type="button"
@@ -1014,16 +1009,14 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    PIN Cepat (4-6 digit) <span className="text-rose-600">*</span>
+                    Kata Sandi (Opsional)
                   </label>
                   <input
-                    type="text"
-                    required
-                    maxLength={6}
-                    placeholder="1234"
-                    value={formData.pin}
-                    onChange={(e) => setFormData({ ...formData, pin: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    type="password"
+                    placeholder="Sandi (opsional)"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
               </div>

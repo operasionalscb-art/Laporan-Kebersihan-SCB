@@ -38,14 +38,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         setTab(initialTab);
       }
       setPassword('');
-      setPinInput('');
       setErrorMessage('');
     }
   }, [isOpen, initialTab]);
   
   // Quick Petugas State
   const [selectedPetugasId, setSelectedPetugasId] = useState<string>('');
-  const [pinInput, setPinInput] = useState<string>('');
 
   // Email / Password State
   const [identifier, setIdentifier] = useState<string>('');
@@ -59,8 +57,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
   const handleClose = () => {
     setPassword('');
-    setPinInput('');
     setErrorMessage('');
+    onClose();
+  };
+
+  const handleDirectLogin = (user: User) => {
+    setErrorMessage('');
+    setPassword('');
+    onLoginSuccess(user);
     onClose();
   };
 
@@ -79,15 +83,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
-    // Check PIN
-    const expectedPin = selectedUser.pin || '1234';
-    if (pinInput !== expectedPin && pinInput !== '123456') {
-      setErrorMessage('PIN yang Anda masukkan salah. Silakan periksa kembali.');
-      return;
-    }
-
     setPassword('');
-    setPinInput('');
     onLoginSuccess(selectedUser);
     onClose();
   };
@@ -112,7 +108,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
 
     setPassword('');
-    setPinInput('');
     onLoginSuccess(foundUser);
     onClose();
   };
@@ -145,7 +140,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             onClick={() => {
               setTab('quick_petugas');
               setPassword('');
-              setPinInput('');
               setErrorMessage('');
             }}
             className={`flex-1 py-3 text-center transition-all ${
@@ -154,13 +148,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            Petugas & Supervisor (PIN Cepat)
+            Petugas & Supervisor (Pilih Akun)
           </button>
           <button
             onClick={() => {
               setTab('email_admin');
               setPassword('');
-              setPinInput('');
               setErrorMessage('');
             }}
             className={`flex-1 py-3 text-center transition-all ${
@@ -169,7 +162,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            Email / Sandi (Superadmin & Pengelola)
+            Email / Sandi (Superadmin)
           </button>
         </div>
 
@@ -191,23 +184,30 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           )}
 
           {tab === 'quick_petugas' ? (
-            /* TAB 1: QUICK PETUGAS & SUPERVISOR */
+            /* TAB 1: QUICK PETUGAS & SUPERVISOR WITHOUT PIN */
             <form onSubmit={handleQuickLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Pilih Nama Akun Petugas / Supervisor:
-                </label>
-                <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Pilih Nama Akun Anda:
+                  </label>
+                  <span className="text-[11px] text-emerald-700 font-medium">
+                    1-Klik Masuk Langsung
+                  </span>
+                </div>
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                   {quickUsers.map((u) => {
                     const isSupervisor = u.role === 'supervisor';
+                    const isSelected = selectedPetugasId === u.id;
                     return (
-                      <label
+                      <div
                         key={u.id}
+                        onClick={() => setSelectedPetugasId(u.id)}
                         className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer text-xs transition-all ${
-                          selectedPetugasId === u.id
+                          isSelected
                             ? isSupervisor
-                              ? 'border-blue-600 bg-blue-50 text-blue-950 font-bold shadow-xs'
-                              : 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold shadow-xs'
+                              ? 'border-blue-600 bg-blue-50/70 text-blue-950 font-bold shadow-xs'
+                              : 'border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold shadow-xs'
                             : 'border-slate-200 hover:bg-slate-50 text-slate-700'
                         }`}
                       >
@@ -215,13 +215,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                           <input
                             type="radio"
                             name="selected_officer"
-                            checked={selectedPetugasId === u.id}
+                            checked={isSelected}
                             onChange={() => setSelectedPetugasId(u.id)}
-                            className="w-4 h-4 text-emerald-600 border-slate-300"
+                            className="w-4 h-4 text-emerald-600 border-slate-300 cursor-pointer"
                           />
                           <div>
                             <div className="flex items-center gap-1.5">
-                              <span className="font-bold">{u.name}</span>
+                              <span className="font-bold text-slate-900">{u.name}</span>
                               <span
                                 className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full ${
                                   isSupervisor
@@ -232,34 +232,34 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                                 {isSupervisor ? 'Supervisor (Verifikator)' : 'Petugas'}
                               </span>
                             </div>
-                            <span className="text-[10px] text-slate-400 font-mono">@{u.username}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">@{u.username}</span>
                           </div>
                         </div>
-                        <span className="text-[10px] text-slate-400 font-mono">PIN: 1234</span>
-                      </label>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDirectLogin(u);
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-xs ${
+                            isSupervisor
+                              ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                              : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                          }`}
+                        >
+                          Masuk
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Masukkan PIN (4-digit):
-                </label>
-                <input
-                  type="password"
-                  maxLength={6}
-                  placeholder="Ketik PIN akun Anda (Standar: 1234)"
-                  value={pinInput}
-                  onChange={(e) => setPinInput(e.target.value)}
-                  className="w-full px-4 py-2.5 text-center font-mono tracking-widest text-lg border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  autoFocus
-                />
-              </div>
-
               <button
                 type="submit"
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl shadow-sm transition-all"
+                disabled={!selectedPetugasId}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm rounded-xl shadow-sm transition-all"
               >
                 Masuk ke Akun Terpilih
               </button>
