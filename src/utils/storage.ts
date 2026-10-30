@@ -419,9 +419,16 @@ export function getCurrentUser(): User | null {
   try {
     const raw = localStorage.getItem(STORAGE_CURRENT_USER_KEY);
     if (raw && raw !== 'null' && raw !== 'undefined') {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.id) return parsed;
     }
-    // Default to guest (null) so non-users/guests can only view dashboard
+    // Default to Supervisor account so the user has immediate supervisor access without login popups or email verification!
+    const users = getUsers();
+    const supervisor = users.find((u) => u.role === 'supervisor') || users[1] || users[0];
+    if (supervisor) {
+      localStorage.setItem(STORAGE_CURRENT_USER_KEY, JSON.stringify(supervisor));
+      return supervisor;
+    }
     return null;
   } catch (e) {
     return null;

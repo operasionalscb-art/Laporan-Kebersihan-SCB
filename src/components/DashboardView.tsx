@@ -1407,53 +1407,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   )}
                 </div>
 
-                {/* Verifier Identity Indicator / Registered Account Selection */}
-                {isSupervisorOrAdmin && currentUser ? (
-                  <div className="flex items-center justify-between p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-950">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
-                        <CheckCircle2 className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider block">
-                          Level Akun Berwenang: Supervisor Aktif
-                        </span>
-                        <span>
-                          <strong>{currentUser.name}</strong> ({currentUser.role === 'superadmin' ? 'Super Admin' : 'Supervisor Sarpras SCB'})
-                        </span>
-                      </div>
+                {/* Verifier Identity Indicator - Direct Supervisor Authority */}
+                <div className="flex items-center justify-between p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-950">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                      <CheckCircle2 className="w-4 h-4" />
                     </div>
-                    <span className="text-[10px] font-bold bg-emerald-600 text-white px-2.5 py-1 rounded-full shadow-xs">
-                      Persetujuan Siap
-                    </span>
-                  </div>
-                ) : (
-                  <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl text-xs space-y-2">
-                    <div className="flex items-center justify-between text-blue-900 font-bold">
-                      <span className="flex items-center gap-1.5">
-                        <UserCheck className="w-4 h-4 text-blue-600" />
-                        Persetujuan Laporan: Khusus Akun Level Supervisor
+                    <div>
+                      <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider block">
+                        Persetujuan Langsung Level Supervisor (Tanpa Verifikasi Email / Login)
                       </span>
-                      <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-semibold">
-                        Wewenang Supervisor
+                      <span>
+                        <strong>{currentUser?.name || registeredSupervisors[0]?.name || 'SUPERVISOR SARPRAS SCB'}</strong> (Supervisor Sarpras SCB)
                       </span>
                     </div>
-                    <p className="text-[11px] text-blue-800 leading-relaxed">
-                      Persetujuan dan evaluasi laporan adalah wewenang resmi level <strong>Supervisor Sarpras</strong>. Pilih akun supervisor terdaftar untuk mengesahkan laporan:
-                    </p>
-                    <select
-                      value={selectedModalSupervisorId || (registeredSupervisors[0]?.id || '')}
-                      onChange={(e) => setSelectedModalSupervisorId(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-white border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-semibold text-slate-800"
-                    >
-                      {registeredSupervisors.map((sup) => (
-                        <option key={sup.id} value={sup.id}>
-                          {sup.name} ({sup.role === 'superadmin' ? 'Superadmin' : 'Supervisor'}) • {sup.email}
-                        </option>
-                      ))}
-                    </select>
                   </div>
-                )}
+                  <span className="text-[10px] font-bold bg-emerald-600 text-white px-2.5 py-1 rounded-full shadow-xs">
+                    Wewenang Langsung
+                  </span>
+                </div>
 
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">

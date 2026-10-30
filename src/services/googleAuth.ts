@@ -431,19 +431,9 @@ export const getGoogleAccessToken = async (): Promise<string | null> => {
     return saved;
   }
 
-  // If connection is retained and remembered, attempt silent token renewal via GIS
-  if (isGoogleDriveLinked()) {
-    try {
-      const res = await signInWithGIS(true);
-      if (res?.accessToken) {
-        cachedAccessToken = res.accessToken;
-        return res.accessToken;
-      }
-    } catch (e) {
-      console.warn('Silent token renewal via GIS was not possible:', e);
-    }
-  }
-
+  // IMPORTANT: NEVER call signInWithGIS or requestAccessToken automatically in background!
+  // Google Identity Services (GIS) opens a popup window / blank tab when requesting tokens.
+  // Token requests must ONLY be triggered when user explicitly clicks "Hubungkan Akun Google" in settings.
   return null;
 };
 
