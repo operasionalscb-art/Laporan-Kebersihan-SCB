@@ -27,7 +27,17 @@ import {
   ExternalLink,
   Lock,
   UserCheck,
-  CheckCheck
+  CheckCheck,
+  TrendingUp,
+  BarChart2,
+  Sun,
+  Moon,
+  Award,
+  Activity,
+  AlertOctagon,
+  ThumbsUp,
+  Layers,
+  ArrowRight
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -82,6 +92,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const todayStr = getTodayDateString();
 
+  // Helper to determine if an issue report has received follow-up or resolution
+  const isReportFollowedUp = (report: CleaningReport, allReports: CleaningReport[]) => {
+    // 1. If supervisor already approved / marked as resolved
+    if (report.statusVerifikasi === 'Disetujui') {
+      return true;
+    }
+
+    // 2. If there is a newer report for the exact same area that is 'Bersih', it has been resolved
+    const newerCleanReport = allReports.find((r) => {
+      const isSameArea = r.isAreaOther
+        ? (r.areaCustom || '').trim().toLowerCase() === (report.areaCustom || '').trim().toLowerCase()
+        : r.area === report.area;
+      return (
+        isSameArea &&
+        r.id !== report.id &&
+        (r.timestamp > report.timestamp || (r.tanggal === report.tanggal && r.waktu > report.waktu)) &&
+        r.kondisiAkhir === 'Bersih'
+      );
+    });
+
+    return !!newerCleanReport;
+  };
+
+  // Quick category tag filter
+  const [quickTagFilter, setQuickTagFilter] = useState<'all' | 'unresolved' | 'pending_approval' | 'clean' | 'damage'>('all');
+
   // Supervisor / Admin Detection
   const isSupervisorOrAdmin = useMemo(() => {
     return (
@@ -127,6 +163,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return { pending, approved, needsRepair };
   }, [reports]);
 
+  // Operational reports for today
+  const todayReports = useMemo(() => {
+    return reports.filter((r) => r.tanggal === todayStr);
+  }, [reports, todayStr]);
+
+  // Unresolved critical findings needing follow-up
+  const unresolvedIssuesList = useMemo(() => {
+    return reports.filter(
+      (r) =>
+        (r.kondisiAkhir === 'Ada Kerusakan' || r.kondisiAkhir === 'Perlu Pengecekan Ulang') &&
+        !isReportFollowedUp(r, reports)
+    );
+  }, [reports]);
+
   // Filtered reports logic
   const filteredReports = useMemo(() => {
     return reports.filter((r) => {
@@ -139,6 +189,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (dateFilter === 'month') {
         const diffDays = (Date.now() - r.timestamp) / (1000 * 3600 * 24);
         if (diffDays > 30) return false;
+      }
+
+      // Quick Tag Filter
+      if (quickTagFilter === 'unresolved' && !(r.kondisiAkhir !== 'Bersih' && !isReportFollowedUp(r, reports))) {
+        return false;
+      }
+      if (quickTagFilter === 'pending_approval' && r.statusVerifikasi !== 'Menunggu') {
+        return false;
+      }
+      if (quickTagFilter === 'clean' && r.kondisiAkhir !== 'Bersih') {
+        return false;
+      }
+      if (quickTagFilter === 'damage' && r.kondisiAkhir !== 'Ada Kerusakan') {
+        return false;
       }
 
       // Officer filter
@@ -175,36 +239,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       return true;
     });
-  }, [reports, dateFilter, selectedOfficer, selectedArea, selectedKondisi, selectedStatusVerifikasi, searchQuery, todayStr]);
+  }, [
+    reports,
+    dateFilter,
+    quickTagFilter,
+    selectedOfficer,
+    selectedArea,
+    selectedKondisi,
+    selectedStatusVerifikasi,
+    searchQuery,
+    todayStr,
+  ]);
 
   // Operational KPI calculations for today
-  const todayReports = useMemo(() => {
-    return reports.filter((r) => r.tanggal === todayStr);
-  }, [reports, todayStr]);
-
-  // Helper to determine if an issue report has received follow-up or resolution
-  const isReportFollowedUp = (report: CleaningReport, allReports: CleaningReport[]) => {
-    // 1. If supervisor already approved / marked as resolved
-    if (report.statusVerifikasi === 'Disetujui') {
-      return true;
-    }
-
-    // 2. If there is a newer report for the exact same area that is 'Bersih', it has been resolved
-    const newerCleanReport = allReports.find((r) => {
-      const isSameArea = r.isAreaOther
-        ? (r.areaCustom || '').trim().toLowerCase() === (report.areaCustom || '').trim().toLowerCase()
-        : r.area === report.area;
-      return (
-        isSameArea &&
-        r.id !== report.id &&
-        (r.timestamp > report.timestamp || (r.tanggal === report.tanggal && r.waktu > report.waktu)) &&
-        r.kondisiAkhir === 'Bersih'
-      );
-    });
-
-    return !!newerCleanReport;
-  };
-
   const stats = useMemo(() => {
     const totalToday = todayReports.length;
     const cleanCount = todayReports.filter((r) => r.kondisiAkhir === 'Bersih').length;
@@ -239,6 +286,86 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       cleanPercentage,
     };
   }, [reports, todayReports]);
+
+  // Shift Monitoring for today (Pagi: 06:00-10:59, Siang: 11:00-14:59, Sore/Malam: 15:00-21:00)
+  const shiftStats = useMemo(() => {
+    let pagi = 0;
+    let siang = 0;
+    let sore = 0;
+
+    todayReports.forEach((r) => {
+      const hour = parseInt((r.waktu || '00:00').split(':')[0], 10);
+      if (hour < 11) pagi++;
+      else if (hour < 15) siang++;
+      else sore++;
+    });
+
+    return { pagi, siang, sore };
+  }, [todayReports]);
+
+  // Field Officer Daily Summary & Activity
+  const officerStats = useMemo(() => {
+    const map = new Map<string, { total: number; clean: number; issues: number; lastTime: string }>();
+
+    // Standard officers list
+    const names = ['IDAY M YUSUF', 'ABDUL KODIR', 'WAHYUDIN'];
+    names.forEach((n) => {
+      map.set(n, { total: 0, clean: 0, issues: 0, lastTime: '-' });
+    });
+
+    todayReports.forEach((r) => {
+      const name = r.namaPetugas;
+      const cur = map.get(name) || { total: 0, clean: 0, issues: 0, lastTime: '-' };
+      cur.total += 1;
+      if (r.kondisiAkhir === 'Bersih') cur.clean += 1;
+      else cur.issues += 1;
+      if (cur.lastTime === '-' || r.waktu > cur.lastTime) {
+        cur.lastTime = r.waktu;
+      }
+      map.set(name, cur);
+    });
+
+    return Array.from(map.entries()).map(([name, data]) => ({
+      name,
+      ...data,
+      cleanRate: data.total > 0 ? Math.round((data.clean / data.total) * 100) : 0,
+    }));
+  }, [todayReports]);
+
+  // Cleanliness quality rating badge
+  const cleanlinessRating = useMemo(() => {
+    const rate = stats.cleanPercentage;
+    if (stats.totalToday === 0) {
+      return {
+        label: 'Menunggu Data Hari Ini',
+        subtext: 'Belum ada laporan checklist yang masuk hari ini',
+        badgeClass: 'bg-slate-100 text-slate-700 border-slate-200',
+        barColor: 'bg-slate-400',
+      };
+    }
+    if (rate >= 85) {
+      return {
+        label: 'Sangat Prima & Higienis',
+        subtext: `${stats.cleanCount} dari ${stats.totalToday} inspeksi dalam kondisi bersih sempurna`,
+        badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+        barColor: 'bg-emerald-500',
+      };
+    }
+    if (rate >= 65) {
+      return {
+        label: 'Standar Terpenuhi',
+        subtext: 'Mayoritas area bersih dengan beberapa catatan ringan',
+        badgeClass: 'bg-blue-100 text-blue-800 border-blue-300',
+        barColor: 'bg-blue-500',
+      };
+    }
+    return {
+      label: 'Perlu Perhatian & Follow-up',
+      subtext: 'Terdapat temuan kendala yang perlu diselesaikan petugas',
+      badgeClass: 'bg-amber-100 text-amber-900 border-amber-300',
+      barColor: 'bg-amber-500',
+    };
+  }, [stats]);
 
   // Area coverage status for today
   const areaCoverage = useMemo(() => {
@@ -665,6 +792,331 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
+      {/* EXECUTIVE INTELLIGENCE & SHIFT MONITORING (Makes reading dashboard status effortless) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Metric 1: Cleanliness Quality & Health Index */}
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-emerald-600" />
+                Indeks Mutu Sanitasi
+              </span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${cleanlinessRating.badgeClass}`}>
+                {cleanlinessRating.label}
+              </span>
+            </div>
+
+            <div className="flex items-baseline gap-2 mt-2">
+              <span className="text-3xl font-black text-slate-900 tracking-tight">
+                {stats.cleanPercentage}%
+              </span>
+              <span className="text-xs text-slate-500 font-medium">tingkat kebersihan hari ini</span>
+            </div>
+
+            {/* Stacked Quality Bar */}
+            <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden mt-3 flex">
+              <div
+                className="bg-emerald-500 h-full transition-all duration-500"
+                style={{ width: `${stats.totalToday > 0 ? (stats.cleanCount / stats.totalToday) * 100 : 0}%` }}
+                title={`Bersih: ${stats.cleanCount}`}
+              />
+              <div
+                className="bg-amber-400 h-full transition-all duration-500"
+                style={{ width: `${stats.totalToday > 0 ? (stats.reviewCount / stats.totalToday) * 100 : 0}%` }}
+                title={`Perlu Cek: ${stats.reviewCount}`}
+              />
+              <div
+                className="bg-rose-500 h-full transition-all duration-500"
+                style={{ width: `${stats.totalToday > 0 ? (stats.damageCount / stats.totalToday) * 100 : 0}%` }}
+                title={`Kerusakan: ${stats.damageCount}`}
+              />
+            </div>
+          </div>
+
+          <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" /> {stats.cleanCount} Bersih
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-amber-400" /> {stats.reviewCount} Cek Ulang
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-rose-500" /> {stats.damageCount} Rusak
+            </span>
+          </div>
+        </div>
+
+        {/* Metric 2: Shift Monitoring & Inspection Frequency */}
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <Clock className="w-4 h-4 text-blue-600" />
+                Siklus Shift Pembersihan
+              </span>
+              <span className="text-[10px] text-slate-400 font-medium">Hari Ini</span>
+            </div>
+
+            <p className="text-xs text-slate-600 mb-3">
+              Distribusi inspeksi berdasarkan jam kerja operasional petugas:
+            </p>
+
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
+                <div className="flex items-center justify-center text-amber-500 mb-1">
+                  <Sun className="w-3.5 h-3.5" />
+                </div>
+                <div className="text-base font-black text-slate-900">{shiftStats.pagi}</div>
+                <div className="text-[10px] text-slate-500 font-medium">Pagi (06-11)</div>
+              </div>
+
+              <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
+                <div className="flex items-center justify-center text-orange-500 mb-1">
+                  <Activity className="w-3.5 h-3.5" />
+                </div>
+                <div className="text-base font-black text-slate-900">{shiftStats.siang}</div>
+                <div className="text-[10px] text-slate-500 font-medium">Siang (11-15)</div>
+              </div>
+
+              <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
+                <div className="flex items-center justify-center text-indigo-500 mb-1">
+                  <Moon className="w-3.5 h-3.5" />
+                </div>
+                <div className="text-base font-black text-slate-900">{shiftStats.sore}</div>
+                <div className="text-[10px] text-slate-500 font-medium">Sore (15-21)</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2.5 mt-2.5 border-t border-slate-100 text-[11px] text-slate-500 flex items-center justify-between">
+            <span>Total inspeksi shift:</span>
+            <strong className="text-slate-800">{stats.totalToday} kali inspeksi</strong>
+          </div>
+        </div>
+
+        {/* Metric 3: Duty Officers Workload & Presence */}
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <Award className="w-4 h-4 text-emerald-600" />
+                Aktivitas Petugas Hari Ini
+              </span>
+              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                {officerStats.filter((o) => o.total > 0).length} Petugas Aktif
+              </span>
+            </div>
+
+            <div className="space-y-2 mt-2">
+              {officerStats.map((officer) => (
+                <div
+                  key={officer.name}
+                  onClick={() => setSelectedOfficer(selectedOfficer === officer.name ? 'all' : officer.name)}
+                  className={`flex items-center justify-between p-2 rounded-xl border text-xs cursor-pointer transition-all ${
+                    selectedOfficer === officer.name
+                      ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500'
+                      : 'border-slate-100 hover:bg-slate-50'
+                  }`}
+                  title={`Klik untuk filter laporan oleh ${officer.name}`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-[10px] shrink-0">
+                      {officer.name.charAt(0)}
+                    </div>
+                    <span className="font-bold text-slate-800 text-[11px] truncate">
+                      {officer.name}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 text-right">
+                    <span className="font-bold text-slate-900 text-xs">
+                      {officer.total} lap
+                    </span>
+                    {officer.lastTime !== '-' && (
+                      <span className="text-[10px] text-slate-400">({officer.lastTime})</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-[10px] text-slate-400 mt-2 text-center">
+            Klik nama petugas untuk memfilter laporan spesifik
+          </p>
+        </div>
+      </div>
+
+      {/* OPERATIONAL ATTENTION ALERT (Urgent Follow-Up Panel) */}
+      {unresolvedIssuesList.length > 0 ? (
+        <div className="bg-gradient-to-r from-amber-500/10 via-rose-500/10 to-amber-500/10 border-2 border-amber-400 rounded-2xl p-4 sm:p-5 shadow-xs">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs animate-pulse">
+                <AlertOctagon className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-black text-slate-900 text-sm sm:text-base">
+                    Perhatian Operasional: {unresolvedIssuesList.length} Temuan Butuh Tindak Lanjut
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-bold text-[10px] uppercase">
+                    Prioritas Tinggi
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 mt-1 max-w-2xl">
+                  Daftar laporan dengan status <em>Ada Kerusakan</em> atau <em>Perlu Pengecekan Ulang</em> yang belum mendapatkan tindak lanjut atau perbaikan tuntas oleh teknisi/petugas.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setQuickTagFilter(quickTagFilter === 'unresolved' ? 'all' : 'unresolved')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs ${
+                  quickTagFilter === 'unresolved'
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-white hover:bg-amber-50 text-amber-900 border border-amber-300'
+                }`}
+              >
+                <AlertTriangle className="w-4 h-4 text-amber-500" />
+                <span>{quickTagFilter === 'unresolved' ? 'Tampilkan Semua' : 'Fokuskan Masalah Saja'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick list of urgent locations */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 mt-3 pt-3 border-t border-amber-200">
+            {unresolvedIssuesList.slice(0, 3).map((issue) => (
+              <div
+                key={issue.id}
+                onClick={() => handleOpenDetail(issue)}
+                className="p-2.5 rounded-xl bg-white/90 border border-amber-200 text-xs cursor-pointer hover:bg-white transition-all flex items-center justify-between shadow-2xs"
+              >
+                <div className="min-w-0 pr-2">
+                  <p className="font-bold text-slate-900 truncate text-[11px]">{issue.area}</p>
+                  <p className="text-[10px] text-slate-500 truncate">{issue.namaPetugas} • {issue.waktu} WIB</p>
+                </div>
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                  issue.kondisiAkhir === 'Ada Kerusakan' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {issue.kondisiAkhir === 'Ada Kerusakan' ? 'Kerusakan' : 'Perlu Cek'}
+                </span>
+              </div>
+            ))}
+            {unresolvedIssuesList.length > 3 && (
+              <button
+                onClick={() => setQuickTagFilter('unresolved')}
+                className="p-2.5 rounded-xl bg-white/60 border border-dashed border-amber-300 text-xs font-bold text-amber-800 hover:bg-white flex items-center justify-center gap-1"
+              >
+                <span>+{unresolvedIssuesList.length - 3} temuan lainnya</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center justify-between text-xs text-emerald-900 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="font-bold text-emerald-950 text-sm">Semua Fasilitas Terpantau Aman & Siap Digunakan</p>
+              <p className="text-emerald-700 text-xs">
+                Tidak ada temuan kerusakan aktif yang tertunda. Sanitasi lingkungan berada dalam standar operasional SCB.
+              </p>
+            </div>
+          </div>
+          <span className="hidden sm:inline-block px-3 py-1 bg-emerald-100 text-emerald-800 font-bold rounded-full text-[10px]">
+            100% Terkendali
+          </span>
+        </div>
+      )}
+
+      {/* QUICK 1-CLICK CATEGORY TABS & COLOR LEGEND */}
+      <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          {/* Quick Pills */}
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="font-bold text-slate-500 mr-1 text-[11px] uppercase tracking-wider">
+              Filter Cepat:
+            </span>
+            <button
+              onClick={() => setQuickTagFilter('all')}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all ${
+                quickTagFilter === 'all'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              Semua ({reports.length})
+            </button>
+            <button
+              onClick={() => setQuickTagFilter('unresolved')}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
+                quickTagFilter === 'unresolved'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>Butuh Tindak Lanjut ({unresolvedIssuesList.length})</span>
+            </button>
+            <button
+              onClick={() => setQuickTagFilter('pending_approval')}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
+                quickTagFilter === 'pending_approval'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-blue-50 text-blue-800 hover:bg-blue-100 border border-blue-200'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>Menunggu Verifikasi ({verificationCounts.pending})</span>
+            </button>
+            <button
+              onClick={() => setQuickTagFilter('clean')}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
+                quickTagFilter === 'clean'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200'
+              }`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Kondisi Bersih ({reports.filter((r) => r.kondisiAkhir === 'Bersih').length})</span>
+            </button>
+            <button
+              onClick={() => setQuickTagFilter('damage')}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
+                quickTagFilter === 'damage'
+                  ? 'bg-rose-600 text-white shadow-xs'
+                  : 'bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200'
+              }`}
+            >
+              <Wrench className="w-3.5 h-3.5" />
+              <span>Kerusakan ({reports.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length})</span>
+            </button>
+          </div>
+
+          {/* Color Legend (Guides the reader) */}
+          <div className="flex items-center gap-3 text-[11px] text-slate-500 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100 shrink-0 self-start lg:self-auto">
+            <span className="font-semibold text-slate-600">Panduan Warna:</span>
+            <span className="flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Bersih
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Perlu Cek
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Rusak
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-500" /> Terverifikasi
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Filter and Search Bar */}
       <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
         <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
@@ -928,7 +1380,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {filteredReports.map((report) => (
             <div
               key={report.id}
-              className="bg-white rounded-2xl border border-slate-200 shadow-xs hover:shadow-md transition-all overflow-hidden flex flex-col"
+              className={`bg-white rounded-2xl border border-slate-200 shadow-xs hover:shadow-md transition-all overflow-hidden flex flex-col border-l-4 ${
+                report.kondisiAkhir === 'Bersih'
+                  ? 'border-l-emerald-500'
+                  : report.kondisiAkhir === 'Ada Kerusakan'
+                  ? 'border-l-rose-500'
+                  : 'border-l-amber-500'
+              }`}
             >
               {/* Card Photo Preview */}
               <div

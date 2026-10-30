@@ -468,7 +468,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 Akun bawaan: <strong>IDAY M YUSUF</strong> (username: <code>iday</code>),{' '}
                 <strong>ABDUL KODIR</strong> (username: <code>kodir</code>), dan{' '}
                 <strong>WAHYUDIN</strong> (username: <code>wahyudin</code>).
-                Petugas dan Supervisor dapat langsung memilih akun tanpa perlu PIN.
+                Petugas dan Supervisor masuk menggunakan 4 digit PIN (standar: <strong>1234</strong>).
               </p>
             </div>
           </div>
@@ -500,6 +500,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                     <th className="py-3 px-4">Nama Lengkap</th>
                     <th className="py-3 px-4">Username / Email</th>
                     <th className="py-3 px-4">Peran (Role)</th>
+                    <th className="py-3 px-4">PIN Masuk</th>
                     <th className="py-3 px-4">Kontak / No WA</th>
                     <th className="py-3 px-4">Status</th>
                     <th className="py-3 px-4 text-right">Aksi</th>
@@ -555,6 +556,13 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                             }`}
                           >
                             {isSuper ? 'Super Admin' : user.role === 'supervisor' ? 'Supervisor' : 'Petugas Kebersihan'}
+                          </span>
+                        </td>
+
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          <span className="font-mono text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 inline-flex items-center gap-1">
+                            <Key className="w-3 h-3 text-emerald-600" />
+                            {user.pin || '1234'}
                           </span>
                         </td>
 
@@ -1157,17 +1165,35 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Kata Sandi Akun
-                </label>
-                <input
-                  type="text"
-                  placeholder="password123"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Kata Sandi Akun
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="password123"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs sm:text-sm"
+                  />
+                  <span className="text-[10px] text-slate-400">Untuk login email pengelola</span>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    PIN Masuk (4-6 Digit)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    placeholder="1234"
+                    value={formData.pin}
+                    onChange={(e) => setFormData({ ...formData, pin: e.target.value.replace(/\D/g, '') })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs sm:text-sm"
+                  />
+                  <span className="text-[10px] text-slate-400">Untuk login keypad PIN (default: 1234)</span>
+                </div>
               </div>
 
               <div className="pt-2 flex items-center justify-between border-t border-slate-100">
