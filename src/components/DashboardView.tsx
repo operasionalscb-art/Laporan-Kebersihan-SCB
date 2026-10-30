@@ -70,14 +70,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [selectedImagePreview, setSelectedImagePreview] = useState<string | null>(null);
   const [selectedModalSupervisorId, setSelectedModalSupervisorId] = useState<string>('');
 
-  // Quick Supervisor Verification Modal for non-logged-in supervisors
-  const [quickVerifyTargetReport, setQuickVerifyTargetReport] = useState<{
-    report: CleaningReport;
-    status: 'Disetujui' | 'Perlu Perbaikan';
-  } | null>(null);
-  const [selectedQuickSupervisorId, setSelectedQuickSupervisorId] = useState<string>('');
-  const [quickSupervisorPin, setQuickSupervisorPin] = useState<string>('');
-  const [quickVerifyError, setQuickVerifyError] = useState<string>('');
+  // In-place approval notification (zero popup windows)
+  const [approvalToast, setApprovalToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
+
+  const showApprovalToast = (message: string, type: 'success' | 'info' = 'success') => {
+    setApprovalToast({ message, type });
+    setTimeout(() => {
+      setApprovalToast(null);
+    }, 3500);
+  };
 
   const todayStr = getTodayDateString();
 
@@ -317,107 +318,58 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         ...updates,
       });
     }
+
+    // In-place confirmation notification without opening any popup window or modal
+    if (status === 'Disetujui') {
+      showApprovalToast(`✓ Laporan ${report.area} berhasil disetujui`);
+    } else {
+      showApprovalToast(`⚠️ Laporan ${report.area} ditandai perlu perbaikan`, 'info');
+    }
   };
 
-  // Direct 1-Click Verification Trigger from Cards / Table
+  // Direct 1-Click Approval Trigger from Cards / Table - ZERO POPUPS OR WINDOWS
   const handleDirectCardVerify = (
     report: CleaningReport,
     status: 'Disetujui' | 'Perlu Perbaikan'
   ) => {
-    if (isSupervisorOrAdmin && currentUser) {
-      // Supervisor is already logged in, directly verify without prompt!
-      handleExecuteVerification(report.id, status, undefined, currentUser.name);
-    } else {
-      // Prompt quick supervisor login modal with registered accounts
-      setQuickVerifyTargetReport({ report, status });
-      const firstSupervisor = registeredSupervisors[0];
-      if (firstSupervisor) {
-        setSelectedQuickSupervisorId(firstSupervisor.id);
-      }
-      setQuickSupervisorPin('');
-      setQuickVerifyError('');
-    }
+    // Determine verifier name from active user or default supervisor
+    const supervisorName =
+      (currentUser?.role === 'supervisor' || currentUser?.role === 'superadmin') && currentUser.name
+        ? currentUser.name
+        : registeredSupervisors[0]?.name || 'SUPERVISOR SARPRAS SCB';
+
+    // Directly execute approval in-place: no popup modal, no navigation, no new window!
+    handleExecuteVerification(report.id, status, undefined, supervisorName);
   };
 
-  // Verification triggered inside Detail Modal
+  // In-Place Verification inside Detail Modal
   const handleVerifyReport = (status: 'Disetujui' | 'Perlu Perbaikan') => {
     if (!activeReportDetail) return;
 
-    if (isSupervisorOrAdmin && currentUser) {
-      // Direct verification using logged-in supervisor account
-      handleExecuteVerification(
-        activeReportDetail.id,
-        status,
-        supervisorNoteInput.trim() || undefined,
-        currentUser.name
-      );
-    } else {
-      // Direct verification using selected registered supervisor account
-      const selectedSup =
-        registeredSupervisors.find((s) => s.id === selectedModalSupervisorId) ||
-        registeredSupervisors[0];
+    const supervisorName =
+      (currentUser?.role === 'supervisor' || currentUser?.role === 'superadmin') && currentUser.name
+        ? currentUser.name
+        : (registeredSupervisors.find((s) => s.id === selectedModalSupervisorId)?.name ||
+           registeredSupervisors[0]?.name ||
+           'SUPERVISOR SARPRAS SCB');
 
-      if (selectedSup) {
-        if (onSwitchUser) {
-          onSwitchUser(selectedSup);
-        }
-        handleExecuteVerification(
-          activeReportDetail.id,
-          status,
-          supervisorNoteInput.trim() || undefined,
-          selectedSup.name
-        );
-      } else {
-        handleExecuteVerification(
-          activeReportDetail.id,
-          status,
-          supervisorNoteInput.trim() || undefined,
-          'SUPERVISOR SARPRAS SCB'
-        );
-      }
-    }
-  };
-
-  // Confirm Quick Supervisor Verify for non-logged in users
-  const handleConfirmQuickSupervisorVerify = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!quickVerifyTargetReport) return;
-
-    const supervisorUser = registeredSupervisors.find(
-      (u) => u.id === selectedQuickSupervisorId
-    );
-
-    if (!supervisorUser) {
-      setQuickVerifyError('Pilih akun supervisor terlebih dahulu.');
-      return;
-    }
-
-    // Switch active user to supervisor so session remains active
-    if (onSwitchUser) {
-      onSwitchUser(supervisorUser);
-    }
-
-    // Execute verification immediately with supervisor name
     handleExecuteVerification(
-      quickVerifyTargetReport.report.id,
-      quickVerifyTargetReport.status,
-      undefined,
-      supervisorUser.name
+      activeReportDetail.id,
+      status,
+      supervisorNoteInput.trim() || undefined,
+      supervisorName
     );
-
-    setQuickVerifyTargetReport(null);
   };
 
-  // Bulk approve all pending reports by Supervisor
+  // Bulk approve all pending reports by Supervisor directly in-place without browser confirm popup
   const handleBulkApprovePending = () => {
     const pendingList = reports.filter((r) => r.statusVerifikasi === 'Menunggu');
     if (pendingList.length === 0) return;
 
-    if (!confirm(`Setujui sekaligus seluruh ${pendingList.length} laporan kebersihan yang menunggu persetujuan supervisor?`)) {
-      return;
-    }
-
-    const verifierName = currentUser?.name || registeredSupervisors[0]?.name || 'SUPERVISOR SARPRAS SCB';
+    const verifierName =
+      (currentUser?.role === 'supervisor' || currentUser?.role === 'superadmin') && currentUser.name
+        ? currentUser.name
+        : registeredSupervisors[0]?.name || 'SUPERVISOR SARPRAS SCB';
     const verifierRole = currentUser?.role === 'superadmin' ? 'Superadmin' : 'Supervisor';
     const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
     const nowDate = getTodayDateString();
@@ -429,6 +381,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         diverifikasiPada: `${nowDate} ${nowTime} WIB`,
       });
     }
+
+    showApprovalToast(`✓ Berhasil menyetujui sekaligus ${pendingList.length} laporan kebersihan!`);
   };
 
   const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
@@ -1547,111 +1501,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* QUICK SUPERVISOR VERIFICATION MODAL */}
-      {quickVerifyTargetReport && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="bg-gradient-to-r from-emerald-800 to-teal-800 p-4 text-white flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-emerald-300" />
-                <h3 className="font-bold text-sm sm:text-base">
-                  Persetujuan Laporan (Level Supervisor Terdaftar)
-                </h3>
-              </div>
-              <button
-                onClick={() => setQuickVerifyTargetReport(null)}
-                className="text-emerald-200 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleConfirmQuickSupervisorVerify} className="p-5 space-y-4">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
-                <div className="flex justify-between text-slate-500">
-                  <span>Area Kamar Mandi:</span>
-                  <strong className="text-slate-900">{quickVerifyTargetReport.report.area}</strong>
-                </div>
-                <div className="flex justify-between text-slate-500">
-                  <span>Petugas Pelaksana:</span>
-                  <strong className="text-slate-900">{quickVerifyTargetReport.report.namaPetugas}</strong>
-                </div>
-                <div className="flex justify-between text-slate-500">
-                  <span>Status Keputusan:</span>
-                  <span
-                    className={`font-bold px-2 py-0.5 rounded text-[11px] ${
-                      quickVerifyTargetReport.status === 'Disetujui'
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-rose-100 text-rose-800'
-                    }`}
-                  >
-                    {quickVerifyTargetReport.status === 'Disetujui'
-                      ? '✓ Setujui (Sesuai Standar)'
-                      : '⚠️ Minta Perbaikan Ulang'}
-                  </span>
-                </div>
-              </div>
-
-              {quickVerifyError && (
-                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs">
-                  {quickVerifyError}
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Pilih Akun Supervisor / Verifikator Terdaftar:
-                </label>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                  {registeredSupervisors.map((sup) => (
-                    <label
-                      key={sup.id}
-                      className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer text-xs transition-all ${
-                        selectedQuickSupervisorId === sup.id
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold'
-                          : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="radio"
-                          name="quick_supervisor"
-                          checked={selectedQuickSupervisorId === sup.id}
-                          onChange={() => setSelectedQuickSupervisorId(sup.id)}
-                          className="w-4 h-4 text-emerald-600"
-                        />
-                        <div>
-                          <div className="font-bold text-slate-900">{sup.name}</div>
-                          <div className="text-[10px] text-slate-500">
-                            {sup.email} • {sup.role === 'superadmin' ? 'Superadmin' : 'Supervisor Sarpras'}
-                          </div>
-                        </div>
-                      </div>
-                      <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-semibold">
-                        Terdaftar
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setQuickVerifyTargetReport(null)}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Sahkan Persetujuan Sebagai Supervisor</span>
-                </button>
-              </div>
-            </form>
+      {/* IN-PLACE APPROVAL TOAST NOTIFICATION (NO POPUPS) */}
+      {approvalToast && (
+        <div className="fixed top-20 right-4 sm:right-6 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="bg-emerald-900/95 backdrop-blur-md text-white text-xs font-bold px-4 py-3 rounded-xl shadow-2xl border border-emerald-500/50 flex items-center gap-2.5">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{approvalToast.message}</span>
           </div>
         </div>
       )}
