@@ -28,6 +28,7 @@ import {
 interface ReportFormProps {
   currentUser: User | null;
   officers: User[];
+  initialArea?: string | null;
   onSubmitSuccess: (newReport: CleaningReport) => void;
   onViewDashboard: () => void;
 }
@@ -35,6 +36,7 @@ interface ReportFormProps {
 export const ReportForm: React.FC<ReportFormProps> = ({
   currentUser,
   officers,
+  initialArea,
   onSubmitSuccess,
   onViewDashboard,
 }) => {
@@ -43,9 +45,16 @@ export const ReportForm: React.FC<ReportFormProps> = ({
   const [selectedPetugas, setSelectedPetugas] = useState<string>('');
   
   // 2. Area
-  const [selectedArea, setSelectedArea] = useState<string>('KM MASJID PUTRA');
+  const [selectedArea, setSelectedArea] = useState<string>(initialArea || 'KM MASJID PUTRA');
   const [isAreaOther, setIsAreaOther] = useState<boolean>(false);
   const [customAreaText, setCustomAreaText] = useState<string>('');
+
+  useEffect(() => {
+    if (initialArea) {
+      setSelectedArea(initialArea);
+      setIsAreaOther(false);
+    }
+  }, [initialArea]);
 
   // 3. Checklist
   const [selectedChecklist, setSelectedChecklist] = useState<string[]>([

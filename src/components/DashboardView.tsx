@@ -37,15 +37,43 @@ import {
   AlertOctagon,
   ThumbsUp,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Target,
+  CalendarDays,
+  BellRing,
+  Info,
+  ChevronLeft,
+  ChevronRight,
+  History,
+  CalendarRange
 } from 'lucide-react';
+
+export function formatMonthIndo(yearMonth: string): string {
+  if (!yearMonth) return '';
+  const [y, m] = yearMonth.split('-');
+  const monthNames = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ];
+  const monthIdx = parseInt(m, 10) - 1;
+  return `${monthNames[monthIdx] || m} ${y}`;
+}
+
+export function shiftMonth(yearMonth: string, delta: number): string {
+  if (!yearMonth) return '';
+  const [y, m] = yearMonth.split('-').map(Number);
+  const date = new Date(y, m - 1 + delta, 1);
+  const newY = date.getFullYear();
+  const newM = String(date.getMonth() + 1).padStart(2, '0');
+  return `${newY}-${newM}`;
+}
 
 interface DashboardViewProps {
   reports: CleaningReport[];
   currentUser: User | null;
   officers: User[];
   allUsers?: User[];
-  onAddNewReport: () => void;
+  onAddNewReport: (areaName?: string) => void;
   onUpdateReport: (id: string, updates: Partial<CleaningReport>) => void;
   onDeleteReport: (id: string) => void;
   onOpenPrintModal: (filteredReports: CleaningReport[]) => void;
@@ -66,7 +94,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onSwitchUser,
 }) => {
   // Filters state
-  const [dateFilter, setDateFilter] = useState<'today' | '7days' | 'month' | 'all'>('today');
+  const [dateFilter, setDateFilter] = useState<'today' | '7days' | 'month' | 'specific_month' | 'all'>('today');
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => getTodayDateString().slice(0, 7));
   const [selectedOfficer, setSelectedOfficer] = useState<string>('all');
   const [selectedArea, setSelectedArea] = useState<string>('all');
   const [selectedKondisi, setSelectedKondisi] = useState<string>('all');
@@ -74,11 +103,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
 
+  // Target chart view mode: 'weekly' (Senin s/d Sabtu) or 'monthly' (Histori Bulanan)
+  const [targetChartView, setTargetChartView] = useState<'weekly' | 'monthly'>('weekly');
+
   // Detail Modal
   const [activeReportDetail, setActiveReportDetail] = useState<CleaningReport | null>(null);
   const [supervisorNoteInput, setSupervisorNoteInput] = useState<string>('');
   const [selectedImagePreview, setSelectedImagePreview] = useState<string | null>(null);
   const [selectedModalSupervisorId, setSelectedModalSupervisorId] = useState<string>('');
+
+  // Target chart inspected date (null = today)
+  const [inspectedTargetDate, setInspectedTargetDate] = useState<string | null>(null);
 
   // In-place approval notification (zero popup windows)
   const [approvalToast, setApprovalToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
@@ -187,8 +222,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         if (diffDays > 7) return false;
       }
       if (dateFilter === 'month') {
-        const diffDays = (Date.now() - r.timestamp) / (1000 * 3600 * 24);
-        if (diffDays > 30) return false;
+        const currentMonthPrefix = todayStr.slice(0, 7);
+        if (!r.tanggal || !r.tanggal.startsWith(currentMonthPrefix)) return false;
+      }
+      if (dateFilter === 'specific_month') {
+        if (!r.tanggal || !r.tanggal.startsWith(selectedMonth)) return false;
       }
 
       // Quick Tag Filter
@@ -242,6 +280,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [
     reports,
     dateFilter,
+    selectedMonth,
     quickTagFilter,
     selectedOfficer,
     selectedArea,
@@ -367,22 +406,336 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
   }, [stats]);
 
-  // Area coverage status for today
-  const areaCoverage = useMemo(() => {
-    return INITIAL_AREAS.map((areaName) => {
-      const reportsForArea = todayReports.filter((r) => r.area === areaName);
-      const isCleaned = reportsForArea.length > 0;
-      const latestReport = reportsForArea[0]; // sorted newest first
+  // SCB Operational Schedule: Senin s/d Sabtu (Monday through Saturday)
+  const operationalSchedule = useMemo(() => {
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0 = Ahad/Minggu, 1 = Senin, ..., 6 = Sabtu
+    const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6; // Senin s/d Sabtu
+    const dayNames = ['Ahad (Minggu)', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    return {
+      dayOfWeek,
+      isWorkingDay,
+      dayName: dayNames[dayOfWeek],
+      scheduleRuleText: 'Senin s/d Sabtu • Target 100% Seluruh Ruangan Dilaporkan Setiap Hari',
+    };
+  }, []);
+
+  // Today's Room Target Status specifically for the high-priority Alert Banner
+  const todayRoomTargetStatus = useMemo(() => {
+    const totalTarget = INITIAL_AREAS.length; // 6 standard rooms
+    const reportedRooms: Array<{
+      areaName: string;
+      latestReport: CleaningReport;
+      totalToday: number;
+    }> = [];
+    const unreportedRooms: string[] = [];
+
+    INITIAL_AREAS.forEach((areaName) => {
+      const areaReps = todayReports.filter((r) => r.area === areaName);
+      if (areaReps.length > 0) {
+        reportedRooms.push({
+          areaName,
+          latestReport: areaReps[0],
+          totalToday: areaReps.length,
+        });
+      } else {
+        unreportedRooms.push(areaName);
+      }
+    });
+
+    const reportedCount = reportedRooms.length;
+    const percentage = Math.round((reportedCount / totalTarget) * 100);
+    const isTargetAchieved = reportedCount === totalTarget;
+
+    return {
+      totalTarget,
+      reportedCount,
+      unreportedCount: unreportedRooms.length,
+      percentage,
+      isTargetAchieved,
+      reportedRooms,
+      unreportedRooms,
+    };
+  }, [todayReports]);
+
+  // Active target date being inspected (defaults to today)
+  const activeTargetDate = inspectedTargetDate || todayStr;
+  const isInspectingToday = activeTargetDate === todayStr;
+
+  const activeTargetReports = useMemo(() => {
+    return reports.filter((r) => r.tanggal === activeTargetDate);
+  }, [reports, activeTargetDate]);
+
+  // Active Room Target Status for the selected/inspected date in the Target Dashboard
+  const activeRoomTargetStatus = useMemo(() => {
+    const totalTarget = INITIAL_AREAS.length;
+    const items = INITIAL_AREAS.map((areaName) => {
+      const areaReps = activeTargetReports.filter((r) => r.area === areaName);
+      const isReported = areaReps.length > 0;
+      const latestReport = areaReps[0];
       return {
         areaName,
-        isCleaned,
-        total: reportsForArea.length,
-        latestKondisi: latestReport?.kondisiAkhir,
+        isReported,
+        total: areaReps.length,
+        latestKondisi: latestReport?.kondisiAkhir as KondisiAkhir | undefined,
         latestPetugas: latestReport?.namaPetugas,
         latestWaktu: latestReport?.waktu,
+        reportId: latestReport?.id,
       };
     });
-  }, [todayReports]);
+
+    const reportedCount = items.filter((i) => i.isReported).length;
+    const unreportedCount = totalTarget - reportedCount;
+    const percentage = Math.round((reportedCount / totalTarget) * 100);
+    const isTargetAchieved = reportedCount === totalTarget;
+
+    return {
+      items,
+      totalTarget,
+      reportedCount,
+      unreportedCount,
+      percentage,
+      isTargetAchieved,
+    };
+  }, [activeTargetReports]);
+
+  // Weekly Target Fulfillment Chart (Senin s/d Sabtu)
+  const weeklyTargetStats = useMemo(() => {
+    const now = new Date();
+    const currentDayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon, 6 is Sat
+    // Offset to get Monday of this week:
+    // Sun (0) -> -6 days
+    // Mon (1) -> 0 days
+    // Tue (2) -> -1 days, etc.
+    const offsetToMonday = currentDayOfWeek === 0 ? -6 : 1 - currentDayOfWeek;
+    const mondayDate = new Date(now);
+    mondayDate.setDate(now.getDate() + offsetToMonday);
+    mondayDate.setHours(0, 0, 0, 0);
+
+    const dayConfigs = [
+      { name: 'Senin', short: 'Sen' },
+      { name: 'Selasa', short: 'Sel' },
+      { name: 'Rabu', short: 'Rab' },
+      { name: 'Kamis', short: 'Kam' },
+      { name: 'Jumat', short: 'Jum' },
+      { name: 'Sabtu', short: 'Sab' },
+    ];
+
+    const todayDateString = getTodayDateString();
+
+    const days = dayConfigs.map((config, index) => {
+      const d = new Date(mondayDate);
+      d.setDate(mondayDate.getDate() + index);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
+
+      const dayReps = reports.filter((r) => r.tanggal === dateStr);
+      const reportedAreas = INITIAL_AREAS.filter((areaName) =>
+        dayReps.some((r) => r.area === areaName)
+      );
+      const count = reportedAreas.length;
+      const target = INITIAL_AREAS.length;
+      const percentage = Math.round((count / target) * 100);
+      const isToday = dateStr === todayDateString;
+      const isPast = dateStr < todayDateString;
+      const isFuture = dateStr > todayDateString;
+      const isTargetMet = count >= target;
+
+      return {
+        dayName: config.name,
+        shortName: config.short,
+        dateStr,
+        displayDate: `${d.getDate()} ${d.toLocaleDateString('id-ID', { month: 'short' })}`,
+        totalReports: dayReps.length,
+        reportedCount: count,
+        missingCount: target - count,
+        percentage,
+        isToday,
+        isPast,
+        isFuture,
+        isTargetMet,
+      };
+    });
+
+    const elapsedDays = days.filter((d) => d.isPast || d.isToday);
+    const averageCompliance =
+      elapsedDays.length > 0
+        ? Math.round(elapsedDays.reduce((sum, d) => sum + d.percentage, 0) / elapsedDays.length)
+        : 0;
+    const targetMetDaysCount = elapsedDays.filter((d) => d.isTargetMet).length;
+    const totalWeeklyReports = days.reduce((sum, d) => sum + d.totalReports, 0);
+
+    return {
+      days,
+      elapsedDaysCount: elapsedDays.length,
+      averageCompliance,
+      targetMetDaysCount,
+      totalWeeklyReports,
+    };
+  }, [reports]);
+
+  // Backward-compatible areaCoverage for quick area filter
+  const areaCoverage = useMemo(() => {
+    return activeRoomTargetStatus.items.map((item) => ({
+      areaName: item.areaName,
+      isCleaned: item.isReported,
+      total: item.total,
+      latestKondisi: item.latestKondisi,
+      latestPetugas: item.latestPetugas,
+      latestWaktu: item.latestWaktu,
+    }));
+  }, [activeRoomTargetStatus]);
+
+  // List of available months based on reports data and current month
+  const availableMonths = useMemo(() => {
+    const currentMonthStr = todayStr.slice(0, 7);
+    const set = new Set<string>();
+    set.add(currentMonthStr);
+    reports.forEach((r) => {
+      if (r.tanggal && r.tanggal.length >= 7) {
+        set.add(r.tanggal.slice(0, 7));
+      }
+    });
+    return Array.from(set).sort().reverse();
+  }, [reports, todayStr]);
+
+  // Monthly statistics & history overview for the selected month
+  const monthlyTargetStats = useMemo(() => {
+    const targetMonth = selectedMonth || todayStr.slice(0, 7);
+    const [yearStr, monthStr] = targetMonth.split('-');
+    const year = parseInt(yearStr, 10);
+    const month = parseInt(monthStr, 10);
+
+    // Number of days in this month
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    // Reports in this month
+    const monthReports = reports.filter((r) => r.tanggal && r.tanggal.startsWith(targetMonth));
+    const totalReports = monthReports.length;
+    const cleanReports = monthReports.filter((r) => r.kondisiAkhir === 'Bersih').length;
+    const cleanPercentage = totalReports > 0 ? Math.round((cleanReports / totalReports) * 100) : 0;
+    const reviewReports = monthReports.filter((r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang').length;
+    const damageReports = monthReports.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length;
+
+    // Daily breakdown for the month
+    const dailyBreakdown: Array<{
+      dateStr: string;
+      dayNum: number;
+      dayOfWeek: number;
+      isWorkingDay: boolean;
+      totalReports: number;
+      reportedAreasCount: number;
+      percentage: number;
+      isTargetMet: boolean;
+    }> = [];
+
+    let totalWorkingDays = 0;
+    let fullComplianceDays = 0;
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const d = new Date(year, month - 1, day);
+      const dayOfWeek = d.getDay(); // 0 is Sun, 1 is Mon, ..., 6 is Sat
+      const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6; // Senin s/d Sabtu
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+      const repsOnDay = monthReports.filter((r) => r.tanggal === dateStr);
+      const reportedAreas = INITIAL_AREAS.filter((areaName) => repsOnDay.some((r) => r.area === areaName));
+      const count = reportedAreas.length;
+      const percentage = Math.round((count / INITIAL_AREAS.length) * 100);
+      const isTargetMet = count >= INITIAL_AREAS.length;
+
+      if (isWorkingDay) {
+        totalWorkingDays++;
+        if (isTargetMet) fullComplianceDays++;
+      }
+
+      dailyBreakdown.push({
+        dateStr,
+        dayNum: day,
+        dayOfWeek,
+        isWorkingDay,
+        totalReports: repsOnDay.length,
+        reportedAreasCount: count,
+        percentage,
+        isTargetMet,
+      });
+    }
+
+    // Weekly buckets (Minggu 1, 2, 3, 4, 5)
+    const weeklyBuckets: Array<{
+      weekLabel: string;
+      weekNum: number;
+      dateRange: string;
+      reportsCount: number;
+      cleanCount: number;
+      avgCoverage: number;
+      fullTargetDays: number;
+      workingDaysCount: number;
+    }> = [];
+
+    const numWeeks = Math.ceil(daysInMonth / 7);
+    for (let w = 0; w < numWeeks; w++) {
+      const startDay = w * 7 + 1;
+      const endDay = Math.min((w + 1) * 7, daysInMonth);
+      const daysInWeek = dailyBreakdown.filter((d) => d.dayNum >= startDay && d.dayNum <= endDay);
+      const repsInWeek = monthReports.filter((r) => {
+        const parts = r.tanggal.split('-');
+        const dNum = parseInt(parts[2], 10);
+        return dNum >= startDay && dNum <= endDay;
+      });
+      const cleanInWeek = repsInWeek.filter((r) => r.kondisiAkhir === 'Bersih').length;
+      const workingDaysInWeek = daysInWeek.filter((d) => d.isWorkingDay);
+      const avgCoverage =
+        workingDaysInWeek.length > 0
+          ? Math.round(workingDaysInWeek.reduce((acc, d) => acc + d.percentage, 0) / workingDaysInWeek.length)
+          : 0;
+      const fullTargetDays = workingDaysInWeek.filter((d) => d.isTargetMet).length;
+
+      weeklyBuckets.push({
+        weekLabel: `Mg ${w + 1}`,
+        weekNum: w + 1,
+        dateRange: `${startDay}-${endDay}`,
+        reportsCount: repsInWeek.length,
+        cleanCount: cleanInWeek,
+        avgCoverage,
+        fullTargetDays,
+        workingDaysCount: workingDaysInWeek.length,
+      });
+    }
+
+    // Room performance breakdown across the month
+    const roomMonthlySummary = INITIAL_AREAS.map((areaName) => {
+      const areaReps = monthReports.filter((r) => r.area === areaName);
+      const cleanCount = areaReps.filter((r) => r.kondisiAkhir === 'Bersih').length;
+      return {
+        areaName,
+        totalReports: areaReps.length,
+        cleanCount,
+        cleanRate: areaReps.length > 0 ? Math.round((cleanCount / areaReps.length) * 100) : 0,
+      };
+    });
+
+    const monthlyComplianceRate =
+      totalWorkingDays > 0 ? Math.round((fullComplianceDays / totalWorkingDays) * 100) : 0;
+
+    return {
+      targetMonth,
+      formattedMonth: formatMonthIndo(targetMonth),
+      totalReports,
+      cleanReports,
+      cleanPercentage,
+      reviewReports,
+      damageReports,
+      totalWorkingDays,
+      fullComplianceDays,
+      monthlyComplianceRate,
+      dailyBreakdown,
+      weeklyBuckets,
+      roomMonthlySummary,
+    };
+  }, [reports, selectedMonth, todayStr]);
 
   const handleOpenDetail = (report: CleaningReport) => {
     setActiveReportDetail(report);
@@ -555,7 +908,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
 
           <button
-            onClick={onAddNewReport}
+            onClick={() => onAddNewReport()}
             className={`flex items-center space-x-1.5 px-4 py-2 text-xs sm:text-sm font-bold rounded-xl shadow-sm transition-all ${
               currentUser
                 ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
@@ -583,12 +936,125 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
           <button
-            onClick={onAddNewReport}
+            onClick={() => onAddNewReport()}
             className="self-start sm:self-auto shrink-0 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center gap-1.5"
           >
             <Lock className="w-3.5 h-3.5" />
             <span>Masuk Akun Petugas</span>
           </button>
+        </div>
+      )}
+
+      {/* TARGET OPERATIONAL ALERT BANNER (Senin s/d Sabtu • Wajib 100% Ruangan Terlaporkan) */}
+      {operationalSchedule.isWorkingDay ? (
+        todayRoomTargetStatus.unreportedCount > 0 ? (
+          <div className="bg-gradient-to-r from-rose-500/10 via-amber-500/10 to-rose-500/10 border-2 border-rose-400 rounded-2xl p-4 sm:p-5 shadow-xs">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs relative">
+                  <AlertOctagon className="w-5 h-5" />
+                  <span className="absolute -top-1 -right-1 w-3 h-3 bg-rose-500 rounded-full animate-ping" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-black text-[10px] uppercase tracking-wider">
+                      ALERT TARGET HARIAN
+                    </span>
+                    <span className="text-xs font-bold text-rose-950">
+                      Jadwal Petugas: Senin s/d Sabtu • Wajib 100% Terlaporkan
+                    </span>
+                  </div>
+                  <h3 className="font-black text-rose-950 text-base sm:text-lg mt-1">
+                    ⚠️ {todayRoomTargetStatus.unreportedCount} Ruangan Belum Dilaporkan Hari Ini!
+                  </h3>
+                  <p className="text-xs text-rose-800 mt-0.5 max-w-2xl">
+                    Semua 6 kamar mandi SCB wajib dilaporkan setiap hari kerja. Baru tercapai{' '}
+                    <strong>{todayRoomTargetStatus.reportedCount} dari {todayRoomTargetStatus.totalTarget} ruangan ({todayRoomTargetStatus.percentage}%)</strong>.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => onAddNewReport(todayRoomTargetStatus.unreportedRooms[0])}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition-all flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Input Laporan Ruangan Tertunda</span>
+                </button>
+              </div>
+            </div>
+
+            {/* List of Missing Rooms with Instant 1-Click Action */}
+            <div className="mt-3.5 pt-3 border-t border-rose-200/80">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold text-rose-900 mr-1 flex items-center gap-1">
+                  <BellRing className="w-3.5 h-3.5 text-rose-600" />
+                  Daftar Ruangan Belum Terlaporkan:
+                </span>
+                {todayRoomTargetStatus.unreportedRooms.map((roomName) => (
+                  <button
+                    key={roomName}
+                    onClick={() => onAddNewReport(roomName)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-100 text-rose-900 border border-rose-300 font-bold text-xs shadow-2xs transition-all hover:scale-105"
+                    title={`Klik untuk langsung isi laporan ${roomName}`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                    <span>{roomName}</span>
+                    <span className="text-[10px] text-rose-600 font-normal underline ml-1">+ Laporkan</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-emerald-50 border-2 border-emerald-300 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-900 shadow-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white font-bold text-[10px] uppercase">
+                    TARGET HARIAN 100% TERCAPAI
+                  </span>
+                  <span className="text-xs text-emerald-700 font-semibold">
+                    Jadwal Operasional: {operationalSchedule.dayName}
+                  </span>
+                </div>
+                <h3 className="font-black text-emerald-950 text-sm sm:text-base mt-0.5">
+                  🎉 Seluruh 6 Ruangan Kamar Mandi Telah Selesai Dilaporkan Hari Ini!
+                </h3>
+                <p className="text-emerald-800 text-xs mt-0.5">
+                  Semua titik kamar mandi Sekolah Cendekia BAZNAS telah diinspeksi dan dilaporkan sesuai target harian operasional Senin s/d Sabtu.
+                </p>
+              </div>
+            </div>
+            <div className="shrink-0 flex items-center gap-2">
+              <span className="px-3.5 py-1.5 bg-emerald-100 text-emerald-900 font-extrabold rounded-xl text-xs border border-emerald-300">
+                ✓ 6/6 Ruangan Terpenuhi
+              </span>
+            </div>
+          </div>
+        )
+      ) : (
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-700 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+              <CalendarDays className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="font-bold text-slate-900 text-sm">
+                Hari Ahad / Minggu: Jadwal Libur Rutin Operasional Petugas
+              </p>
+              <p className="text-slate-500 text-xs mt-0.5">
+                Jadwal tugas wajib harian petugas kebersihan SCB berlangsung <strong>Senin s/d Sabtu</strong>. Laporan insidental di hari libur tetap dicatat otomatis dalam sistem.
+              </p>
+            </div>
+          </div>
+          <span className="px-3 py-1 bg-slate-200 text-slate-800 font-semibold rounded-full text-[11px] shrink-0">
+            Jadwal Rutin: Senin s/d Sabtu
+          </span>
         </div>
       )}
 
@@ -725,70 +1191,511 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Operational Area Coverage Status Bar (Interactive overview of the 6 areas) */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3.5">
+      {/* DASHBOARD & GRAFIK TARGET PEMENUHAN RUANGAN (SENIN S/D SABTU) */}
+      <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-xs space-y-5">
+        {/* Header Panel */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
           <div>
-            <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <MapPin className="w-4 h-4 text-emerald-600" />
-              Cakupan Area Hari Ini (Standar 6 Titik Kamar Mandi SCB)
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                <Target className="w-3.5 h-3.5" />
+                Target Operasional 100%
+              </span>
+              <span className="text-xs text-slate-500 font-medium">
+                Jadwal: Senin s/d Sabtu
+              </span>
+            </div>
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 mt-1 flex items-center gap-2">
+              Grafik & Pemenuhan Target Harian Ruangan
             </h2>
             <p className="text-xs text-slate-500">
-              Status pembersihan titik utama kamar mandi Sekolah Cendekia BAZNAS pada hari ini
+              Target Standar SCB: Semua 6 ruangan kamar mandi wajib diinspeksi & dilaporkan setiap hari (Senin–Sabtu)
             </p>
           </div>
-          <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-3 py-1 rounded-full shrink-0">
-            {areaCoverage.filter((a) => a.isCleaned).length} dari {INITIAL_AREAS.length} Titik Tercover
-          </span>
+
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            {inspectedTargetDate && (
+              <button
+                onClick={() => setInspectedTargetDate(null)}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors flex items-center gap-1"
+                title="Kembali melihat target hari ini"
+              >
+                <span>Lihat Hari Ini</span>
+              </button>
+            )}
+            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700">
+              {isInspectingToday ? (
+                <span>Inspeksi Hari Ini ({operationalSchedule.dayName})</span>
+              ) : (
+                <span>Melihat Tanggal: {activeTargetDate}</span>
+              )}
+            </div>
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-          {areaCoverage.map((area) => (
-            <div
-              key={area.areaName}
-              onClick={() => setSelectedArea(area.areaName)}
-              className={`p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                selectedArea === area.areaName
-                  ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-50/50'
-                  : area.isCleaned
-                  ? 'border-emerald-200 bg-emerald-50/20 hover:bg-emerald-50/40'
-                  : 'border-slate-200 bg-slate-50/50 hover:bg-slate-100/50'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-bold text-slate-800 truncate pr-1">
-                  {area.areaName}
+        {/* Top 2-Card Row: Metric Gauge & Weekly Target Bar Chart */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* Card 1 (Col 1-5): Daily Target Achievement Gauge */}
+          <div className="lg:col-span-5 bg-gradient-to-br from-slate-50 to-emerald-50/30 p-5 rounded-2xl border border-slate-200/90 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Target className="w-4 h-4 text-emerald-600" />
+                  Capaian Target {isInspectingToday ? 'Hari Ini' : 'Tanggal Terpilih'}
                 </span>
-                {area.isCleaned ? (
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                ) : (
-                  <span className="w-2 h-2 rounded-full bg-slate-300 shrink-0" />
-                )}
+                <span
+                  className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border ${
+                    activeRoomTargetStatus.isTargetAchieved
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : 'bg-rose-100 text-rose-800 border-rose-300'
+                  }`}
+                >
+                  {activeRoomTargetStatus.isTargetAchieved ? '100% Target Tercapai' : `Tertunda ${activeRoomTargetStatus.unreportedCount} Ruangan`}
+                </span>
               </div>
 
-              {area.isCleaned ? (
-                <div className="space-y-0.5 text-[11px]">
-                  <p className="text-slate-500 truncate">Oleh: {area.latestPetugas}</p>
-                  <div className="flex items-center justify-between pt-0.5">
-                    <span className="text-[10px] text-slate-400">{area.latestWaktu} WIB</span>
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                        area.latestKondisi === 'Bersih'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : area.latestKondisi === 'Ada Kerusakan'
-                          ? 'bg-rose-100 text-rose-800'
-                          : 'bg-amber-100 text-amber-800'
-                      }`}
-                    >
-                      {area.latestKondisi === 'Ada Kerusakan' ? 'Rusak' : area.latestKondisi === 'Bersih' ? 'Bersih' : 'Cek'}
+              <div className="flex items-baseline justify-between mt-2">
+                <div>
+                  <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
+                    {activeRoomTargetStatus.reportedCount}
+                  </span>
+                  <span className="text-xl sm:text-2xl font-bold text-slate-400">
+                    {' '}/ {activeRoomTargetStatus.totalTarget}
+                  </span>
+                  <span className="text-xs text-slate-500 font-semibold ml-2">Ruangan Terlaporkan</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-2xl sm:text-3xl font-black text-emerald-600">
+                    {activeRoomTargetStatus.percentage}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Visual Progress Bar with 100% Target Marker */}
+              <div className="mt-4">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 mb-1.5">
+                  <span>Progres Pemenuhan</span>
+                  <span className="text-emerald-700 font-bold">Target SCB: 100% (6/6 Ruangan)</span>
+                </div>
+                <div className="w-full bg-slate-200 h-3.5 rounded-full overflow-hidden relative p-0.5">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${
+                      activeRoomTargetStatus.isTargetAchieved
+                        ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
+                        : activeRoomTargetStatus.percentage > 0
+                        ? 'bg-gradient-to-r from-amber-500 to-emerald-500'
+                        : 'bg-slate-300'
+                    }`}
+                    style={{ width: `${activeRoomTargetStatus.percentage}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Sub-metrics breakdown */}
+            <div className="pt-4 mt-4 border-t border-slate-200/70 grid grid-cols-2 gap-3 text-xs">
+              <div className="p-2.5 rounded-xl bg-white border border-slate-200">
+                <span className="text-[10px] font-bold text-emerald-700 uppercase">Sudah Dilaporkan</span>
+                <p className="text-lg font-black text-slate-900 mt-0.5">
+                  {activeRoomTargetStatus.reportedCount} <span className="text-xs font-normal text-slate-500">titik</span>
+                </p>
+                <p className="text-[10px] text-slate-400">Tercatat di sistem</p>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-white border border-slate-200">
+                <span className="text-[10px] font-bold text-rose-700 uppercase">Belum Dilaporkan</span>
+                <p className="text-lg font-black text-rose-600 mt-0.5">
+                  {activeRoomTargetStatus.unreportedCount} <span className="text-xs font-normal text-slate-500">titik</span>
+                </p>
+                <p className="text-[10px] text-slate-400">
+                  {activeRoomTargetStatus.unreportedCount > 0 ? 'Perlu tindakan segera' : 'Nihil keterlambatan'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2 (Col 6-12): Target Chart & Monthly History (Weekly vs Monthly Toggle) */}
+          <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-slate-200 flex flex-col justify-between">
+            <div>
+              {/* Card 2 Header with View Toggle */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    {targetChartView === 'weekly' ? (
+                      <BarChart2 className="w-4 h-4 text-blue-600" />
+                    ) : (
+                      <CalendarRange className="w-4 h-4 text-emerald-600" />
+                    )}
+                    <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                      {targetChartView === 'weekly'
+                        ? 'Grafik Target Mingguan (Senin s/d Sabtu)'
+                        : `Histori & Target Bulanan: ${monthlyTargetStats.formattedMonth}`}
                     </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {targetChartView === 'weekly'
+                      ? 'Tingkat ketercapaian target 6 ruangan pada setiap hari kerja dalam minggu ini'
+                      : 'Rekapitulasi riwayat ketercapaian target operasional selama sebulan penuh'}
+                  </p>
+                </div>
+
+                {/* View Switcher: Mingguan vs Bulanan */}
+                <div className="flex items-center bg-slate-100 p-0.5 rounded-xl text-xs font-bold shrink-0 self-start sm:self-auto">
+                  <button
+                    onClick={() => setTargetChartView('weekly')}
+                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 ${
+                      targetChartView === 'weekly'
+                        ? 'bg-white text-emerald-800 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <BarChart2 className="w-3.5 h-3.5" />
+                    <span>Mingguan</span>
+                  </button>
+                  <button
+                    onClick={() => setTargetChartView('monthly')}
+                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 ${
+                      targetChartView === 'monthly'
+                        ? 'bg-white text-emerald-800 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    <span>Bulanan & Histori</span>
+                  </button>
+                </div>
+              </div>
+
+              {targetChartView === 'weekly' ? (
+                /* VIEW 1: WEEKLY BAR CHART (SENIN S/D SABTU) */
+                <div>
+                  <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                    <span>Capaian harian jadwal kerja Senin–Sabtu:</span>
+                    <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      Rata-rata: {weeklyTargetStats.averageCompliance}%
+                    </span>
+                  </div>
+
+                  {/* The 6-Day Weekly Bar Chart */}
+                  <div className="relative pt-6 pb-2">
+                    {/* 100% Target Reference Benchmark Line */}
+                    <div className="absolute top-6 left-0 right-0 flex items-center gap-2 pointer-events-none z-10">
+                      <div className="w-full border-b-2 border-dashed border-emerald-400/80" />
+                      <span className="text-[9px] font-extrabold text-emerald-700 bg-emerald-100/90 px-1.5 py-0.5 rounded whitespace-nowrap">
+                        Target 100% (6 Ruangan)
+                      </span>
+                    </div>
+
+                    {/* Bars Grid */}
+                    <div className="grid grid-cols-6 gap-2 sm:gap-3 items-end h-36 pt-4">
+                      {weeklyTargetStats.days.map((day) => {
+                        const isSelected = activeTargetDate === day.dateStr;
+                        return (
+                          <div
+                            key={day.dayName}
+                            onClick={() => setInspectedTargetDate(day.dateStr === todayStr ? null : day.dateStr)}
+                            className={`flex flex-col items-center justify-end h-full cursor-pointer group transition-all p-1 rounded-xl ${
+                              isSelected
+                                ? 'bg-slate-100 ring-2 ring-emerald-500'
+                                : 'hover:bg-slate-50'
+                            }`}
+                            title={`${day.dayName} (${day.dateStr}): ${day.reportedCount}/6 ruangan (${day.percentage}%) - Klik untuk tinjau`}
+                          >
+                            {/* Day Target Status Label above Bar */}
+                            <div className="text-[10px] font-black text-slate-700 mb-1 transition-transform group-hover:-translate-y-0.5">
+                              {day.isFuture ? (
+                                <span className="text-slate-300">-</span>
+                              ) : (
+                                <span>{day.reportedCount}/6</span>
+                              )}
+                            </div>
+
+                            {/* Bar Body */}
+                            <div className="w-full bg-slate-100 rounded-t-lg overflow-hidden flex flex-col justify-end h-24 relative">
+                              <div
+                                className={`w-full transition-all duration-500 rounded-t-lg ${
+                                  day.isFuture
+                                    ? 'bg-slate-200 h-1'
+                                    : day.isTargetMet
+                                    ? 'bg-emerald-500 group-hover:bg-emerald-600'
+                                    : day.percentage > 0
+                                    ? 'bg-amber-500 group-hover:bg-amber-600'
+                                    : 'bg-rose-400 group-hover:bg-rose-500'
+                                }`}
+                                style={{
+                                  height: day.isFuture ? '4px' : `${Math.max(day.percentage, 8)}%`,
+                                }}
+                              />
+                            </div>
+
+                            {/* Day Info Below Bar */}
+                            <div className="text-center mt-2 w-full">
+                              <p className="text-[11px] font-black text-slate-800 truncate">
+                                {day.shortName}
+                              </p>
+                              <p className="text-[9px] text-slate-400 font-medium truncate">
+                                {day.displayDate}
+                              </p>
+                              {day.isToday && (
+                                <span className="inline-block mt-0.5 px-1 py-0.2 bg-emerald-600 text-white rounded text-[8px] font-black tracking-wider uppercase">
+                                  Hari Ini
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               ) : (
-                <p className="text-[11px] text-slate-400 italic">Belum dilaporkan</p>
+                /* VIEW 2: MONTHLY HISTORY & ANALYTICS OVERVIEW */
+                <div className="space-y-3.5">
+                  {/* Month Navigator Header */}
+                  <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setSelectedMonth(shiftMonth(selectedMonth, -1))}
+                        className="p-1 rounded-lg hover:bg-white text-slate-600 hover:text-slate-900 border border-transparent hover:border-slate-200 transition-colors"
+                        title="Bulan Sebelumnya"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <select
+                        value={selectedMonth}
+                        onChange={(e) => setSelectedMonth(e.target.value)}
+                        className="font-bold text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                      >
+                        {availableMonths.map((m) => (
+                          <option key={m} value={m}>
+                            {formatMonthIndo(m)} {m === todayStr.slice(0, 7) ? '(Bulan Ini)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => setSelectedMonth(shiftMonth(selectedMonth, 1))}
+                        className="p-1 rounded-lg hover:bg-white text-slate-600 hover:text-slate-900 border border-transparent hover:border-slate-200 transition-colors"
+                        title="Bulan Berikutnya"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {selectedMonth !== todayStr.slice(0, 7) && (
+                        <button
+                          onClick={() => setSelectedMonth(todayStr.slice(0, 7))}
+                          className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold rounded-lg border border-slate-200 transition-colors"
+                        >
+                          Bulan Ini
+                        </button>
+                      )}
+                      <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md">
+                        {monthlyTargetStats.totalReports} Laporan
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Monthly 4-Metric Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                    <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
+                      <span className="text-[10px] text-slate-500 block">Total Laporan</span>
+                      <strong className="text-base font-black text-slate-900">{monthlyTargetStats.totalReports}</strong>
+                      <span className="text-[9px] text-slate-400 block mt-0.5">sepanjang bulan</span>
+                    </div>
+                    <div className="p-2 rounded-xl bg-emerald-50/60 border border-emerald-100">
+                      <span className="text-[10px] text-emerald-700 block">Indeks Bersih</span>
+                      <strong className="text-base font-black text-emerald-800">{monthlyTargetStats.cleanPercentage}%</strong>
+                      <span className="text-[9px] text-emerald-600 block mt-0.5">{monthlyTargetStats.cleanReports} lap bersih</span>
+                    </div>
+                    <div className="p-2 rounded-xl bg-blue-50/60 border border-blue-100">
+                      <span className="text-[10px] text-blue-700 block">Target Penuh</span>
+                      <strong className="text-base font-black text-blue-800">{monthlyTargetStats.fullComplianceDays} Hari</strong>
+                      <span className="text-[9px] text-blue-600 block mt-0.5">dari {monthlyTargetStats.totalWorkingDays} hr kerja</span>
+                    </div>
+                    <div className="p-2 rounded-xl bg-amber-50/60 border border-amber-100">
+                      <span className="text-[10px] text-amber-700 block">Kendala/Rusak</span>
+                      <strong className="text-base font-black text-amber-800">{monthlyTargetStats.reviewReports + monthlyTargetStats.damageReports}</strong>
+                      <span className="text-[9px] text-amber-600 block mt-0.5">temuan terlapor</span>
+                    </div>
+                  </div>
+
+                  {/* Weekly Progress Breakdown (Minggu 1 s/d 5) */}
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[11px] font-bold text-slate-600 block">
+                      Rata-rata Ketercapaian per Minggu ({monthlyTargetStats.formattedMonth}):
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                      {monthlyTargetStats.weeklyBuckets.map((bucket) => (
+                        <div key={bucket.weekLabel} className="p-2 rounded-xl bg-slate-50 border border-slate-100 text-center">
+                          <p className="text-[10px] font-bold text-slate-700">{bucket.weekLabel}</p>
+                          <p className="text-[9px] text-slate-400">{bucket.dateRange}</p>
+                          <p className="text-xs font-black text-slate-900 mt-1">
+                            {bucket.avgCoverage}%
+                          </p>
+                          <p className="text-[9px] text-slate-500">
+                            {bucket.reportsCount} laporan
+                          </p>
+                          <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1">
+                            <div
+                              className="bg-emerald-500 h-full rounded-full"
+                              style={{ width: `${bucket.avgCoverage}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
-          ))}
+
+            {/* Footer Summary & Quick Action */}
+            <div className="pt-3 mt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              {targetChartView === 'weekly' ? (
+                <>
+                  <span className="flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    Target 100% tercapai pada <strong>{weeklyTargetStats.targetMetDaysCount} dari {weeklyTargetStats.elapsedDaysCount} hari kerja</strong>
+                  </span>
+                  <button
+                    onClick={() => setTargetChartView('monthly')}
+                    className="text-emerald-700 hover:text-emerald-900 font-bold flex items-center gap-1 underline text-[11px]"
+                  >
+                    <span>Buka Riwayat Bulanan</span>
+                    <ArrowRight className="w-3 h-3" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="flex items-center gap-1.5">
+                    <History className="w-3.5 h-3.5 text-blue-600" />
+                    Kepatuhan bulanan: <strong>{monthlyTargetStats.monthlyComplianceRate}% hari kerja memenuhi target 100%</strong>
+                  </span>
+                  <button
+                    onClick={() => {
+                      setDateFilter('specific_month');
+                      const tableElem = document.getElementById('report-history-table');
+                      if (tableElem) {
+                        tableElem.scrollIntoView({ behavior: 'smooth' });
+                      }
+                    }}
+                    className="text-emerald-700 hover:text-emerald-900 font-bold flex items-center gap-1 underline text-[11px]"
+                  >
+                    <span>Tampilkan {monthlyTargetStats.totalReports} Laporan di Tabel</span>
+                    <ArrowRight className="w-3 h-3" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom Matrix: Checklist Status of the 6 SCB Rooms */}
+        <div className="pt-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                <MapPin className="w-4 h-4 text-emerald-600" />
+                Matriks Status Target 6 Ruangan Kamar Mandi SCB
+              </h3>
+              <p className="text-xs text-slate-500">
+                Status inspeksi harian untuk 6 titik wajib Sekolah Cendekia BAZNAS ({isInspectingToday ? 'Hari Ini' : activeTargetDate})
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-3 py-1 rounded-full">
+                {activeRoomTargetStatus.reportedCount} dari {activeRoomTargetStatus.totalTarget} Terlaporkan
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {activeRoomTargetStatus.items.map((room) => (
+              <div
+                key={room.areaName}
+                className={`p-3.5 rounded-2xl border transition-all ${
+                  room.isReported
+                    ? 'border-emerald-200 bg-emerald-50/20 hover:bg-emerald-50/40'
+                    : 'border-rose-300 bg-rose-50/30 ring-1 ring-rose-200 hover:bg-rose-50/50'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-xs font-black text-slate-900 block truncate">
+                      {room.areaName}
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Titik Sanitasi Wajib SCB
+                    </span>
+                  </div>
+
+                  {room.isReported ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold shrink-0">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                      Terpenuhi
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-black shrink-0 animate-pulse">
+                      <AlertTriangle className="w-3 h-3 text-rose-600" />
+                      Belum Dilaporkan
+                    </span>
+                  )}
+                </div>
+
+                {room.isReported ? (
+                  <div className="mt-3 pt-2.5 border-t border-emerald-100 text-xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] text-slate-600 truncate">
+                        Petugas: <strong className="text-slate-800">{room.latestPetugas}</strong>
+                      </p>
+                      <p className="text-[10px] text-slate-400">
+                        Pukul {room.latestWaktu} WIB ({room.total}x inspeksi)
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1.5">
+                      <span
+                        className={`text-[9px] font-bold px-2 py-0.5 rounded ${
+                          room.latestKondisi === 'Bersih'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : room.latestKondisi === 'Ada Kerusakan'
+                            ? 'bg-rose-100 text-rose-800'
+                            : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {room.latestKondisi === 'Ada Kerusakan' ? 'Ada Kerusakan' : room.latestKondisi === 'Bersih' ? 'Bersih' : 'Perlu Cek'}
+                      </span>
+                      <button
+                        onClick={() => setSelectedArea(room.areaName)}
+                        className="text-[10px] text-emerald-700 hover:text-emerald-900 font-bold underline"
+                      >
+                        Filter Laporan
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 pt-2.5 border-t border-rose-200 text-xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-bold text-rose-800">
+                        Belum Ada Laporan Masuk
+                      </p>
+                      <p className="text-[10px] text-rose-600">
+                        Target checklist tertunda
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => onAddNewReport(room.areaName)}
+                      className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-2xs transition-all flex items-center gap-1 shrink-0"
+                      title={`Klik untuk mengisi laporan kebersihan untuk ${room.areaName}`}
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Laporkan</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1118,7 +2025,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
+      <div id="report-history-table" className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
         <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
           {/* Search bar */}
           <div className="relative flex-1">
@@ -1140,48 +2047,76 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
           </div>
 
-          {/* Date range filter tabs */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl self-start md:self-auto text-xs font-medium">
-            <button
-              onClick={() => setDateFilter('today')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
-                dateFilter === 'today'
-                  ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Hari Ini
-            </button>
-            <button
-              onClick={() => setDateFilter('7days')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
-                dateFilter === '7days'
-                  ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              7 Hari
-            </button>
-            <button
-              onClick={() => setDateFilter('month')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
-                dateFilter === 'month'
-                  ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Bulan Ini
-            </button>
-            <button
-              onClick={() => setDateFilter('all')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
-                dateFilter === 'all'
-                  ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Semua
-            </button>
+          {/* Date range filter tabs + Month History Dropdown */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl self-start md:self-auto text-xs font-medium">
+              <button
+                onClick={() => setDateFilter('today')}
+                className={`px-3 py-1.5 rounded-lg transition-all ${
+                  dateFilter === 'today'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Hari Ini
+              </button>
+              <button
+                onClick={() => setDateFilter('7days')}
+                className={`px-3 py-1.5 rounded-lg transition-all ${
+                  dateFilter === '7days'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                7 Hari
+              </button>
+              <button
+                onClick={() => {
+                  setDateFilter('month');
+                  setSelectedMonth(todayStr.slice(0, 7));
+                }}
+                className={`px-3 py-1.5 rounded-lg transition-all ${
+                  dateFilter === 'month'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Bulan Ini
+              </button>
+              <button
+                onClick={() => setDateFilter('all')}
+                className={`px-3 py-1.5 rounded-lg transition-all ${
+                  dateFilter === 'all'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Semua
+              </button>
+            </div>
+
+            {/* Riwayat Bulan Picker */}
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-xl text-xs">
+              <CalendarRange className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span className="text-[11px] font-bold text-slate-500 whitespace-nowrap">Histori Bulan:</span>
+              <select
+                value={dateFilter === 'specific_month' ? selectedMonth : dateFilter === 'month' ? todayStr.slice(0, 7) : ''}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    setSelectedMonth(e.target.value);
+                    setDateFilter('specific_month');
+                  }
+                }}
+                className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer"
+              >
+                <option value="" disabled>-- Pilih Bulan --</option>
+                {availableMonths.map((m) => (
+                  <option key={m} value={m}>
+                    {formatMonthIndo(m)} {m === todayStr.slice(0, 7) ? '(Bulan Ini)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {/* View mode toggle (Grid vs Table) */}
@@ -1206,6 +2141,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Active Month History Banner */}
+        {(dateFilter === 'specific_month' || dateFilter === 'month') && (
+          <div className="bg-emerald-50/80 border border-emerald-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs shadow-2xs">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
+                <History className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="font-bold text-emerald-950 block sm:inline">
+                  Riwayat Laporan Bulan: {formatMonthIndo(dateFilter === 'month' ? todayStr.slice(0, 7) : selectedMonth)}
+                </span>
+                <span className="text-emerald-700 text-[11px] sm:ml-2">
+                  (Ditemukan {filteredReports.length} laporan • {filteredReports.filter((r) => r.kondisiAkhir === 'Bersih').length} bersih • {filteredReports.filter((r) => r.kondisiAkhir !== 'Bersih').length} temuan kendala)
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
+              <button
+                onClick={() => onOpenPrintModal(filteredReports)}
+                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs"
+                title="Cetak rekap dokumen laporan bulan ini"
+              >
+                <Printer className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Cetak Rekap</span>
+              </button>
+              <button
+                onClick={() => exportReportsToCsv(filteredReports)}
+                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs"
+                title="Download file CSV/Excel bulan ini"
+              >
+                <Download className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Export Excel</span>
+              </button>
+              <button
+                onClick={() => setDateFilter('today')}
+                className="text-[11px] text-slate-500 hover:text-slate-800 underline ml-1"
+              >
+                Kembali ke Hari Ini
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Dropdown Filters Row */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-2 border-t border-slate-100 text-xs">
@@ -1368,7 +2346,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             Coba sesuaikan tanggal atau pilihan filter Anda, atau buat laporan baru sekarang.
           </p>
           <button
-            onClick={onAddNewReport}
+            onClick={() => onAddNewReport()}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl"
           >
             + Input Laporan Baru

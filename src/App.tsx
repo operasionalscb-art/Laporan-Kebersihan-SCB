@@ -64,6 +64,7 @@ export default function App() {
 
   const [loginModalPrompt, setLoginModalPrompt] = useState<string>('');
   const [loginModalTab, setLoginModalTab] = useState<'quick_petugas' | 'email_admin'>('quick_petugas');
+  const [preselectedArea, setPreselectedArea] = useState<string | null>(null);
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ message, type });
@@ -81,7 +82,13 @@ export default function App() {
     setIsLoginModalOpen(true);
   };
 
-  const handleRequestInputReport = () => {
+  const handleRequestInputReport = (areaName?: string) => {
+    if (areaName && typeof areaName === 'string') {
+      setPreselectedArea(areaName);
+    } else {
+      setPreselectedArea(null);
+    }
+
     if (!currentUser) {
       handleOpenLoginModal(
         'Akses Dibatasi: Non-user / Tamu hanya bisa melihat Dashboard. Silakan login sebagai Petugas untuk mengisi laporan.',
@@ -372,10 +379,15 @@ export default function App() {
             <ReportForm
               currentUser={currentUser}
               officers={officers}
+              initialArea={preselectedArea}
               onSubmitSuccess={(newReport) => {
                 handleAddNewReport(newReport);
+                setPreselectedArea(null);
               }}
-              onViewDashboard={() => setActiveTab('dashboard')}
+              onViewDashboard={() => {
+                setActiveTab('dashboard');
+                setPreselectedArea(null);
+              }}
             />
           ) : (
             <div className="max-w-md mx-auto my-14 p-6 sm:p-8 bg-white rounded-2xl border border-slate-200 shadow-sm text-center">
