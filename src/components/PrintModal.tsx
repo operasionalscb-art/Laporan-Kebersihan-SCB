@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { CleaningReport, User } from '../types';
-import { Printer, X, Building2, CheckCircle2, FileDown, Loader2 } from 'lucide-react';
+import { Printer, X, Building2, CheckCircle2, FileDown, Loader2, FileText, Download, ExternalLink } from 'lucide-react';
 import { getTodayDateString } from '../utils/storage';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -18,6 +18,8 @@ export const PrintModal: React.FC<PrintModalProps> = ({
   reports,
   currentUser,
 }) => {
+  const [showExportPopup, setShowExportPopup] = useState<boolean>(false);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportSuccess, setExportSuccess] = useState<boolean>(false);
 
@@ -26,18 +28,31 @@ export const PrintModal: React.FC<PrintModalProps> = ({
   const today = getTodayDateString();
 
   const handlePrint = () => {
-    window.print();
+    try {
+      window.print();
+    } catch (e) {
+      console.warn('Native print call failed:', e);
+    }
   };
 
   const handleExportPdf = async () => {
-    const printElement = document.getElementById('print-area');
-    if (!printElement) {
-      window.print();
-      return;
-    }
-
+    // 1. Immediately open the dedicated export popup modal
+    setShowExportPopup(true);
     setIsExporting(true);
     setExportSuccess(false);
+
+    // 2. Trigger browser native print/PDF dialog
+    try {
+      window.print();
+    } catch (e) {
+      console.warn('Native print call failed:', e);
+    }
+
+    const printElement = document.getElementById('print-area');
+    if (!printElement) {
+      setIsExporting(false);
+      return;
+    }
 
     try {
       const canvas = await html2canvas(printElement, {
@@ -71,20 +86,41 @@ export const PrintModal: React.FC<PrintModalProps> = ({
       }
 
       const fileName = `Rekap_Kebersihan_SCB_${today}.pdf`;
+
+      // Generate direct Blob URL for download & preview
+      const blob = pdf.output('blob');
+      const blobUrl = URL.createObjectURL(blob);
+      setPdfBlobUrl(blobUrl);
+
+      // Save file
       pdf.save(fileName);
       setExportSuccess(true);
-      setTimeout(() => setExportSuccess(false), 3500);
     } catch (error) {
-      console.error('PDF export failed, falling back to window.print()', error);
-      window.print();
+      console.error('PDF export failed, using browser print fallback', error);
+      handlePrint();
     } finally {
       setIsExporting(false);
     }
   };
 
+  const handleDownloadDirectBlob = () => {
+    const fileName = `Rekap_Kebersihan_SCB_${today}.pdf`;
+    if (pdfBlobUrl) {
+      const link = document.createElement('a');
+      link.href = pdfBlobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setExportSuccess(true);
+    } else {
+      handleExportPdf();
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-      <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[92vh] flex flex-col">
+      <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[92vh] flex flex-col relative">
         {/* Header Action Bar (Hidden in actual print) */}
         <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50 print:hidden">
           <div>
@@ -106,17 +142,17 @@ export const PrintModal: React.FC<PrintModalProps> = ({
                   ? 'bg-emerald-700 ring-2 ring-emerald-300'
                   : 'bg-emerald-600 hover:bg-emerald-700 active:scale-95 cursor-pointer'
               }`}
-              title="Download dokumen langsung dalam format PDF"
+              title="Buka popup & unduh dokumen format PDF"
             >
               {isExporting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Mengekspor PDF...</span>
+                  <span>Memproses PDF...</span>
                 </>
               ) : exportSuccess ? (
                 <>
                   <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-                  <span>Berhasil Diunduh PDF!</span>
+                  <span>Popup PDF Siap!</span>
                 </>
               ) : (
                 <>
@@ -250,6 +286,122 @@ export const PrintModal: React.FC<PrintModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* POPUP EKSPOR / CETAK DOKUMEN PDF (ALWAYS VISIBLE WHEN EXPORT IS TRIGGERED) */}
+      {showExportPopup && (
+        <div className="fixed inset-0 z-70 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto print:hidden animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col my-auto animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-base">
+                    Popup Ekspor Format Dokumen PDF
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Sekolah Cendekia BAZNAS • Rekapitulasi Operasional
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowExportPopup(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors cursor-pointer"
+                title="Tutup Popup"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="p-5 sm:p-6 space-y-4">
+              {/* Notification Banner */}
+              <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="text-xs text-emerald-950">
+                  <p className="font-bold text-sm">
+                    {isExporting ? 'Sedang Memproses Dokumen PDF...' : 'Dokumen PDF Berhasil Dipersiapkan!'}
+                  </p>
+                  <p className="text-emerald-800 mt-1 leading-relaxed">
+                    Popup dialog cetak browser & opsi simpan dokumen PDF otomatis dipanggil. Anda dapat mengunduh berkas atau memanggil ulang jendela dialog cetak di bawah ini.
+                  </p>
+                </div>
+              </div>
+
+              {/* Document Meta Summary */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2 text-xs">
+                <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                  <span className="text-slate-500">Nama Dokumen</span>
+                  <span className="font-bold text-slate-900 truncate max-w-[240px]">
+                    Rekap_Kebersihan_SCB_{today}.pdf
+                  </span>
+                </div>
+                <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                  <span className="text-slate-500">Format Lembar</span>
+                  <span className="font-semibold text-slate-800">Standar A4 Resmi (Kop BAZNAS)</span>
+                </div>
+                <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                  <span className="text-slate-500">Jumlah Laporan Terlampir</span>
+                  <span className="font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
+                    {reports.length} Ruangan / Data
+                  </span>
+                </div>
+                <div className="flex justify-between items-center py-1">
+                  <span className="text-slate-500">Tanggal Dokumen</span>
+                  <span className="font-medium text-slate-800">{today}</span>
+                </div>
+              </div>
+
+              {/* Interactive Action Buttons inside Popup */}
+              <div className="space-y-2.5 pt-1">
+                <button
+                  onClick={handleDownloadDirectBlob}
+                  disabled={isExporting}
+                  className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Unduh File PDF Sekarang (.pdf)</span>
+                </button>
+
+                <button
+                  onClick={handlePrint}
+                  className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Printer className="w-4 h-4 text-slate-600" />
+                  <span>Buka Ulang Dialog Cetak / Simpan PDF Browser</span>
+                </button>
+
+                {pdfBlobUrl && (
+                  <a
+                    href={pdfBlobUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full py-2.5 px-4 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-medium border border-slate-200 transition-all flex items-center justify-center gap-2 text-center"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Lihat / Buka PDF di Tab Baru</span>
+                  </a>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-between text-xs">
+              <span className="text-[11px] text-slate-400">
+                Divisi Sarpras SCB • operasional.scb@gmail.com
+              </span>
+              <button
+                onClick={() => setShowExportPopup(false)}
+                className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                Tutup Popup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

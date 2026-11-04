@@ -890,7 +890,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => onOpenPrintModal(filteredReports)}
+            onClick={() => onOpenPrintModal(filteredReports.length > 0 ? filteredReports : reports)}
             className="flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-medium rounded-xl transition-colors cursor-pointer"
             title="Cetak atau Export format PDF resmi A4 untuk rekap laporan"
           >
@@ -2160,7 +2160,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
               <button
-                onClick={() => onOpenPrintModal(filteredReports)}
+                onClick={() => onOpenPrintModal(filteredReports.length > 0 ? filteredReports : reports)}
                 className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs"
                 title="Cetak rekap dokumen laporan bulan ini"
               >
