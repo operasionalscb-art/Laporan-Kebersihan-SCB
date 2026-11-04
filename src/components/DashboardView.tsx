@@ -891,11 +891,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => onOpenPrintModal(filteredReports)}
-            className="flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-medium rounded-xl transition-colors"
-            title="Cetak format A4 untuk rekap harian/mingguan"
+            className="flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-medium rounded-xl transition-colors cursor-pointer"
+            title="Cetak atau Export format PDF resmi A4 untuk rekap laporan"
           >
             <Printer className="w-4 h-4 text-slate-600" />
-            <span>Cetak Rekap</span>
+            <span>Cetak / Export PDF</span>
           </button>
 
           <button
