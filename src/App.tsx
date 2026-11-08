@@ -66,7 +66,8 @@ import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
 import { 
   getGoogleAccessToken, 
-  initGoogleAuth 
+  initGoogleAuth,
+  googleSignOut
 } from './services/googleAuth';
 import { 
   uploadReportPhotosToDrive, 
@@ -401,8 +402,9 @@ export default function App() {
   const handleLogout = () => {
     clearCurrentUser();
     setCurrentUserState(null);
-    setIsLoginModalOpen(true);
-    showToast('Anda telah keluar. Silakan masuk kembali.', 'info');
+    googleSignOut().catch(() => {});
+    setIsLoginModalOpen(false);
+    showToast('Anda telah keluar. Sistem beralih ke Mode Tamu (Hanya Melihat Dashboard).', 'info');
   };
 
   const officers = users.filter((u) => u.role === 'petugas');

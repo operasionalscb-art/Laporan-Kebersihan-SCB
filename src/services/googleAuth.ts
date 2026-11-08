@@ -396,7 +396,7 @@ export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile
     }
 
     const profile: GoogleUserProfile = {
-      email: result.user.email || 'operasional.scb@gmail.com',
+      email: result.user.email || '',
       displayName: result.user.displayName || result.user.email || 'Pengguna Google',
       photoURL: result.user.photoURL || undefined,
       authMethod: 'firebase',
@@ -487,18 +487,7 @@ export const getCurrentGoogleProfile = (): GoogleUserProfile | null => {
       return currentProfile;
     }
   } catch {}
-  
-  // Default SCB designated Google account
-  currentProfile = {
-    email: 'operasional.scb@gmail.com',
-    displayName: 'Operasional SCB',
-    authMethod: 'gis',
-  };
-  try {
-    localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(currentProfile));
-    localStorage.setItem(STORAGE_KEEP_CONNECTED_KEY, 'true');
-  } catch {}
-  return currentProfile;
+  return null;
 };
 
 export const googleSignOut = async (): Promise<void> => {

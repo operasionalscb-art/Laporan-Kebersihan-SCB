@@ -80,7 +80,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   };
 
   /**
-   * Helper: Matches authenticated Google email to registered user accounts
+   * Helper: Matches authenticated Google email strictly to registered user accounts
    */
   const matchRegisteredUser = (email: string, userList: User[]): User | undefined => {
     const cleanEmail = email.trim().toLowerCase();
@@ -98,35 +98,21 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       if (admin) return admin;
     }
 
-    // 3. Username match: e.g. "iday@..." matching username "iday"
-    const prefix = cleanEmail.split('@')[0];
-    const usernameMatch = userList.find(
-      (u) => u.username && u.username.trim().toLowerCase() === prefix && u.isActive !== false
-    );
-    if (usernameMatch) return usernameMatch;
+    // 3. Official SCB domain username match: ONLY if email domain is @scb.sch.id
+    if (cleanEmail.endsWith('@scb.sch.id')) {
+      const prefix = cleanEmail.split('@')[0];
+      const usernameMatch = userList.find(
+        (u) => u.username && u.username.trim().toLowerCase() === prefix && u.isActive !== false
+      );
+      if (usernameMatch) return usernameMatch;
+    }
 
     return undefined;
   };
 
   /**
-   * Quick select login for registered user accounts
-   */
-  const handleSelectRegisteredUser = (targetUser: User) => {
-    setIsGoogleLoading(false);
-    setGoogleSuccessInfo({
-      email: targetUser.email || `${targetUser.username}@scb.sch.id`,
-      name: targetUser.name,
-      role: targetUser.role,
-    });
-    setTimeout(() => {
-      onLoginSuccess(targetUser);
-      handleClose();
-    }, 350);
-  };
-
-  /**
    * Main Google Login Handler:
-   * Prompts user with Google account chooser and matches with registered system users.
+   * Prompts user with Google account chooser and strictly verifies against registered system users.
    */
   const handleGoogleLogin = async (hintEmail?: string) => {
     setIsGoogleLoading(true);
@@ -139,13 +125,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
       if (!googleEmail) {
         setErrorMessage(
-          'Tidak dapat membaca alamat email dari akun Google. Pastikan izin profil Google telah disetujui.'
+          'Tidak dapat membaca alamat email dari akun Google. Pastikan Anda mengizinkan profil email saat login Google.'
         );
         setIsGoogleLoading(false);
         return;
       }
 
-      // Check against registered users
+      // Check strictly against registered users
       const matchedUser = matchRegisteredUser(googleEmail, users);
 
       if (matchedUser) {
@@ -165,24 +151,20 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           handleClose();
         }, 500);
       } else {
+        // STRICT ACCESS DENIAL: Unauthorized guest or non-registered email
         setErrorMessage(
-          `Email Google "${googleEmail}" tidak terdaftar dalam sistem SIM-BERSIH SCB. Silakan gunakan akun Google resmi yang terdaftar (seperti operasional.scb@gmail.com, iday@scb.sch.id, dsb) atau pilih akun di bawah.`
+          `Akses Ditolak: Akun Google "${googleEmail}" tidak terdaftar sebagai personil SIM-BERSIH SCB. Sistem hanya mengizinkan akun resmi yang didaftarkan Superadmin.`
         );
       }
     } catch (err: any) {
       console.warn('Google login error:', err);
       const rawMsg = err?.message || String(err || '');
-      if (
-        rawMsg.toLowerCase().includes('popup') ||
-        rawMsg.toLowerCase().includes('origin') ||
-        rawMsg.toLowerCase().includes('unauthorized-domain') ||
-        rawMsg.toLowerCase().includes('frame')
-      ) {
-        setErrorMessage(
-          'Jendela popup Google terhalang oleh perizinan sandbox browser/iframe. Silakan klik langsung salah satu akun petugas/admin terdaftar di daftar bawah untuk masuk.'
-        );
+      if (rawMsg.includes('closed') || rawMsg.includes('dibatalkan') || rawMsg.includes('cancel')) {
+        setErrorMessage('Proses login Google dibatalkan. Silakan coba kembali.');
+      } else if (rawMsg.includes('popup') || rawMsg.includes('terblokir') || rawMsg.includes('blocked')) {
+        setErrorMessage('Jendela pop-up Google terblokir browser. Harap izinkan pop-up di browser Anda.');
       } else {
-        setErrorMessage(rawMsg || 'Gagal masuk via akun Google. Silakan klik salah satu akun terdaftar di bawah.');
+        setErrorMessage(rawMsg || 'Gagal masuk via akun Google. Pastikan jaringan internet aktif.');
       }
     } finally {
       setIsGoogleLoading(false);
@@ -283,15 +265,18 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
               {/* Registered Accounts Directory (Quick Select) */}
               <div className="pt-2 border-t border-slate-100">
-                <div className="flex items-center justify-between mb-2.5">
+                <div className="flex items-center justify-between mb-1.5">
                   <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
                     <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
-                    Daftar Email Terdaftar di Sistem:
+                    Daftar Akun Resmi yang Terdaftar:
                   </span>
                   <span className="text-[10px] text-slate-400">
                     {eligibleUsers.length} Personel
                   </span>
                 </div>
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Klik akun di bawah untuk membuka verifikasi Google SSO dengan email tersebut:
+                </p>
 
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                   {eligibleUsers.map((user) => {
@@ -302,9 +287,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                       <button
                         key={user.id}
                         type="button"
-                        onClick={() => handleSelectRegisteredUser(user)}
+                        onClick={() => handleGoogleLogin(user.email)}
                         disabled={isGoogleLoading}
-                        className="w-full text-left p-2.5 rounded-xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/60 transition-all flex items-center justify-between gap-2.5 group cursor-pointer shadow-2xs hover:shadow-xs"
+                        className="w-full text-left p-2.5 rounded-xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/50 transition-all flex items-center justify-between gap-2.5 group cursor-pointer shadow-2xs hover:shadow-xs disabled:opacity-60"
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div
@@ -338,9 +323,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                           </div>
                         </div>
 
-                        <div className="shrink-0 flex items-center gap-1 text-[11px] text-emerald-700 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
-                          <span>Pilih</span>
-                          <ArrowRight className="w-3 h-3" />
+                        <div className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-[10px] font-bold group-hover:bg-emerald-600 group-hover:text-white transition-all">
+                          <GoogleIcon className="w-3 h-3" />
+                          <span>Login</span>
                         </div>
                       </button>
                     );

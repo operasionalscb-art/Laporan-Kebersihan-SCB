@@ -953,26 +953,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const report = reports.find((r) => r.id === reportId);
     if (!report) return;
 
-    let verifierName = customVerifierName;
-    let verifierRole = 'Supervisor';
-
-    if (!verifierName) {
-      if (currentUser) {
-        verifierName = currentUser.name;
-        verifierRole = currentUser.role === 'superadmin' ? 'Superadmin' : 'Supervisor';
-      } else {
-        const firstSup = registeredSupervisors[0];
-        verifierName = firstSup ? firstSup.name : 'SUPERVISOR SARPRAS SCB';
-        verifierRole = 'Supervisor';
-      }
-    } else {
-      const foundUser = (allUsers || []).find((u) => u.name === verifierName);
-      if (foundUser) {
-        verifierRole = foundUser.role === 'superadmin' ? 'Superadmin' : 'Supervisor';
-      } else if (currentUser?.role === 'superadmin') {
-        verifierRole = 'Superadmin';
-      }
+    if (!isSupervisorOrAdmin || !currentUser) {
+      onOpenLoginModal?.('Akses Dibatasi: Hanya Supervisor atau Superadmin yang dapat melakukan verifikasi laporan.');
+      return;
     }
+
+    const verifierName = customVerifierName || currentUser.name;
+    const verifierRole = currentUser.role === 'superadmin' ? 'Superadmin' : 'Supervisor';
 
     const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
     const nowDate = getTodayDateString();
