@@ -4,7 +4,14 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User, CleaningReport } from './types';
+import { 
+  User, 
+  CleaningReport, 
+  MasterRoom, 
+  MasterChecklist, 
+  FormSettings, 
+  RoomSchedule 
+} from './types';
 import { 
   getUsers, 
   saveUsers, 
@@ -21,6 +28,20 @@ import {
   clearCurrentUser
 } from './utils/storage';
 import {
+  getMasterRooms,
+  saveMasterRooms,
+  getMasterChecklists,
+  saveMasterChecklists,
+  getFormSettings,
+  saveFormSettings,
+  getRoomSchedules,
+  saveRoomSchedules,
+  DEFAULT_MASTER_ROOMS,
+  DEFAULT_MASTER_CHECKLISTS,
+  DEFAULT_FORM_SETTINGS,
+  DEFAULT_ROOM_SCHEDULES
+} from './utils/formStorage';
+import {
   subscribeReports,
   saveReportToCloud,
   deleteReportFromCloud,
@@ -28,17 +49,23 @@ import {
   subscribeUsers,
   saveUserToCloud,
   deleteUserFromCloud,
+  subscribeFormConfig,
+  saveMasterRoomsToCloud,
+  saveMasterChecklistsToCloud,
+  saveFormSettingsToCloud,
+  subscribeRoomSchedules,
+  saveRoomSchedulesToCloud
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
 import { ReportForm } from './components/ReportForm';
+import { FormManagement } from './components/FormManagement';
 import { AccountManagement } from './components/AccountManagement';
 import { LoginModal } from './components/LoginModal';
 import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
 import { 
   getGoogleAccessToken, 
-  getSavedToken, 
   initGoogleAuth 
 } from './services/googleAuth';
 import { 
@@ -53,7 +80,13 @@ export default function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUserState] = useState<User | null>(null);
   const [reports, setReports] = useState<CleaningReport[]>([]);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'input' | 'accounts' | 'drive'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'input' | 'form_mgmt' | 'accounts' | 'drive'>('dashboard');
+
+  // Master Data & Configuration state
+  const [masterRooms, setMasterRooms] = useState<MasterRoom[]>(() => getMasterRooms());
+  const [masterChecklists, setMasterChecklists] = useState<MasterChecklist[]>(() => getMasterChecklists());
+  const [formSettings, setFormSettings] = useState<FormSettings>(() => getFormSettings());
+  const [roomSchedules, setRoomSchedules] = useState<RoomSchedule[]>(() => getRoomSchedules());
 
   // Modals
   const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
@@ -63,7 +96,6 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
   const [loginModalPrompt, setLoginModalPrompt] = useState<string>('');
-  const [loginModalTab, setLoginModalTab] = useState<'quick_petugas' | 'email_admin'>('quick_petugas');
   const [preselectedArea, setPreselectedArea] = useState<string | null>(null);
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
@@ -74,11 +106,9 @@ export default function App() {
   };
 
   const handleOpenLoginModal = (
-    reason = 'Silakan masuk pada akun Petugas Kebersihan atau Pengelola SCB.',
-    tab: 'quick_petugas' | 'email_admin' = 'quick_petugas'
+    reason = 'Silakan masuk pada akun Petugas Kebersihan atau Pengelola SCB via Google sesuai email terdaftar.'
   ) => {
     setLoginModalPrompt(reason);
-    setLoginModalTab(tab);
     setIsLoginModalOpen(true);
   };
 
@@ -91,8 +121,7 @@ export default function App() {
 
     if (!currentUser) {
       handleOpenLoginModal(
-        'Akses Dibatasi: Non-user / Tamu hanya bisa melihat Dashboard. Silakan login sebagai Petugas untuk mengisi laporan.',
-        'quick_petugas'
+        'Akses Dibatasi: Non-user / Tamu hanya bisa melihat Dashboard. Silakan masuk via Akun Google sesuai email terdaftar untuk mengisi laporan.'
       );
       showToast('Non-user / Tamu hanya bisa melihat dashboard. Silakan login.', 'error');
       setActiveTab('dashboard');
@@ -101,22 +130,29 @@ export default function App() {
     setActiveTab('input');
   };
 
-  // Safe tab change handler to block non-users from switching to input or accounts
-  const handleSafeTabChange = (targetTab: 'dashboard' | 'input' | 'accounts' | 'drive') => {
+  // Safe tab change handler to block non-users from switching to restricted tabs
+  const handleSafeTabChange = (targetTab: 'dashboard' | 'input' | 'form_mgmt' | 'accounts' | 'drive') => {
     if (targetTab === 'input') {
       handleRequestInputReport();
       return;
     }
+    if (targetTab === 'form_mgmt') {
+      if (!isSuperAdmin) {
+        handleOpenLoginModal('Pengelolaan Form & Jadwal hanya dapat diakses oleh Superadmin via akun Google (operasional.scb@gmail.com).');
+        setActiveTab('dashboard');
+        return;
+      }
+    }
     if (targetTab === 'accounts') {
       if (!isSuperAdmin) {
-        handleOpenLoginModal('Pengelolaan akun hanya dapat diakses oleh Superadmin.', 'email_admin');
+        handleOpenLoginModal('Pengelolaan akun hanya dapat diakses oleh Superadmin via akun Google (operasional.scb@gmail.com).');
         setActiveTab('dashboard');
         return;
       }
     }
     if (targetTab === 'drive') {
       if (!isSuperAdmin) {
-        handleOpenLoginModal('Pusat Penyimpanan Data hanya dapat diakses oleh Super Admin (operasional.scb@gmail.com).', 'email_admin');
+        handleOpenLoginModal('Pusat Penyimpanan Data hanya dapat diakses oleh Super Admin via akun Google (operasional.scb@gmail.com).');
         setActiveTab('dashboard');
         return;
       }
@@ -133,6 +169,10 @@ export default function App() {
     // Initial local cache load for instant render
     setUsers(getUsers());
     setReports(getReports());
+    setMasterRooms(getMasterRooms());
+    setMasterChecklists(getMasterChecklists());
+    setFormSettings(getFormSettings());
+    setRoomSchedules(getRoomSchedules());
 
     // 1. Subscribe to Live Firestore Reports
     const unsubscribeReports = subscribeReports((cloudReports) => {
@@ -144,12 +184,26 @@ export default function App() {
       setUsers(cloudUsers);
     });
 
-    // 3. Initialize Google Auth and restore saved session
+    // 3. Subscribe to Live Form Configuration (Rooms, Checklists, Form Settings)
+    const unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
+      setMasterRooms(rooms);
+      setMasterChecklists(checklists);
+      setFormSettings(settings);
+    });
+
+    // 4. Subscribe to Live Room Schedules
+    const unsubscribeSchedules = subscribeRoomSchedules((schedules) => {
+      setRoomSchedules(schedules);
+    });
+
+    // 5. Initialize Google Auth and restore saved session
     const unsubscribeGoogle = initGoogleAuth();
 
     return () => {
       unsubscribeReports();
       unsubscribeUsers();
+      unsubscribeFormConfig();
+      unsubscribeSchedules();
       if (typeof unsubscribeGoogle === 'function') {
         unsubscribeGoogle();
       }
@@ -173,7 +227,6 @@ export default function App() {
     // 3. Automatic Google Drive Photo Upload & Backup
     const token = await getGoogleAccessToken();
     if (token) {
-      // Run background upload so officer UI is never blocked
       (async () => {
         let currentReport = saved;
 
@@ -252,6 +305,47 @@ export default function App() {
     }
   };
 
+  // Handlers for Form Configuration & Schedules
+  const handleSaveRooms = async (updatedRooms: MasterRoom[]) => {
+    setMasterRooms(updatedRooms);
+    saveMasterRooms(updatedRooms);
+    try {
+      await saveMasterRoomsToCloud(updatedRooms);
+    } catch (e) {
+      console.warn('Rooms saved locally, cloud sync error:', e);
+    }
+  };
+
+  const handleSaveChecklists = async (updatedChecklists: MasterChecklist[]) => {
+    setMasterChecklists(updatedChecklists);
+    saveMasterChecklists(updatedChecklists);
+    try {
+      await saveMasterChecklistsToCloud(updatedChecklists);
+    } catch (e) {
+      console.warn('Checklists saved locally, cloud sync error:', e);
+    }
+  };
+
+  const handleSaveFormSettings = async (updatedSettings: FormSettings) => {
+    setFormSettings(updatedSettings);
+    saveFormSettings(updatedSettings);
+    try {
+      await saveFormSettingsToCloud(updatedSettings);
+    } catch (e) {
+      console.warn('Settings saved locally, cloud sync error:', e);
+    }
+  };
+
+  const handleSaveSchedules = async (updatedSchedules: RoomSchedule[]) => {
+    setRoomSchedules(updatedSchedules);
+    saveRoomSchedules(updatedSchedules);
+    try {
+      await saveRoomSchedulesToCloud(updatedSchedules);
+    } catch (e) {
+      console.warn('Schedules saved locally, cloud sync error:', e);
+    }
+  };
+
   // Handlers for Users
   const handleAddUser = async (userData: Omit<User, 'id' | 'createdAt'>) => {
     const created = addUser(userData);
@@ -299,7 +393,6 @@ export default function App() {
     setCurrentUser(user);
     setCurrentUserState(user);
     showToast(`Selamat datang, ${user.name}!`);
-    // If officer, automatically suggest the input tab
     if (user.role === 'petugas') {
       setActiveTab('input');
     }
@@ -350,7 +443,7 @@ export default function App() {
           showToast(`Berhasil masuk sebagai ${user.name} (${user.role.toUpperCase()})`, 'success');
         }}
         onLogout={handleLogout}
-        onOpenLoginModal={(reason, tab) => handleOpenLoginModal(reason, tab)}
+        onOpenLoginModal={(reason) => handleOpenLoginModal(reason)}
         onRequestInputReport={handleRequestInputReport}
       />
 
@@ -362,6 +455,8 @@ export default function App() {
             currentUser={currentUser}
             officers={officers}
             allUsers={users}
+            masterRooms={masterRooms}
+            roomSchedules={roomSchedules}
             onAddNewReport={handleRequestInputReport}
             onUpdateReport={handleUpdateReport}
             onDeleteReport={handleDeleteReport}
@@ -379,6 +474,10 @@ export default function App() {
             <ReportForm
               currentUser={currentUser}
               officers={officers}
+              masterRooms={masterRooms}
+              masterChecklists={masterChecklists}
+              formSettings={formSettings}
+              roomSchedules={roomSchedules}
               initialArea={preselectedArea}
               onSubmitSuccess={(newReport) => {
                 handleAddNewReport(newReport);
@@ -394,24 +493,57 @@ export default function App() {
               <div className="w-14 h-14 bg-amber-100 text-amber-700 rounded-full flex items-center justify-center mx-auto mb-4">
                 <AlertCircle className="w-7 h-7" />
               </div>
-              <h3 className="font-bold text-slate-800 text-lg">Akses Khusus Petugas Kebersihan</h3>
+              <h3 className="font-bold text-slate-800 text-lg">Akses Khusus Petugas Terjadwal</h3>
               <p className="text-xs text-slate-600 mt-2 mb-6 leading-relaxed">
-                Non-user / Tamu hanya bisa melihat dashboard pemantauan. Untuk mengisi Formulir Laporan Kebersihan Kamar Mandi, silakan masuk ke akun Petugas Anda terlebih dahulu.
+                Non-user / Tamu hanya bisa melihat dashboard pemantauan. Untuk mengisi Formulir Laporan Kebersihan Kamar Mandi, silakan masuk ke akun Petugas Anda via Google terlebih dahulu.
               </p>
               <div className="flex flex-col gap-2.5">
                 <button
-                  onClick={() => handleOpenLoginModal('Silakan masuk ke akun Petugas Kebersihan Anda untuk mengisi formulir.', 'quick_petugas')}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs sm:text-sm shadow-sm transition-colors"
+                  onClick={() => handleOpenLoginModal('Silakan masuk ke akun Petugas Kebersihan via Google untuk mengisi formulir.')}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs sm:text-sm shadow-sm transition-colors cursor-pointer"
                 >
-                  Masuk Akun Petugas
+                  Masuk via Google (Akun Petugas)
                 </button>
                 <button
                   onClick={() => setActiveTab('dashboard')}
-                  className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition-colors"
+                  className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition-colors cursor-pointer"
                 >
                   Kembali ke Dashboard Laporan
                 </button>
               </div>
+            </div>
+          )
+        )}
+
+        {activeTab === 'form_mgmt' && (
+          isSuperAdmin ? (
+            <FormManagement
+              rooms={masterRooms}
+              checklists={masterChecklists}
+              formSettings={formSettings}
+              schedules={roomSchedules}
+              officers={officers}
+              allUsers={users}
+              currentUser={currentUser}
+              onSaveRooms={handleSaveRooms}
+              onSaveChecklists={handleSaveChecklists}
+              onSaveFormSettings={handleSaveFormSettings}
+              onSaveSchedules={handleSaveSchedules}
+              onShowToast={showToast}
+            />
+          ) : (
+            <div className="max-w-md mx-auto my-12 p-6 bg-white rounded-2xl border border-slate-200 text-center">
+              <AlertCircle className="w-10 h-10 text-amber-500 mx-auto mb-2" />
+              <h3 className="font-bold text-slate-800 text-base">Akses Khusus Super Admin</h3>
+              <p className="text-xs text-slate-500 mt-1 mb-4">
+                Halaman pengelolaan form dan jadwal hanya dapat diakses oleh akun superadmin (operasional.scb@gmail.com).
+              </p>
+              <button
+                onClick={() => handleOpenLoginModal('Masuk dengan akun Google operasional.scb@gmail.com.')}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
+              >
+                Masuk Akun Superadmin
+              </button>
             </div>
           )
         )}
@@ -433,7 +565,7 @@ export default function App() {
                 Halaman pengelolaan akun hanya dapat diakses oleh akun pengelola superadmin (operasional.scb@gmail.com).
               </p>
               <button
-                onClick={() => handleOpenLoginModal('Masuk dengan email operasional.scb@gmail.com dan kata sandi Anda.', 'email_admin')}
+                onClick={() => handleOpenLoginModal('Masuk dengan email operasional.scb@gmail.com.')}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
               >
                 Masuk Akun Superadmin
@@ -468,7 +600,7 @@ export default function App() {
                 Pusat penyimpanan dan pencadangan data hanya dapat diakses oleh akun Super Admin (operasional.scb@gmail.com).
               </p>
               <button
-                onClick={() => handleOpenLoginModal('Masuk dengan akun superadmin untuk mengakses Pusat Penyimpanan Data.', 'email_admin')}
+                onClick={() => handleOpenLoginModal('Masuk dengan akun superadmin untuk mengakses Pusat Penyimpanan Data.')}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
               >
                 Masuk Akun Superadmin
@@ -487,7 +619,7 @@ export default function App() {
             <span>Sekolah Cendekia BAZNAS (SCB)</span>
           </div>
           <div className="flex items-center space-x-3 text-[11px] text-slate-400">
-            <span>Petugas: IDAY M YUSUF • ABDUL KODIR • WAHYUDIN</span>
+            <span>Petugas Terjadwal: IDAY M YUSUF • ABDUL KODIR • WAHYUDIN</span>
             <span>•</span>
             <span>Superadmin: operasional.scb@gmail.com</span>
           </div>
@@ -501,7 +633,6 @@ export default function App() {
         users={users}
         onLoginSuccess={handleLoginSuccess}
         promptReason={loginModalPrompt}
-        initialTab={loginModalTab}
       />
 
       {/* Print Document Modal */}

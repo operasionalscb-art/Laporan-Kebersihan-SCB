@@ -3,16 +3,15 @@ import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import rawConfig from '../../firebase-applet-config.json';
 
 export const firebaseConfig = {
-  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string) || (rawConfig as any)?.apiKey || '',
-  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string) || (rawConfig as any)?.authDomain || '',
-  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string) || (rawConfig as any)?.projectId || 'gen-lang-client-0457083120',
-  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) || (rawConfig as any)?.storageBucket || '',
-  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || (rawConfig as any)?.messagingSenderId || '',
-  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string) || (rawConfig as any)?.appId || '',
+  apiKey: (rawConfig as any)?.apiKey || '',
+  authDomain: (rawConfig as any)?.authDomain || '',
+  projectId: (rawConfig as any)?.projectId || 'gen-lang-client-0457083120',
+  storageBucket: (rawConfig as any)?.storageBucket || '',
+  messagingSenderId: (rawConfig as any)?.messagingSenderId || '',
+  appId: (rawConfig as any)?.appId || '',
 };
 
 export const FIRESTORE_DATABASE_ID: string =
-  (import.meta.env.VITE_FIREBASE_DATABASE_ID as string) ||
   (rawConfig as any)?.firestoreDatabaseId ||
   (rawConfig as any)?.databaseId ||
   'ai-studio-laporankebersiha-b837dc60-6c60-4a56-9829-2068c57227dc';

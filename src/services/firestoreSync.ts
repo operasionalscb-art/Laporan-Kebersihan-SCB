@@ -9,7 +9,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { CleaningReport, User } from '../types';
+import { CleaningReport, User, MasterRoom, MasterChecklist, FormSettings, RoomSchedule } from '../types';
 import { 
   INITIAL_REPORTS, 
   INITIAL_USERS, 
@@ -18,9 +18,25 @@ import {
   saveUsers as saveUsersToStorage,
   getUsers as getUsersFromStorage
 } from '../utils/storage';
+import {
+  getMasterRooms,
+  saveMasterRooms,
+  getMasterChecklists,
+  saveMasterChecklists,
+  getFormSettings,
+  saveFormSettings,
+  getRoomSchedules,
+  saveRoomSchedules,
+  DEFAULT_MASTER_ROOMS,
+  DEFAULT_MASTER_CHECKLISTS,
+  DEFAULT_FORM_SETTINGS,
+  DEFAULT_ROOM_SCHEDULES
+} from '../utils/formStorage';
 
 const REPORTS_COLLECTION = 'reports';
 const USERS_COLLECTION = 'users';
+const FORM_CONFIGS_COLLECTION = 'form_configs';
+const ROOM_SCHEDULES_COLLECTION = 'room_schedules';
 
 let isReportsSeeded = false;
 let isUsersSeeded = false;
@@ -246,3 +262,134 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
     console.error('Failed to delete user from Firestore:', err);
   }
 }
+
+// ==========================================
+// FORM CONFIGURATION CLOUD SYNCHRONIZATION
+// ==========================================
+
+export function subscribeFormConfig(
+  onConfigChanged: (config: {
+    rooms: MasterRoom[];
+    checklists: MasterChecklist[];
+    settings: FormSettings;
+  }) => void
+): () => void {
+  const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+
+  return onSnapshot(
+    docRef,
+    async (snapshot) => {
+      if (!snapshot.exists()) {
+        const defaultData = {
+          rooms: DEFAULT_MASTER_ROOMS,
+          checklists: DEFAULT_MASTER_CHECKLISTS,
+          settings: DEFAULT_FORM_SETTINGS,
+        };
+        try {
+          await setDoc(docRef, sanitizeForFirestore(defaultData));
+        } catch (e) {
+          console.warn('Initial form config seed note:', e);
+        }
+        onConfigChanged(defaultData);
+        return;
+      }
+
+      const data = snapshot.data();
+      const rooms: MasterRoom[] = data?.rooms && Array.isArray(data.rooms) ? data.rooms : DEFAULT_MASTER_ROOMS;
+      const checklists: MasterChecklist[] = data?.checklists && Array.isArray(data.checklists) ? data.checklists : DEFAULT_MASTER_CHECKLISTS;
+      const settings: FormSettings = data?.settings ? data.settings : DEFAULT_FORM_SETTINGS;
+
+      saveMasterRooms(rooms);
+      saveMasterChecklists(checklists);
+      saveFormSettings(settings);
+
+      onConfigChanged({ rooms, checklists, settings });
+    },
+    (err) => {
+      console.warn('Form config snapshot error, using local storage fallback:', err);
+      onConfigChanged({
+        rooms: getMasterRooms(),
+        checklists: getMasterChecklists(),
+        settings: getFormSettings(),
+      });
+    }
+  );
+}
+
+export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void> {
+  saveMasterRooms(rooms);
+  try {
+    const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+    await setDoc(docRef, { rooms: sanitizeForFirestore(rooms) }, { merge: true });
+  } catch (err) {
+    console.error('Failed to sync master rooms to cloud:', err);
+  }
+}
+
+export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[]): Promise<void> {
+  saveMasterChecklists(checklists);
+  try {
+    const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+    await setDoc(docRef, { checklists: sanitizeForFirestore(checklists) }, { merge: true });
+  } catch (err) {
+    console.error('Failed to sync master checklists to cloud:', err);
+  }
+}
+
+export async function saveFormSettingsToCloud(settings: FormSettings): Promise<void> {
+  saveFormSettings(settings);
+  try {
+    const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+    await setDoc(docRef, { settings: sanitizeForFirestore(settings) }, { merge: true });
+  } catch (err) {
+    console.error('Failed to sync form settings to cloud:', err);
+  }
+}
+
+// ==========================================
+// ROOM OFFICER SCHEDULES CLOUD SYNC
+// ==========================================
+
+export function subscribeRoomSchedules(
+  onSchedulesChanged: (schedules: RoomSchedule[]) => void
+): () => void {
+  const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, 'active');
+
+  return onSnapshot(
+    docRef,
+    async (snapshot) => {
+      if (!snapshot.exists()) {
+        try {
+          await setDoc(docRef, { schedules: sanitizeForFirestore(DEFAULT_ROOM_SCHEDULES) });
+        } catch (e) {
+          console.warn('Initial schedule seed note:', e);
+        }
+        saveRoomSchedules(DEFAULT_ROOM_SCHEDULES);
+        onSchedulesChanged(DEFAULT_ROOM_SCHEDULES);
+        return;
+      }
+
+      const data = snapshot.data();
+      const schedules: RoomSchedule[] =
+        data?.schedules && Array.isArray(data.schedules) ? data.schedules : DEFAULT_ROOM_SCHEDULES;
+
+      saveRoomSchedules(schedules);
+      onSchedulesChanged(schedules);
+    },
+    (err) => {
+      console.warn('Room schedules snapshot error, fallback to local:', err);
+      onSchedulesChanged(getRoomSchedules());
+    }
+  );
+}
+
+export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<void> {
+  saveRoomSchedules(schedules);
+  try {
+    const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, 'active');
+    await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) }, { merge: true });
+  } catch (err) {
+    console.error('Failed to sync room schedules to cloud:', err);
+  }
+}
+

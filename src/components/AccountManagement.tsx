@@ -271,6 +271,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   const [searchUser, setSearchUser] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [formError, setFormError] = useState<string>('');
 
   // Sub Tab Navigation: 'users' or 'checklist'
   const [activeSubTab, setActiveSubTab] = useState<'users' | 'checklist'>('users');
@@ -283,19 +284,18 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
     email: '',
     username: '',
     password: '',
-    pin: '1234',
     role: 'petugas' as UserRole,
     phone: '',
     isActive: true,
   });
 
   const handleOpenAddModal = () => {
+    setFormError('');
     setFormData({
       name: '',
       email: '',
       username: '',
       password: '',
-      pin: '1234',
       role: 'petugas',
       phone: '',
       isActive: true,
@@ -304,13 +304,13 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   };
 
   const handleOpenEditModal = (user: User) => {
+    setFormError('');
     setEditingUser(user);
     setFormData({
       name: user.name,
       email: user.email,
       username: user.username,
       password: user.password || '',
-      pin: user.pin || '1234',
       role: user.role,
       phone: user.phone || '',
       isActive: user.isActive,
@@ -320,9 +320,10 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   const handleSaveUser = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name.trim() || !formData.username.trim()) {
-      alert('Nama dan Username wajib diisi');
+      setFormError('Nama Lengkap dan Username wajib diisi');
       return;
     }
+    setFormError('');
 
     if (editingUser) {
       onUpdateUser(editingUser.id, {
@@ -330,7 +331,6 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         email: formData.email.trim(),
         username: formData.username.trim().toLowerCase(),
         password: formData.password || 'password123',
-        pin: formData.pin || '1234',
         role: formData.role,
         phone: formData.phone.trim(),
         isActive: formData.isActive,
@@ -342,7 +342,6 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         email: formData.email.trim() || `${formData.username.trim().toLowerCase()}@scb.sch.id`,
         username: formData.username.trim().toLowerCase(),
         password: formData.password || 'password123',
-        pin: formData.pin || '1234',
         role: formData.role,
         phone: formData.phone.trim(),
         isActive: formData.isActive,
@@ -462,13 +461,10 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
             <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-bold text-emerald-950">
-                Petugas Bawaan Terdaftar Sesuai Formulir:
+                Otentikasi Resmi: Google Single Sign-On (SSO) Sesuai Email Terdaftar
               </p>
-              <p className="text-emerald-800">
-                Akun bawaan: <strong>IDAY M YUSUF</strong> (username: <code>iday</code>),{' '}
-                <strong>ABDUL KODIR</strong> (username: <code>kodir</code>), dan{' '}
-                <strong>WAHYUDIN</strong> (username: <code>wahyudin</code>).
-                Petugas dan Supervisor masuk menggunakan 4 digit PIN (standar: <strong>1234</strong>).
+              <p className="text-emerald-800 leading-relaxed">
+                Semua personel (Superadmin, Supervisor, dan Petugas) masuk menggunakan <strong>Google Sign-In</strong>. Sistem secara ketat mencocokkan email Google akun dengan kolom <strong>Email Terdaftar</strong> di bawah ini. Pastikan alamat email di tabel sesuai dengan akun Google yang digunakan masing-masing personel.
               </p>
             </div>
           </div>
@@ -498,9 +494,9 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
                   <tr>
                     <th className="py-3 px-4">Nama Lengkap</th>
-                    <th className="py-3 px-4">Username / Email</th>
+                    <th className="py-3 px-4">Username / Email Google</th>
                     <th className="py-3 px-4">Peran (Role)</th>
-                    <th className="py-3 px-4">PIN Masuk</th>
+                    <th className="py-3 px-4">Otentikasi</th>
                     <th className="py-3 px-4">Kontak / No WA</th>
                     <th className="py-3 px-4">Status</th>
                     <th className="py-3 px-4 text-right">Aksi</th>
@@ -542,7 +538,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                           <div className="font-mono text-xs font-semibold text-slate-800">
                             @{user.username}
                           </div>
-                          <div className="text-[11px] text-slate-500">{user.email}</div>
+                          <div className="text-[11px] text-slate-500 font-mono">{user.email}</div>
                         </td>
 
                         <td className="py-3.5 px-4 whitespace-nowrap">
@@ -560,9 +556,9 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                         </td>
 
                         <td className="py-3.5 px-4 whitespace-nowrap">
-                          <span className="font-mono text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 inline-flex items-center gap-1">
-                            <Key className="w-3 h-3 text-emerald-600" />
-                            {user.pin || '1234'}
+                          <span className="text-[11px] font-medium text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            Google SSO
                           </span>
                         </td>
 
@@ -612,11 +608,9 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                             {!isSuper && (
                               <button
                                 onClick={() => {
-                                  if (confirm(`Yakin ingin menghapus akun ${user.name}?`)) {
-                                    onDeleteUser(user.id);
-                                  }
+                                  onDeleteUser(user.id);
                                 }}
-                                className="p-1.5 bg-slate-100 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors"
+                                className="p-1.5 bg-slate-100 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
                                 title="Hapus Akun"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -660,7 +654,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
               <div className="pt-2 border-t border-slate-100 text-[11px] space-y-1.5 text-slate-600">
                 <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
-                  <span>Login Cepat PIN 4 Digit di Ponsel</span>
+                  <span>Login Otomatis via Akun Google di Ponsel/PC</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
@@ -723,20 +717,20 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 </div>
               </div>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Memegang <strong>otoritas penuh (Full Access)</strong>: manajemen personil & reset PIN, kontrol sinkronisasi folder Google Drive BAZNAS, backup & restore database cloud, serta audit log sistem.
+                Memegang <strong>otoritas penuh (Full Access)</strong>: manajemen personil & email Google, jadwal penugasan ruangan, kontrol Google Drive BAZNAS, backup & restore database cloud, serta audit log sistem.
               </p>
               <div className="pt-2 border-t border-slate-100 text-[11px] space-y-1.5 text-slate-600">
                 <div className="flex items-center gap-1.5 text-amber-800 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-                  <span>Pengelolaan Akun & Reset PIN Personel</span>
+                  <span>Pengelolaan Personil & Email Google Terdaftar</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-amber-800 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-                  <span>Kontrol Cloud Database & Google Drive</span>
+                  <span>Pengaturan Form & Jadwal Penugasan Ruangan</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-amber-800 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-                  <span>Hapus Laporan & Pulihkan Cadangan Data</span>
+                  <span>Kontrol Cloud Database & Google Drive BAZNAS</span>
                 </div>
               </div>
             </div>
@@ -986,6 +980,12 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
             {/* Modal Form */}
             <form onSubmit={handleSaveUser} className="p-5 space-y-4 text-xs sm:text-sm">
+              {formError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
                   Nama Lengkap Petugas <span className="text-rose-600">*</span>
@@ -1108,7 +1108,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                       </div>
                       <div className="flex items-center gap-1.5 text-emerald-800">
                         <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Login cepat dengan 4 digit PIN di ponsel</span>
+                        <span>Login praktis dengan 1-klik akun Google</span>
                       </div>
                       <div className="flex items-center gap-1.5 text-emerald-800">
                         <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
@@ -1116,7 +1116,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                       </div>
                       <div className="flex items-center gap-1.5 text-slate-500">
                         <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span>Tidak memiliki akses verifikasi laporan atau kelola personil</span>
+                        <span>Hanya dapat melaporkan ruangan yang ditugaskan dalam jadwal</span>
                       </div>
                     </>
                   )}
@@ -1125,7 +1125,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                     <>
                       <div className="flex items-center gap-1.5 text-blue-800">
                         <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                        <span>Memiliki seluruh akses pelaporan petugas lapangan</span>
+                        <span>Memiliki seluruh akses pelaporan dan supervisi ruangan</span>
                       </div>
                       <div className="flex items-center gap-1.5 text-blue-800">
                         <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
@@ -1150,7 +1150,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                       </div>
                       <div className="flex items-center gap-1.5 text-amber-900 font-medium">
                         <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>Tambah, edit, non-aktifkan personil & reset PIN semua akun</span>
+                        <span>Pengelolaan form (ruangan, checklist) & jadwal penugasan petugas</span>
                       </div>
                       <div className="flex items-center gap-1.5 text-amber-900 font-medium">
                         <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
@@ -1165,34 +1165,13 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Kata Sandi Akun
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="password123"
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs sm:text-sm"
-                  />
-                  <span className="text-[10px] text-slate-400">Untuk login email pengelola</span>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    PIN Masuk (4-6 Digit)
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    placeholder="1234"
-                    value={formData.pin}
-                    onChange={(e) => setFormData({ ...formData, pin: e.target.value.replace(/\D/g, '') })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs sm:text-sm"
-                  />
-                  <span className="text-[10px] text-slate-400">Untuk login keypad PIN (default: 1234)</span>
+                  <p className="font-bold text-emerald-900">Autentikasi Google SSO</p>
+                  <p className="text-[11px] text-emerald-800 mt-0.5 leading-relaxed">
+                    Pengguna akan masuk langsung via akun Google dengan alamat email <strong>{formData.email || 'sesuai email di atas'}</strong>. Tidak memerlukan PIN atau password manual.
+                  </p>
                 </div>
               </div>
 

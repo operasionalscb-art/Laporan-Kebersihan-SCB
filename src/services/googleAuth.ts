@@ -29,15 +29,14 @@ const STORAGE_PROFILE_KEY = 'scb_gdrive_profile';
 const STORAGE_EXPIRY_KEY = 'scb_gdrive_token_expiry';
 export const STORAGE_KEEP_CONNECTED_KEY = 'scb_gdrive_keep_connected';
 
-// Combine config from json and Vite environment variables
 export const firebaseConfig = {
-  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string) || (rawConfig as any)?.apiKey || '',
-  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string) || (rawConfig as any)?.authDomain || '',
-  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string) || (rawConfig as any)?.projectId || 'gen-lang-client-0457083120',
-  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) || (rawConfig as any)?.storageBucket || '',
-  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || (rawConfig as any)?.messagingSenderId || '',
-  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string) || (rawConfig as any)?.appId || '',
-  oAuthClientId: (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || (rawConfig as any)?.oAuthClientId || '794504611984-mdpandmt1r8vl85anr79ct8m66ml5941.apps.googleusercontent.com',
+  apiKey: (rawConfig as any)?.apiKey || '',
+  authDomain: (rawConfig as any)?.authDomain || '',
+  projectId: (rawConfig as any)?.projectId || 'gen-lang-client-0457083120',
+  storageBucket: (rawConfig as any)?.storageBucket || '',
+  messagingSenderId: (rawConfig as any)?.messagingSenderId || '',
+  appId: (rawConfig as any)?.appId || '',
+  oAuthClientId: (rawConfig as any)?.oAuthClientId || '794504611984-mdpandmt1r8vl85anr79ct8m66ml5941.apps.googleusercontent.com',
 };
 
 export function getActiveOAuthClientId(): string {
@@ -267,7 +266,8 @@ export const initGoogleAuth = (
  * Works seamlessly in client-side SPA without requiring Firebase Authorized Domains.
  */
 export const signInWithGIS = async (
-  silent = false
+  silent = false,
+  emailHint?: string
 ): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
   const clientId = getActiveOAuthClientId();
   if (!clientId) {
@@ -299,13 +299,13 @@ export const signInWithGIS = async (
       const client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: SCOPES.join(' '),
-        prompt: silent ? '' : undefined,
+        prompt: silent ? '' : 'select_account',
         callback: async (response: any) => {
           if (response.error) {
             if (response.error === 'immediate_failed') {
-              reject(new Error('Sesi Google Drive memerlukan otorisasi manual (klik tombol Aktifkan).'));
+              reject(new Error('Sesi Google memerlukan otorisasi manual. Silakan klik tombol Masuk dengan Akun Google.'));
             } else if (response.error === 'access_denied') {
-              reject(new Error('Izin akses Google Drive ditolak oleh pengguna. Silakan izinkan akses agar data otomatis tersimpan di folder.'));
+              reject(new Error('Izin login Google ditolak oleh pengguna.'));
             } else {
               reject(new Error(response.error_description || response.error));
             }
@@ -321,9 +321,9 @@ export const signInWithGIS = async (
           const expiresIn = response.expires_in ? parseInt(response.expires_in, 10) : 3500;
 
           // Fetch basic user profile from Google UserInfo endpoint
-          let profile: GoogleUserProfile = getCurrentGoogleProfile() || {
-            email: 'operasional.scb@gmail.com',
-            displayName: 'Operasional SCB',
+          let profile: GoogleUserProfile = {
+            email: emailHint || '',
+            displayName: '',
             authMethod: 'gis',
           };
 
@@ -341,18 +341,38 @@ export const signInWithGIS = async (
               };
             }
           } catch {
-            // Keep default profile if userinfo fetch fails
+            // Secondary userinfo fallback
+            try {
+              const v2Res = await fetch('https://www.googleapis.com/userinfo/v2/me', {
+                headers: { Authorization: `Bearer ${accessToken}` },
+              });
+              if (v2Res.ok) {
+                const v2info = await v2Res.json();
+                profile = {
+                  email: v2info.email || profile.email,
+                  displayName: v2info.name || v2info.email || profile.displayName,
+                  photoURL: v2info.picture || profile.photoURL,
+                  authMethod: 'gis',
+                };
+              }
+            } catch {}
           }
 
-          saveGoogleAuth(accessToken, profile, expiresIn);
+          if (profile.email) {
+            saveGoogleAuth(accessToken, profile, expiresIn);
+          }
           resolve({ profile, accessToken });
         },
       });
 
-      client.requestAccessToken({ 
-        prompt: silent ? '' : undefined,
-        hint: 'operasional.scb@gmail.com',
-      });
+      const tokenRequestOptions: any = { 
+        prompt: silent ? '' : 'select_account',
+      };
+      if (emailHint && emailHint.trim()) {
+        tokenRequestOptions.hint = emailHint.trim();
+      }
+
+      client.requestAccessToken(tokenRequestOptions);
     } catch (err) {
       reject(err);
     }
@@ -372,7 +392,7 @@ export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('Gagal mendapatkan access token Google Drive dari Firebase.');
+      throw new Error('Gagal mendapatkan access token Google dari Firebase.');
     }
 
     const profile: GoogleUserProfile = {
@@ -397,19 +417,20 @@ export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile
  * Uses Google Identity Services directly for seamless SPA auth, with Firebase as fallback.
  */
 export const googleSignIn = async (
-  preferredMethod: 'auto' | 'firebase' | 'gis' = 'auto'
+  preferredMethod: 'auto' | 'firebase' | 'gis' = 'auto',
+  emailHint?: string
 ): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
   if (preferredMethod === 'gis') {
-    return signInWithGIS();
+    return signInWithGIS(false, emailHint);
   }
 
   if (preferredMethod === 'firebase') {
     return signInWithFirebase();
   }
 
-  // 'auto' mode: Prefer GIS for Google Drive API scopes (avoids Firebase domain restrictions)
+  // 'auto' mode: Prefer GIS for Google OAuth, fallback to Firebase
   try {
-    return await signInWithGIS();
+    return await signInWithGIS(false, emailHint);
   } catch (gisErr: any) {
     console.warn('GIS sign in attempt had error, falling back to Firebase...', gisErr);
     try {

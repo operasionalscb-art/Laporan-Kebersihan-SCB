@@ -15,6 +15,18 @@ service cloud.firestore {
       allow write: if true;
     }
 
+    // Form configurations (master rooms, master checklists, form settings)
+    match /form_configs/{configId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Room Officer Schedules
+    match /room_schedules/{scheduleId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

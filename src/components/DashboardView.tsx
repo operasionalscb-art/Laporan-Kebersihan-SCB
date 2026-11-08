@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
-import { CleaningReport, User, KondisiAkhir } from '../types';
+import { CleaningReport, User, KondisiAkhir, AreaStatusSummary, MasterRoom, RoomSchedule } from '../types';
 import { INITIAL_AREAS, exportReportsToCsv, getTodayDateString } from '../utils/storage';
+import { getIndonesianDayName, getDayIndex } from '../utils/formStorage';
 import { 
   ClipboardCheck, 
   CheckCircle2, 
@@ -45,7 +46,10 @@ import {
   ChevronLeft,
   ChevronRight,
   History,
-  CalendarRange
+  CalendarRange,
+  Building2,
+  PieChart,
+  SlidersHorizontal
 } from 'lucide-react';
 
 export function formatMonthIndo(yearMonth: string): string {
@@ -68,16 +72,19 @@ export function shiftMonth(yearMonth: string, delta: number): string {
   return `${newY}-${newM}`;
 }
 
+
 interface DashboardViewProps {
   reports: CleaningReport[];
   currentUser: User | null;
   officers: User[];
   allUsers?: User[];
+  masterRooms?: MasterRoom[];
+  roomSchedules?: RoomSchedule[];
   onAddNewReport: (areaName?: string) => void;
   onUpdateReport: (id: string, updates: Partial<CleaningReport>) => void;
   onDeleteReport: (id: string) => void;
   onOpenPrintModal: (filteredReports: CleaningReport[]) => void;
-  onOpenLoginModal?: (reason?: string, tab?: 'quick_petugas' | 'email_admin') => void;
+  onOpenLoginModal?: (reason?: string, tab?: string) => void;
   onSwitchUser?: (user: User) => void;
 }
 
@@ -86,6 +93,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   currentUser,
   officers,
   allUsers = [],
+  masterRooms = [],
+  roomSchedules = [],
   onAddNewReport,
   onUpdateReport,
   onDeleteReport,
@@ -103,8 +112,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
 
-  // Target chart view mode: 'weekly' (Senin s/d Sabtu) or 'monthly' (Histori Bulanan)
-  const [targetChartView, setTargetChartView] = useState<'weekly' | 'monthly'>('weekly');
+  // Target chart view mode: 'rooms' (Grafik per Ruangan) | 'weekly' (Senin s/d Sabtu) | 'monthly' (Histori Bulanan)
+  const [targetChartView, setTargetChartView] = useState<'rooms' | 'weekly' | 'monthly'>('rooms');
+
+  // Room Analytics Dashboard state
+  const [roomTimeRange, setRoomTimeRange] = useState<'today' | '7days' | 'month' | 'all'>('month');
+  const [roomSortBy, setRoomSortBy] = useState<'cleanRate' | 'reports' | 'issues'>('cleanRate');
+  const [selectedRoomForDetail, setSelectedRoomForDetail] = useState<string>('KM MASJID PUTRA');
 
   // Detail Modal
   const [activeReportDetail, setActiveReportDetail] = useState<CleaningReport | null>(null);
@@ -466,13 +480,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return reports.filter((r) => r.tanggal === activeTargetDate);
   }, [reports, activeTargetDate]);
 
+  const mandatoryRoomsList = useMemo(() => {
+    if (masterRooms && masterRooms.length > 0) {
+      const activeMandatory = masterRooms.filter((r) => r.isActive !== false && r.isMandatoryDaily !== false);
+      if (activeMandatory.length > 0) return activeMandatory.map((r) => r.name);
+    }
+    return INITIAL_AREAS;
+  }, [masterRooms]);
+
   // Active Room Target Status for the selected/inspected date in the Target Dashboard
   const activeRoomTargetStatus = useMemo(() => {
-    const totalTarget = INITIAL_AREAS.length;
-    const items = INITIAL_AREAS.map((areaName) => {
+    const inspectedDayIndex = getDayIndex(activeTargetDate);
+    const totalTarget = mandatoryRoomsList.length;
+    const items = mandatoryRoomsList.map((areaName) => {
       const areaReps = activeTargetReports.filter((r) => r.area === areaName);
       const isReported = areaReps.length > 0;
       const latestReport = areaReps[0];
+      const schedule = (roomSchedules || []).find(
+        (s) => s.roomName.trim().toUpperCase() === areaName.trim().toUpperCase() && s.daysOfWeek.includes(inspectedDayIndex)
+      );
+
       return {
         areaName,
         isReported,
@@ -481,12 +508,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         latestPetugas: latestReport?.namaPetugas,
         latestWaktu: latestReport?.waktu,
         reportId: latestReport?.id,
+        scheduledOfficer: schedule?.officerName,
+        isCurrentUserAssigned: currentUser?.name === schedule?.officerName,
       };
     });
 
     const reportedCount = items.filter((i) => i.isReported).length;
     const unreportedCount = totalTarget - reportedCount;
-    const percentage = Math.round((reportedCount / totalTarget) * 100);
+    const percentage = totalTarget > 0 ? Math.round((reportedCount / totalTarget) * 100) : 100;
     const isTargetAchieved = reportedCount === totalTarget;
 
     return {
@@ -497,7 +526,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       percentage,
       isTargetAchieved,
     };
-  }, [activeTargetReports]);
+  }, [activeTargetReports, mandatoryRoomsList, roomSchedules, activeTargetDate, currentUser]);
 
   // Weekly Target Fulfillment Chart (Senin s/d Sabtu)
   const weeklyTargetStats = useMemo(() => {
@@ -737,6 +766,173 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
   }, [reports, selectedMonth, todayStr]);
 
+  // Room Analytics Dashboard Engine: Room-by-room comparative charts, checklist metrics, and timeline
+  const roomAnalyticsData = useMemo(() => {
+    // 1. Filter reports by roomTimeRange
+    let filteredForRooms = reports;
+
+    if (roomTimeRange === 'today') {
+      filteredForRooms = reports.filter((r) => r.tanggal === todayStr);
+    } else if (roomTimeRange === '7days') {
+      const now = new Date();
+      const past7 = new Date(now);
+      past7.setDate(now.getDate() - 6);
+      const past7Str = past7.toISOString().split('T')[0];
+      filteredForRooms = reports.filter((r) => r.tanggal >= past7Str && r.tanggal <= todayStr);
+    } else if (roomTimeRange === 'month') {
+      filteredForRooms = reports.filter((r) => r.tanggal.startsWith(selectedMonth));
+    }
+
+    // 2. All distinct areas
+    const allKnownAreas = Array.from(new Set([...INITIAL_AREAS, ...reports.map((r) => r.area)]));
+
+    const roomStats = allKnownAreas.map((areaName) => {
+      const areaReps = filteredForRooms.filter((r) => r.area === areaName);
+      const allTimeAreaReps = reports.filter((r) => r.area === areaName);
+      
+      const total = areaReps.length;
+      const cleanCount = areaReps.filter((r) => r.kondisiAkhir === 'Bersih').length;
+      const reviewCount = areaReps.filter((r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang').length;
+      const damageCount = areaReps.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length;
+
+      const cleanRate = total > 0 ? Math.round((cleanCount / total) * 100) : 0;
+      const reviewRate = total > 0 ? Math.round((reviewCount / total) * 100) : 0;
+      const damageRate = total > 0 ? Math.round((damageCount / total) * 100) : 0;
+
+      // Latest report
+      const sortedByTime = [...allTimeAreaReps].sort((a, b) => b.timestamp - a.timestamp);
+      const latestReport = sortedByTime[0];
+
+      // Checklist completion stats
+      const checklistItems = [
+        'Kloset Bersih',
+        'Kran Ada',
+        'Ember Ada',
+        'Air ada',
+        'Gayung Ada',
+      ];
+      const checklistBreakdown = checklistItems.map((item) => {
+        const checkedCount = areaReps.filter((r) => r.checklist && r.checklist.includes(item)).length;
+        const rate = total > 0 ? Math.round((checkedCount / total) * 100) : 0;
+        return { item, checkedCount, rate };
+      });
+
+      // Officer distribution
+      const officerCounts: { [name: string]: number } = {};
+      areaReps.forEach((r) => {
+        officerCounts[r.namaPetugas] = (officerCounts[r.namaPetugas] || 0) + 1;
+      });
+      const topOfficers = Object.entries(officerCounts)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+
+      // Last 7 days trend
+      const trendDays: {
+        dateStr: string;
+        displayDate: string;
+        dayShort: string;
+        status: 'clean' | 'review' | 'damage' | 'none';
+        report?: CleaningReport;
+      }[] = [];
+      const now = new Date();
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(now.getDate() - i);
+        const dStr = d.toISOString().split('T')[0];
+        const dayReps = allTimeAreaReps.filter((r) => r.tanggal === dStr);
+        const rep = dayReps[0];
+        
+        let status: 'clean' | 'review' | 'damage' | 'none' = 'none';
+        if (rep) {
+          if (rep.kondisiAkhir === 'Bersih') status = 'clean';
+          else if (rep.kondisiAkhir === 'Ada Kerusakan') status = 'damage';
+          else status = 'review';
+        }
+
+        trendDays.push({
+          dateStr: dStr,
+          displayDate: `${d.getDate()}/${d.getMonth() + 1}`,
+          dayShort: ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'][d.getDay()],
+          status,
+          report: rep,
+        });
+      }
+
+      // Unresolved issues in this area
+      const activeIssues = allTimeAreaReps.filter(
+        (r) => r.kondisiAkhir !== 'Bersih' && !isReportFollowedUp(r, reports)
+      );
+
+      const isCleanedToday = reports.some((r) => r.area === areaName && r.tanggal === todayStr);
+
+      return {
+        areaName,
+        total,
+        cleanCount,
+        reviewCount,
+        damageCount,
+        cleanRate,
+        reviewRate,
+        damageRate,
+        latestReport,
+        checklistBreakdown,
+        topOfficers,
+        trendDays,
+        activeIssues,
+        isCleanedToday,
+      };
+    });
+
+    // 3. Sorting
+    const sortedRooms = [...roomStats].sort((a, b) => {
+      if (roomSortBy === 'cleanRate') {
+        if (b.cleanRate !== a.cleanRate) return b.cleanRate - a.cleanRate;
+        return b.total - a.total;
+      }
+      if (roomSortBy === 'reports') {
+        return b.total - a.total;
+      }
+      if (roomSortBy === 'issues') {
+        const issuesA = a.reviewCount + a.damageCount;
+        const issuesB = b.reviewCount + b.damageCount;
+        return issuesB - issuesA;
+      }
+      return 0;
+    });
+
+    // 4. Highlight rankings
+    const roomsWithReports = roomStats.filter((r) => r.total > 0);
+    const cleanestRoom = roomsWithReports.length > 0
+      ? [...roomsWithReports].sort((a, b) => b.cleanRate - a.cleanRate)[0]
+      : roomStats[0];
+
+    const roomWithMostIssues = [...roomStats].sort(
+      (a, b) => (b.reviewCount + b.damageCount) - (a.reviewCount + a.damageCount)
+    )[0];
+
+    const roomWithMostReports = [...roomStats].sort((a, b) => b.total - a.total)[0];
+
+    const totalClean = roomStats.reduce((acc, r) => acc + r.cleanCount, 0);
+    const totalAll = roomStats.reduce((acc, r) => acc + r.total, 0);
+    const overallCleanRate = totalAll > 0 ? Math.round((totalClean / totalAll) * 100) : 0;
+
+    return {
+      rooms: sortedRooms,
+      cleanestRoom,
+      roomWithMostIssues,
+      roomWithMostReports,
+      overallCleanRate,
+      totalReportsFiltered: totalAll,
+    };
+  }, [reports, roomTimeRange, selectedMonth, todayStr, roomSortBy]);
+
+  const selectedRoomStats = useMemo(() => {
+    return (
+      roomAnalyticsData.rooms.find((r) => r.areaName === selectedRoomForDetail) ||
+      roomAnalyticsData.rooms[0]
+    );
+  }, [roomAnalyticsData, selectedRoomForDetail]);
+
   const handleOpenDetail = (report: CleaningReport) => {
     setActiveReportDetail(report);
     setSupervisorNoteInput(report.catatanSupervisor || '');
@@ -936,11 +1132,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
           <button
-            onClick={() => onAddNewReport()}
-            className="self-start sm:self-auto shrink-0 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center gap-1.5"
+            onClick={() => onOpenLoginModal ? onOpenLoginModal('Masuk Akun Petugas Kebersihan / Pengelola SCB via Google', 'google') : onAddNewReport()}
+            className="self-start sm:self-auto shrink-0 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
           >
             <Lock className="w-3.5 h-3.5" />
-            <span>Masuk Akun Petugas</span>
+            <span>Login via Google / Akun</span>
           </button>
         </div>
       )}
@@ -1321,26 +1517,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3">
                 <div>
                   <div className="flex items-center gap-1.5">
-                    {targetChartView === 'weekly' ? (
+                    {targetChartView === 'rooms' ? (
+                      <Building2 className="w-4 h-4 text-emerald-600" />
+                    ) : targetChartView === 'weekly' ? (
                       <BarChart2 className="w-4 h-4 text-blue-600" />
                     ) : (
                       <CalendarRange className="w-4 h-4 text-emerald-600" />
                     )}
                     <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      {targetChartView === 'weekly'
+                      {targetChartView === 'rooms'
+                        ? 'Dashboard Grafik Berdasarkan Ruangan'
+                        : targetChartView === 'weekly'
                         ? 'Grafik Target Mingguan (Senin s/d Sabtu)'
                         : `Histori & Target Bulanan: ${monthlyTargetStats.formattedMonth}`}
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    {targetChartView === 'weekly'
+                    {targetChartView === 'rooms'
+                      ? 'Perbandingan persentase kebersihan, volume laporan, dan tren fasilitas di setiap kamar mandi SCB'
+                      : targetChartView === 'weekly'
                       ? 'Tingkat ketercapaian target 6 ruangan pada setiap hari kerja dalam minggu ini'
                       : 'Rekapitulasi riwayat ketercapaian target operasional selama sebulan penuh'}
                   </p>
                 </div>
 
-                {/* View Switcher: Mingguan vs Bulanan */}
-                <div className="flex items-center bg-slate-100 p-0.5 rounded-xl text-xs font-bold shrink-0 self-start sm:self-auto">
+                {/* View Switcher: Grafik Ruangan vs Mingguan vs Bulanan */}
+                <div className="flex flex-wrap items-center bg-slate-100 p-0.5 rounded-xl text-xs font-bold shrink-0 self-start sm:self-auto gap-0.5">
+                  <button
+                    onClick={() => setTargetChartView('rooms')}
+                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+                      targetChartView === 'rooms'
+                        ? 'bg-white text-emerald-800 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Building2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Grafik Ruangan</span>
+                    <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-full font-bold">
+                      Fokus
+                    </span>
+                  </button>
                   <button
                     onClick={() => setTargetChartView('weekly')}
                     className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 ${
@@ -1361,12 +1577,363 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     }`}
                   >
                     <History className="w-3.5 h-3.5" />
-                    <span>Bulanan & Histori</span>
+                    <span>Bulanan</span>
                   </button>
                 </div>
               </div>
 
-              {targetChartView === 'weekly' ? (
+              {targetChartView === 'rooms' ? (
+                /* VIEW 3: ROOM-BY-ROOM COMPARATIVE CHARTS & ANALYTICS DASHBOARD */
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  {/* Controls: Time Range Filter & Sort */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mr-1">
+                        Rentang Waktu:
+                      </span>
+                      <button
+                        onClick={() => setRoomTimeRange('today')}
+                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                          roomTimeRange === 'today'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
+                        }`}
+                      >
+                        Hari Ini
+                      </button>
+                      <button
+                        onClick={() => setRoomTimeRange('7days')}
+                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                          roomTimeRange === '7days'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
+                        }`}
+                      >
+                        7 Hari
+                      </button>
+                      <button
+                        onClick={() => setRoomTimeRange('month')}
+                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                          roomTimeRange === 'month'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
+                        }`}
+                      >
+                        Bulan Ini
+                      </button>
+                      <button
+                        onClick={() => setRoomTimeRange('all')}
+                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                          roomTimeRange === 'all'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
+                        }`}
+                      >
+                        Semua
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="text-[11px] font-bold text-slate-500">Urut:</span>
+                      <select
+                        value={roomSortBy}
+                        onChange={(e) => setRoomSortBy(e.target.value as any)}
+                        className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                      >
+                        <option value="cleanRate">Indeks Bersih (%)</option>
+                        <option value="reports">Total Laporan Terbanyak</option>
+                        <option value="issues">Temuan Kendala/Rusak</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* 3 Metric Summary Badges */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                    <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">
+                          Ruangan Terbersih
+                        </span>
+                        <strong className="text-xs font-black text-emerald-950 truncate block mt-0.5 max-w-[150px]">
+                          {roomAnalyticsData.cleanestRoom.areaName}
+                        </strong>
+                      </div>
+                      <span className="text-base font-black text-emerald-700 bg-white px-2 py-0.5 rounded-lg border border-emerald-200 shadow-2xs">
+                        {roomAnalyticsData.cleanestRoom.cleanRate}%
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-amber-50/70 border border-amber-200 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">
+                          Temuan Kendala Terbanyak
+                        </span>
+                        <strong className="text-xs font-black text-amber-950 truncate block mt-0.5 max-w-[150px]">
+                          {roomAnalyticsData.roomWithMostIssues.areaName}
+                        </strong>
+                      </div>
+                      <span className="text-base font-black text-amber-700 bg-white px-2 py-0.5 rounded-lg border border-amber-200 shadow-2xs">
+                        {roomAnalyticsData.roomWithMostIssues.reviewCount + roomAnalyticsData.roomWithMostIssues.damageCount}
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                          Rata-rata Indeks Bersih
+                        </span>
+                        <span className="text-[11px] text-slate-500 block mt-0.5">
+                          {roomAnalyticsData.totalReportsFiltered} Total Laporan
+                        </span>
+                      </div>
+                      <span className="text-base font-black text-slate-900 bg-white px-2 py-0.5 rounded-lg border border-slate-200 shadow-2xs">
+                        {roomAnalyticsData.overallCleanRate}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* ROOM-BY-ROOM COMPARISON BARS (GRAFIK BATANG PER RUANGAN) */}
+                  <div className="space-y-2.5 pt-1">
+                    <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                      <span className="font-bold flex items-center gap-1.5">
+                        <BarChart2 className="w-3.5 h-3.5 text-emerald-600" />
+                        Grafik Perbandingan Kondisi per Ruangan ({roomAnalyticsData.rooms.length} Ruangan):
+                      </span>
+                      <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Bersih
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Perlu Cek
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" /> Rusak
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      {roomAnalyticsData.rooms.map((room) => {
+                        const isSelected = selectedRoomForDetail === room.areaName;
+
+                        return (
+                          <div
+                            key={room.areaName}
+                            onClick={() => setSelectedRoomForDetail(room.areaName)}
+                            className={`p-2.5 sm:p-3 rounded-xl border transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-emerald-50/40 border-emerald-500 ring-2 ring-emerald-500/20 shadow-xs'
+                                : 'bg-white hover:bg-slate-50/80 border-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className={`w-2 h-2 rounded-full shrink-0 ${
+                                    room.cleanRate >= 80
+                                      ? 'bg-emerald-500'
+                                      : room.cleanRate >= 50
+                                      ? 'bg-amber-500'
+                                      : 'bg-rose-500'
+                                  }`}
+                                />
+                                <span className="font-black text-slate-900 text-xs truncate">
+                                  {room.areaName}
+                                </span>
+                                {room.isCleanedToday ? (
+                                  <span className="hidden sm:inline-block text-[9px] font-bold text-emerald-700 bg-emerald-100/80 px-1.5 py-0.2 rounded">
+                                    Hari ini aktif
+                                  </span>
+                                ) : (
+                                  <span className="hidden sm:inline-block text-[9px] font-bold text-rose-700 bg-rose-100/80 px-1.5 py-0.2 rounded">
+                                    Belum hari ini
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-[10px] text-slate-500">
+                                  {room.total} lap
+                                </span>
+                                <span
+                                  className={`text-xs font-black px-2 py-0.5 rounded-md ${
+                                    room.cleanRate >= 80
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : room.cleanRate >= 50
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : 'bg-rose-100 text-rose-800'
+                                  }`}
+                                >
+                                  {room.cleanRate}% Bersih
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Stacked Percentage Bar for this Room */}
+                            <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden flex">
+                              {room.total > 0 ? (
+                                <>
+                                  <div
+                                    className="bg-emerald-500 h-full transition-all duration-500"
+                                    style={{ width: `${room.cleanRate}%` }}
+                                    title={`${room.cleanCount} Laporan Bersih (${room.cleanRate}%)`}
+                                  />
+                                  <div
+                                    className="bg-amber-400 h-full transition-all duration-500"
+                                    style={{ width: `${room.reviewRate}%` }}
+                                    title={`${room.reviewCount} Laporan Perlu Cek (${room.reviewRate}%)`}
+                                  />
+                                  <div
+                                    className="bg-rose-500 h-full transition-all duration-500"
+                                    style={{ width: `${room.damageRate}%` }}
+                                    title={`${room.damageCount} Laporan Ada Kerusakan (${room.damageRate}%)`}
+                                  />
+                                </>
+                              ) : (
+                                <div className="w-full bg-slate-200 h-full flex items-center justify-center text-[9px] text-slate-400">
+                                  Belum ada laporan pada rentang waktu ini
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Subtext info */}
+                            <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                              <span className="truncate">
+                                {room.cleanCount} Bersih • {room.reviewCount} Perlu Cek • {room.damageCount} Rusak
+                              </span>
+                              <span className="text-emerald-700 font-bold hover:underline shrink-0">
+                                {isSelected ? 'Sedang Ditinjau' : 'Klik untuk Detail & Tren'}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* DETAIL & TIMELINE DEEP DIVE FOR SELECTED ROOM */}
+                  {selectedRoomStats && (
+                    <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                            <Building2 className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h4 className="font-black text-slate-900 text-xs sm:text-sm">
+                              Detail & Riwayat Tren: {selectedRoomStats.areaName}
+                            </h4>
+                            <p className="text-[11px] text-slate-500">
+                              Total {selectedRoomStats.total} laporan • Indeks Bersih: {selectedRoomStats.cleanRate}%
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 self-start sm:self-auto">
+                          <button
+                            onClick={() => {
+                              setSelectedArea(selectedRoomStats.areaName);
+                              const tableElem = document.getElementById('report-history-table');
+                              if (tableElem) {
+                                tableElem.scrollIntoView({ behavior: 'smooth' });
+                              }
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-slate-200 text-slate-700 font-bold rounded-lg border border-slate-200 text-[11px] transition-colors cursor-pointer"
+                          >
+                            Tampilkan di Tabel
+                          </button>
+                          <button
+                            onClick={() => onAddNewReport(selectedRoomStats.areaName)}
+                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[11px] transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Laporkan</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 7-Day Day-by-Day Timeline for this Room */}
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
+                          Riwayat Kondisi 7 Hari Terakhir:
+                        </span>
+                        <div className="grid grid-cols-7 gap-1 text-center">
+                          {selectedRoomStats.trendDays.map((day) => (
+                            <div
+                              key={day.dateStr}
+                              className={`p-1.5 rounded-lg border text-xs ${
+                                day.status === 'clean'
+                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                  : day.status === 'review'
+                                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                  : day.status === 'damage'
+                                  ? 'bg-rose-50 border-rose-200 text-rose-900'
+                                  : 'bg-white border-slate-200 text-slate-400'
+                              }`}
+                              title={`${day.dayShort} (${day.dateStr}): ${
+                                day.status === 'clean'
+                                  ? 'Bersih'
+                                  : day.status === 'review'
+                                  ? 'Perlu Cek'
+                                  : day.status === 'damage'
+                                  ? 'Ada Kerusakan'
+                                  : 'Tidak ada laporan'
+                              }`}
+                            >
+                              <p className="text-[9px] font-bold text-slate-500">{day.dayShort}</p>
+                              <p className="text-[8px] text-slate-400">{day.displayDate}</p>
+                              <div className="mt-1 flex justify-center">
+                                {day.status === 'clean' ? (
+                                  <span className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[9px] font-bold">✓</span>
+                                ) : day.status === 'review' ? (
+                                  <span className="w-4 h-4 rounded-full bg-amber-500 text-white flex items-center justify-center text-[9px] font-bold">!</span>
+                                ) : day.status === 'damage' ? (
+                                  <span className="w-4 h-4 rounded-full bg-rose-500 text-white flex items-center justify-center text-[9px] font-bold">✕</span>
+                                ) : (
+                                  <span className="w-4 h-4 rounded-full bg-slate-200 text-slate-400 flex items-center justify-center text-[9px]">-</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Checklist Breakdown for this Room */}
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
+                          Tingkat Keterpenuhan Checklist Titik Pantau ({selectedRoomStats.total} laporan):
+                        </span>
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-xs">
+                          {selectedRoomStats.checklistBreakdown.map((chk) => (
+                            <div key={chk.item} className="p-2 rounded-lg bg-white border border-slate-200 text-center">
+                              <span className="text-[10px] text-slate-600 block truncate">{chk.item}</span>
+                              <strong className="text-xs font-black text-slate-900 block mt-0.5">{chk.rate}%</strong>
+                              <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden mt-1">
+                                <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${chk.rate}%` }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Top Officers for this Room */}
+                      {selectedRoomStats.topOfficers.length > 0 && (
+                        <div className="flex items-center gap-2 text-[11px] text-slate-600 pt-1">
+                          <UserIcon className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span>
+                            Petugas Teraktif:{' '}
+                            <strong>{selectedRoomStats.topOfficers[0].name}</strong> ({selectedRoomStats.topOfficers[0].count}x pembersihan)
+                            {selectedRoomStats.topOfficers.length > 1 && (
+                              <span className="text-slate-400">, {selectedRoomStats.topOfficers[1].name} ({selectedRoomStats.topOfficers[1].count}x)</span>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : targetChartView === 'weekly' ? (
                 /* VIEW 1: WEEKLY BAR CHART (SENIN S/D SABTU) */
                 <div>
                   <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
@@ -1552,7 +2119,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             {/* Footer Summary & Quick Action */}
             <div className="pt-3 mt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-              {targetChartView === 'weekly' ? (
+              {targetChartView === 'rooms' ? (
+                <>
+                  <span className="flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-emerald-600" />
+                    Grafik memantau <strong>{roomAnalyticsData.rooms.length} area ruangan</strong> ({roomTimeRange === 'today' ? 'Hari Ini' : roomTimeRange === '7days' ? '7 Hari Terakhir' : roomTimeRange === 'month' ? 'Bulan Ini' : 'Sepanjang Waktu'}) • Rata-rata Bersih: <strong className="text-emerald-700">{roomAnalyticsData.overallCleanRate}%</strong>
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setTargetChartView('weekly')}
+                      className="text-emerald-700 hover:text-emerald-900 font-bold flex items-center gap-1 underline text-[11px]"
+                    >
+                      <span>Lihat Grafik Mingguan</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                    <span className="text-slate-300">•</span>
+                    <button
+                      onClick={() => setTargetChartView('monthly')}
+                      className="text-slate-600 hover:text-slate-900 font-medium flex items-center gap-1 text-[11px]"
+                    >
+                      <span>Bulanan</span>
+                    </button>
+                  </div>
+                </>
+              ) : targetChartView === 'weekly' ? (
                 <>
                   <span className="flex items-center gap-1.5">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
@@ -1650,7 +2240,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         Petugas: <strong className="text-slate-800">{room.latestPetugas}</strong>
                       </p>
                       <p className="text-[10px] text-slate-400">
-                        Pukul {room.latestWaktu} WIB ({room.total}x inspeksi)
+                        Pukul {room.latestWaktu} WIB ({room.total}x inspeksi) • Jadwal: {room.scheduledOfficer || 'Rutin'}
                       </p>
                     </div>
                     <div className="flex flex-col items-end gap-1.5">
@@ -1674,23 +2264,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-3 pt-2.5 border-t border-rose-200 text-xs flex items-center justify-between">
+                  <div className="mt-3 pt-2.5 border-t border-rose-200 text-xs flex items-center justify-between gap-2">
                     <div>
-                      <p className="text-[11px] font-bold text-rose-800">
-                        Belum Ada Laporan Masuk
+                      <p className="text-[11px] font-bold text-rose-800 flex items-center gap-1">
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        <span>Belum Dilaporkan</span>
                       </p>
-                      <p className="text-[10px] text-rose-600">
-                        Target checklist tertunda
+                      <p className="text-[10px] text-rose-600 mt-0.5">
+                        Petugas: <strong className="text-rose-900">{room.scheduledOfficer || 'Semua Petugas'}</strong>
                       </p>
+                      {room.isCurrentUserAssigned && (
+                        <span className="inline-block mt-1 text-[9px] font-bold bg-rose-200 text-rose-900 px-1.5 py-0.2 rounded">
+                          Tugas Anda Hari Ini
+                        </span>
+                      )}
                     </div>
-                    <button
-                      onClick={() => onAddNewReport(room.areaName)}
-                      className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-2xs transition-all flex items-center gap-1 shrink-0"
-                      title={`Klik untuk mengisi laporan kebersihan untuk ${room.areaName}`}
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>Laporkan</span>
-                    </button>
+                    {currentUser?.role === 'petugas' && !room.isCurrentUserAssigned ? (
+                      <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 font-semibold text-[10px] border border-slate-200 shrink-0">
+                        Bukan Jadwal Anda
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => onAddNewReport(room.areaName)}
+                        className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-2xs transition-all flex items-center gap-1 shrink-0 cursor-pointer"
+                        title={`Klik untuk mengisi laporan kebersihan untuk ${room.areaName}`}
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Laporkan</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -2522,11 +3124,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                     {isSuperAdmin && (
                       <button
-                        onClick={() => {
-                          if (confirm(`Hapus laporan ${report.area} oleh ${report.namaPetugas}?`)) {
-                            onDeleteReport(report.id);
-                          }
-                        }}
+                        onClick={() => onDeleteReport(report.id)}
                         className="text-slate-400 hover:text-rose-600 p-1"
                         title="Hapus Laporan (Admin)"
                       >
@@ -2653,11 +3251,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </button>
                         {isSuperAdmin && (
                           <button
-                            onClick={() => {
-                              if (confirm(`Hapus laporan ${report.area}?`)) {
-                                onDeleteReport(report.id);
-                              }
-                            }}
+                            onClick={() => onDeleteReport(report.id)}
                             className="p-1 text-slate-400 hover:text-rose-600"
                             title="Hapus"
                           >
