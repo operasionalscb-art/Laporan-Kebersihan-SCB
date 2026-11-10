@@ -496,13 +496,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const areaReps = activeTargetReports.filter((r) => r.area === areaName);
       const isReported = areaReps.length > 0;
       const latestReport = areaReps[0];
-      const schedule = (roomSchedules || []).find(
+      const cleanArea = areaName.trim().toUpperCase();
+
+      // 1. Look up schedule for the inspected day first
+      let schedule = (roomSchedules || []).find(
         (s) =>
           s.roomName &&
-          s.roomName.trim().toUpperCase() === areaName.trim().toUpperCase() &&
+          s.roomName.trim().toUpperCase() === cleanArea &&
           Array.isArray(s.daysOfWeek) &&
           s.daysOfWeek.includes(inspectedDayIndex)
       );
+
+      // 2. If no schedule on this day, fallback to the general room assignment
+      if (!schedule) {
+        schedule = (roomSchedules || []).find(
+          (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanArea
+        );
+      }
+
+      // 3. Resolve latest officer name from allUsers/officers by ID or name
+      const assignedOfficer = (allUsers || officers || []).find(
+        (u) =>
+          (schedule?.officerId && u.id === schedule.officerId) ||
+          (schedule?.officerName && u.name.trim().toLowerCase() === schedule.officerName.trim().toLowerCase())
+      );
+      const scheduledOfficerName = assignedOfficer?.name || schedule?.officerName || 'Semua Petugas';
 
       return {
         areaName,
@@ -512,11 +530,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         latestPetugas: latestReport?.namaPetugas,
         latestWaktu: latestReport?.waktu,
         reportId: latestReport?.id,
-        scheduledOfficer: schedule?.officerName,
+        scheduledOfficer: scheduledOfficerName,
         isCurrentUserAssigned: Boolean(
           schedule &&
             currentUser &&
             (currentUser.id === schedule.officerId ||
+              (assignedOfficer && currentUser.id === assignedOfficer.id) ||
               (schedule.officerName &&
                 currentUser.name.trim().toLowerCase() === schedule.officerName.trim().toLowerCase()))
         ),
@@ -2231,16 +2250,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
 
                 {room.isReported ? (
-                  <div className="mt-3 pt-2.5 border-t border-emerald-100 text-xs flex items-center justify-between">
-                    <div>
-                      <p className="text-[11px] text-slate-600 truncate">
-                        Petugas: <strong className="text-slate-800">{room.latestPetugas}</strong>
+                  <div className="mt-3 pt-2.5 border-t border-emerald-100 text-xs flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] text-slate-700 truncate">
+                        Petugas Terjadwal: <strong className="text-slate-900 font-bold">{room.scheduledOfficer}</strong>
                       </p>
-                      <p className="text-[10px] text-slate-400">
-                        Pukul {room.latestWaktu} WIB ({room.total}x inspeksi) • Jadwal: {room.scheduledOfficer || 'Rutin'}
+                      <p className="text-[10px] text-emerald-700 truncate mt-0.5">
+                        ✓ Diperiksa oleh {room.latestPetugas} • {room.latestWaktu} WIB ({room.total}x)
                       </p>
                     </div>
-                    <div className="flex flex-col items-end gap-1.5">
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
                       <span
                         className={`text-[9px] font-bold px-2 py-0.5 rounded ${
                           room.latestKondisi === 'Bersih'
@@ -2262,13 +2281,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                 ) : (
                   <div className="mt-3 pt-2.5 border-t border-rose-200 text-xs flex items-center justify-between gap-2">
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-[11px] font-bold text-rose-800 flex items-center gap-1">
                         <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                         <span>Belum Dilaporkan</span>
                       </p>
-                      <p className="text-[10px] text-rose-600 mt-0.5">
-                        Petugas: <strong className="text-rose-900">{room.scheduledOfficer || 'Semua Petugas'}</strong>
+                      <p className="text-[11px] text-rose-800 mt-0.5">
+                        Petugas Terjadwal: <strong className="text-rose-950 font-bold">{room.scheduledOfficer}</strong>
                       </p>
                       {room.isCurrentUserAssigned && (
                         <span className="inline-block mt-1 text-[9px] font-bold bg-rose-200 text-rose-900 px-1.5 py-0.2 rounded">

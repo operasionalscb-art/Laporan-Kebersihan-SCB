@@ -54,6 +54,7 @@ export const FormManagement: React.FC<FormManagementProps> = ({
   formSettings,
   schedules,
   officers,
+  allUsers,
   currentUser,
   onSaveRooms,
   onSaveChecklists,
@@ -296,42 +297,38 @@ export const FormManagement: React.FC<FormManagementProps> = ({
   // SCHEDULE HANDLERS
   // =====================
   const handleAssignOfficer = (roomName: string, officerId: string) => {
-    const officer = officers.find((o) => o.id === officerId);
-    if (!officer) return;
+    const officer = (allUsers || officers).find((o) => o.id === officerId) || officers.find((o) => o.id === officerId);
+    if (!officer && officerId !== '') return;
 
     const cleanRoomName = roomName.trim().toUpperCase();
-    const existingIdx = schedules.findIndex(
+    const existing = schedules.find(
       (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
     );
-    let updated: RoomSchedule[];
+    const daysOfWeek = existing && Array.isArray(existing.daysOfWeek) ? existing.daysOfWeek : [1, 2, 3, 4, 5, 6];
 
-    if (existingIdx >= 0) {
-      updated = schedules.map((s, idx) =>
-        idx === existingIdx
-          ? {
-              ...s,
-              roomName: roomName.trim(),
-              officerId: officer.id,
-              officerName: officer.name,
-              updatedAt: getTodayDateString(),
-            }
-          : s
-      );
-    } else {
-      const newSch: RoomSchedule = {
-        id: `sch-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-        roomName: roomName.trim(),
-        officerId: officer.id,
-        officerName: officer.name,
-        daysOfWeek: [1, 2, 3, 4, 5, 6],
-        shift: 'Harian',
-        isActive: true,
-      };
-      updated = [...schedules, newSch];
-    }
+    const newSch: RoomSchedule = {
+      id: existing?.id || `sch-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      roomName: roomName.trim(),
+      officerId: officer ? officer.id : '',
+      officerName: officer ? officer.name : '',
+      daysOfWeek,
+      shift: existing?.shift || 'Harian',
+      isActive: true,
+      updatedAt: getTodayDateString(),
+    };
+
+    // Eliminate any duplicate entries for this room
+    const otherSchedules = schedules.filter(
+      (s) => !s.roomName || s.roomName.trim().toUpperCase() !== cleanRoomName
+    );
+    const updated = [...otherSchedules, newSch];
 
     onSaveSchedules(updated);
-    onShowToast(`Penugasan "${roomName}" dialihkan ke ${officer.name}.`, 'success');
+    if (officer) {
+      onShowToast(`Penugasan "${roomName}" dialihkan ke ${officer.name}.`, 'success');
+    } else {
+      onShowToast(`Penugasan "${roomName}" dikosongkan.`, 'info');
+    }
   };
 
   const handleToggleDayForRoom = (roomName: string, dayNumber: number) => {
@@ -570,7 +567,7 @@ export const FormManagement: React.FC<FormManagementProps> = ({
                     const currentSchedule = schedules.find(
                       (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
                     );
-                    const matchedOfficer = officers.find(
+                    const matchedOfficer = (allUsers || officers).find(
                       (o) =>
                         (currentSchedule?.officerId && o.id === currentSchedule.officerId) ||
                         (currentSchedule?.officerName && o.name.trim().toLowerCase() === currentSchedule.officerName.trim().toLowerCase())
@@ -605,12 +602,17 @@ export const FormManagement: React.FC<FormManagementProps> = ({
                             onChange={(e) => handleAssignOfficer(room.name, e.target.value)}
                             className="text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 cursor-pointer"
                           >
-                            <option value="" disabled>Pilih Petugas...</option>
+                            <option value="">-- Kosong / Pilih Petugas --</option>
                             {officers.map((off) => (
                               <option key={off.id} value={off.id}>
                                 {off.name}
                               </option>
                             ))}
+                            {matchedOfficer && !officers.some((o) => o.id === matchedOfficer.id) && (
+                              <option key={matchedOfficer.id} value={matchedOfficer.id}>
+                                {matchedOfficer.name} ({matchedOfficer.role.toUpperCase()})
+                              </option>
+                            )}
                           </select>
                         </td>
 

@@ -371,19 +371,21 @@ export function subscribeRoomSchedules(
     docRef,
     async (snapshot) => {
       if (!snapshot.exists()) {
+        const localSchedules = getRoomSchedules();
+        const initialToSeed = localSchedules && localSchedules.length > 0 ? localSchedules : DEFAULT_ROOM_SCHEDULES;
         try {
-          await setDoc(docRef, { schedules: sanitizeForFirestore(DEFAULT_ROOM_SCHEDULES) });
+          await setDoc(docRef, { schedules: sanitizeForFirestore(initialToSeed) });
         } catch (e) {
           console.warn('Initial schedule seed note:', e);
         }
-        saveRoomSchedules(DEFAULT_ROOM_SCHEDULES);
-        onSchedulesChanged(DEFAULT_ROOM_SCHEDULES);
+        saveRoomSchedules(initialToSeed);
+        onSchedulesChanged(initialToSeed);
         return;
       }
 
       const data = snapshot.data();
       const schedules: RoomSchedule[] =
-        data?.schedules && Array.isArray(data.schedules) ? data.schedules : DEFAULT_ROOM_SCHEDULES;
+        data?.schedules && Array.isArray(data.schedules) ? data.schedules : getRoomSchedules();
 
       saveRoomSchedules(schedules);
       onSchedulesChanged(schedules);

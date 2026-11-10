@@ -401,32 +401,24 @@ export function setRoomScheduleForRoom(
   daysOfWeek: number[] = [1, 2, 3, 4, 5, 6]
 ): RoomSchedule {
   const schedules = getRoomSchedules();
-  const existingIdx = schedules.findIndex((s) => s.roomName.trim().toUpperCase() === roomName.trim().toUpperCase());
-  if (existingIdx >= 0) {
-    schedules[existingIdx] = {
-      ...schedules[existingIdx],
-      officerId,
-      officerName,
-      daysOfWeek,
-      updatedAt: getTodayDateString(),
-    };
-    saveRoomSchedules(schedules);
-    return schedules[existingIdx];
-  } else {
-    const newSch: RoomSchedule = {
-      id: `sch-${Date.now()}`,
-      roomName,
-      officerId,
-      officerName,
-      daysOfWeek,
-      shift: 'Harian',
-      isActive: true,
-      updatedAt: getTodayDateString(),
-    };
-    schedules.push(newSch);
-    saveRoomSchedules(schedules);
-    return newSch;
-  }
+  const cleanRoom = roomName.trim().toUpperCase();
+  const existing = schedules.find((s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoom);
+  const otherSchedules = schedules.filter((s) => !s.roomName || s.roomName.trim().toUpperCase() !== cleanRoom);
+
+  const newSch: RoomSchedule = {
+    id: existing?.id || `sch-${Date.now()}`,
+    roomName: roomName.trim(),
+    officerId,
+    officerName,
+    daysOfWeek,
+    shift: existing?.shift || 'Harian',
+    isActive: true,
+    updatedAt: getTodayDateString(),
+  };
+
+  const updated = [...otherSchedules, newSch];
+  saveRoomSchedules(updated);
+  return newSch;
 }
 
 /**
