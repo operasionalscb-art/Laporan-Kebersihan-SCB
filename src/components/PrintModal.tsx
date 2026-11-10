@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { CleaningReport, User } from '../types';
-import { Printer, X, Building2, CheckCircle2, FileDown, Loader2, FileText, Download, ExternalLink } from 'lucide-react';
+import { Printer, X, CheckCircle2, FileDown, Loader2, FileText, Download, ExternalLink, Sparkles } from 'lucide-react';
 import { getTodayDateString } from '../utils/storage';
-import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
+import { generateReportsPdf } from '../utils/pdfExport';
 
 interface PrintModalProps {
   isOpen: boolean;
@@ -35,68 +34,27 @@ export const PrintModal: React.FC<PrintModalProps> = ({
     }
   };
 
-  const handleExportPdf = async () => {
-    // 1. Immediately open the dedicated export popup modal
-    setShowExportPopup(true);
+  const handleExportPdf = () => {
     setIsExporting(true);
     setExportSuccess(false);
 
-    // 2. Trigger browser native print/PDF dialog
     try {
-      window.print();
-    } catch (e) {
-      console.warn('Native print call failed:', e);
-    }
-
-    const printElement = document.getElementById('print-area');
-    if (!printElement) {
-      setIsExporting(false);
-      return;
-    }
-
-    try {
-      const canvas = await html2canvas(printElement, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
+      // Generate crisp vector PDF table in milliseconds (no screenshot / html2canvas)
+      const result = generateReportsPdf(reports, {
+        currentUser,
+        fileName: `Rekap_Kebersihan_SCB_${today}.pdf`,
       });
 
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: 'a4',
-      });
+      // Save blob URL for preview / re-download
+      setPdfBlobUrl(result.blobUrl);
 
-      const imgWidth = 210; // A4 width in mm
-      const pageHeight = 297; // A4 height in mm
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      let heightLeft = imgHeight;
-      let position = 0;
+      // Trigger instant clean file download
+      result.download();
 
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-      heightLeft -= pageHeight;
-
-      while (heightLeft > 0) {
-        position = heightLeft - imgHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-        heightLeft -= pageHeight;
-      }
-
-      const fileName = `Rekap_Kebersihan_SCB_${today}.pdf`;
-
-      // Generate direct Blob URL for download & preview
-      const blob = pdf.output('blob');
-      const blobUrl = URL.createObjectURL(blob);
-      setPdfBlobUrl(blobUrl);
-
-      // Save file
-      pdf.save(fileName);
       setExportSuccess(true);
+      setShowExportPopup(true);
     } catch (error) {
-      console.error('PDF export failed, using browser print fallback', error);
+      console.error('PDF export failed:', error);
       handlePrint();
     } finally {
       setIsExporting(false);
@@ -322,10 +280,10 @@ export const PrintModal: React.FC<PrintModalProps> = ({
                 <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                 <div className="text-xs text-emerald-950">
                   <p className="font-bold text-sm">
-                    {isExporting ? 'Sedang Memproses Dokumen PDF...' : 'Dokumen PDF Berhasil Dipersiapkan!'}
+                    Dokumen Tabel PDF Berhasil Dibuat & Diunduh!
                   </p>
                   <p className="text-emerald-800 mt-1 leading-relaxed">
-                    Popup dialog cetak browser & opsi simpan dokumen PDF otomatis dipanggil. Anda dapat mengunduh berkas atau memanggil ulang jendela dialog cetak di bawah ini.
+                    Dokumen resmi rekapitulasi kebersihan telah dibuat instan dalam <strong>Format Tabel Vektor A4 Landscape</strong> (bukan tangkapan layar/screenshot). Teks tabel tajam, jelas, dan berkas PDF otomatis tersimpan di folder unduhan Anda.
                   </p>
                 </div>
               </div>
@@ -340,7 +298,10 @@ export const PrintModal: React.FC<PrintModalProps> = ({
                 </div>
                 <div className="flex justify-between items-center py-1 border-b border-slate-200">
                   <span className="text-slate-500">Format Lembar</span>
-                  <span className="font-semibold text-slate-800">Standar A4 Resmi (Kop BAZNAS)</span>
+                  <span className="font-semibold text-emerald-800 flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                    Tabel Vektor Resmi A4 Landscape
+                  </span>
                 </div>
                 <div className="flex justify-between items-center py-1 border-b border-slate-200">
                   <span className="text-slate-500">Jumlah Laporan Terlampir</span>

@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { CleaningReport, User, KondisiAkhir, AreaStatusSummary, MasterRoom, RoomSchedule } from '../types';
 import { INITIAL_AREAS, exportReportsToCsv, getTodayDateString } from '../utils/storage';
 import { getIndonesianDayName, getDayIndex } from '../utils/formStorage';
+import { downloadReportsPdf } from '../utils/pdfExport';
 import { 
   ClipboardCheck, 
   CheckCircle2, 
@@ -11,6 +12,7 @@ import {
   Filter, 
   Download, 
   Printer, 
+  FileDown, 
   Calendar, 
   Clock, 
   User as UserIcon, 
@@ -1102,12 +1104,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-2">
           <button
+            onClick={() => {
+              const reps = filteredReports.length > 0 ? filteredReports : reports;
+              downloadReportsPdf(reps);
+            }}
+            className="flex items-center space-x-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold rounded-xl transition-all shadow-xs cursor-pointer active:scale-95"
+            title="Download langsung berkas format Tabel PDF resmi A4 tanpa jeda"
+          >
+            <FileDown className="w-4 h-4" />
+            <span>Export PDF</span>
+          </button>
+
+          <button
             onClick={() => onOpenPrintModal(filteredReports.length > 0 ? filteredReports : reports)}
             className="flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-medium rounded-xl transition-colors cursor-pointer"
-            title="Cetak atau Export format PDF resmi A4 untuk rekap laporan"
+            title="Buka pratinjau lembar rekap atau cetak fisik printer"
           >
             <Printer className="w-4 h-4 text-slate-600" />
-            <span>Cetak / Export PDF</span>
+            <span>Pratinjau / Cetak</span>
           </button>
 
           <button
@@ -2778,16 +2792,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
               <button
+                onClick={() => {
+                  const reps = filteredReports.length > 0 ? filteredReports : reports;
+                  downloadReportsPdf(reps);
+                }}
+                className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg transition-all flex items-center gap-1 shadow-2xs text-xs cursor-pointer active:scale-95"
+                title="Download langsung file PDF tabel resmi bulan ini"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                <span>Export PDF</span>
+              </button>
+              <button
                 onClick={() => onOpenPrintModal(filteredReports.length > 0 ? filteredReports : reports)}
-                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs"
-                title="Cetak rekap dokumen laporan bulan ini"
+                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs text-xs"
+                title="Pratinjau rekap dokumen laporan bulan ini"
               >
                 <Printer className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Cetak Rekap</span>
+                <span>Pratinjau</span>
               </button>
               <button
                 onClick={() => exportReportsToCsv(filteredReports)}
-                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs"
+                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs text-xs"
                 title="Download file CSV/Excel bulan ini"
               >
                 <Download className="w-3.5 h-3.5 text-emerald-700" />
