@@ -497,7 +497,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const isReported = areaReps.length > 0;
       const latestReport = areaReps[0];
       const schedule = (roomSchedules || []).find(
-        (s) => s.roomName.trim().toUpperCase() === areaName.trim().toUpperCase() && s.daysOfWeek.includes(inspectedDayIndex)
+        (s) =>
+          s.roomName &&
+          s.roomName.trim().toUpperCase() === areaName.trim().toUpperCase() &&
+          Array.isArray(s.daysOfWeek) &&
+          s.daysOfWeek.includes(inspectedDayIndex)
       );
 
       return {
@@ -509,7 +513,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         latestWaktu: latestReport?.waktu,
         reportId: latestReport?.id,
         scheduledOfficer: schedule?.officerName,
-        isCurrentUserAssigned: currentUser?.name === schedule?.officerName,
+        isCurrentUserAssigned: Boolean(
+          schedule &&
+            currentUser &&
+            (currentUser.id === schedule.officerId ||
+              (schedule.officerName &&
+                currentUser.name.trim().toLowerCase() === schedule.officerName.trim().toLowerCase()))
+        ),
       };
     });
 

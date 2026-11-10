@@ -31,6 +31,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { getIndonesianDayName, getDayIndex } from '../utils/formStorage';
+import { getTodayDateString } from '../utils/storage';
 
 interface FormManagementProps {
   rooms: MasterRoom[];
@@ -298,20 +299,28 @@ export const FormManagement: React.FC<FormManagementProps> = ({
     const officer = officers.find((o) => o.id === officerId);
     if (!officer) return;
 
-    const existingIdx = schedules.findIndex((s) => s.roomName === roomName);
+    const cleanRoomName = roomName.trim().toUpperCase();
+    const existingIdx = schedules.findIndex(
+      (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+    );
     let updated: RoomSchedule[];
 
     if (existingIdx >= 0) {
-      updated = [...schedules];
-      updated[existingIdx] = {
-        ...updated[existingIdx],
-        officerId: officer.id,
-        officerName: officer.name,
-      };
+      updated = schedules.map((s, idx) =>
+        idx === existingIdx
+          ? {
+              ...s,
+              roomName: roomName.trim(),
+              officerId: officer.id,
+              officerName: officer.name,
+              updatedAt: getTodayDateString(),
+            }
+          : s
+      );
     } else {
       const newSch: RoomSchedule = {
-        id: `sch-${Date.now()}`,
-        roomName,
+        id: `sch-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        roomName: roomName.trim(),
         officerId: officer.id,
         officerName: officer.name,
         daysOfWeek: [1, 2, 3, 4, 5, 6],
@@ -326,7 +335,10 @@ export const FormManagement: React.FC<FormManagementProps> = ({
   };
 
   const handleToggleDayForRoom = (roomName: string, dayNumber: number) => {
-    const existing = schedules.find((s) => s.roomName === roomName);
+    const cleanRoomName = roomName.trim().toUpperCase();
+    const existing = schedules.find(
+      (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+    );
     if (!existing) return;
 
     const currentDays = Array.isArray(existing.daysOfWeek) ? existing.daysOfWeek : [1, 2, 3, 4, 5, 6];
@@ -342,7 +354,9 @@ export const FormManagement: React.FC<FormManagementProps> = ({
     }
 
     const updated = schedules.map((s) =>
-      s.roomName === roomName ? { ...s, daysOfWeek: newDays } : s
+      s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+        ? { ...s, daysOfWeek: newDays, updatedAt: getTodayDateString() }
+        : s
     );
     onSaveSchedules(updated);
     onShowToast(`Jadwal hari untuk ${roomName} diperbarui.`, 'success');
@@ -552,9 +566,18 @@ export const FormManagement: React.FC<FormManagementProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
                   {rooms.map((room) => {
-                    const currentSchedule = schedules.find((s) => s.roomName === room.name);
-                    const assignedOfficerName = currentSchedule?.officerName || 'Belum Ditugaskan';
-                    const assignedDays = currentSchedule?.daysOfWeek || [1, 2, 3, 4, 5, 6];
+                    const cleanRoomName = (room.name || '').trim().toUpperCase();
+                    const currentSchedule = schedules.find(
+                      (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+                    );
+                    const matchedOfficer = officers.find(
+                      (o) =>
+                        (currentSchedule?.officerId && o.id === currentSchedule.officerId) ||
+                        (currentSchedule?.officerName && o.name.trim().toLowerCase() === currentSchedule.officerName.trim().toLowerCase())
+                    );
+                    const selectedOfficerId = matchedOfficer?.id || currentSchedule?.officerId || '';
+                    const assignedOfficerName = matchedOfficer?.name || currentSchedule?.officerName || 'Belum Ditugaskan';
+                    const assignedDays = Array.isArray(currentSchedule?.daysOfWeek) ? currentSchedule.daysOfWeek : [1, 2, 3, 4, 5, 6];
                     const isAssignedToday = assignedDays.includes(todayIndex);
 
                     return (
@@ -578,7 +601,7 @@ export const FormManagement: React.FC<FormManagementProps> = ({
 
                         <td className="py-3.5 px-4">
                           <select
-                            value={currentSchedule?.officerId || ''}
+                            value={selectedOfficerId}
                             onChange={(e) => handleAssignOfficer(room.name, e.target.value)}
                             className="text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 cursor-pointer"
                           >

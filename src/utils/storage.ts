@@ -147,26 +147,6 @@ export function getUsers(): User[] {
       return INITIAL_USERS;
     }
 
-    // Ensure default supervisor exists in existing saved users
-    const hasSupervisor = parsed.some((u) => u.role === 'supervisor');
-    if (!hasSupervisor) {
-      const defaultSupervisor: User = {
-        id: 'user-supervisor-1',
-        name: 'SUPERVISOR SARPRAS SCB',
-        email: 'supervisor@scb.sch.id',
-        username: 'supervisor',
-        password: 'supervisor123',
-        pin: '1234',
-        role: 'supervisor',
-        phone: '081234567890',
-        isActive: true,
-        createdAt: '2026-01-05',
-        avatarColor: 'from-blue-600 to-indigo-700',
-      };
-      parsed.splice(1, 0, defaultSupervisor);
-      saveUsers(parsed);
-    }
-
     return parsed;
   } catch (e) {
     console.error('Failed to load users from localStorage', e);

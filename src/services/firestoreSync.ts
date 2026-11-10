@@ -211,7 +211,16 @@ export function subscribeUsers(
 
       const usersList: User[] = [];
       snapshot.forEach((docSnap) => {
+        if (docSnap.id.startsWith('config_') || docSnap.id.startsWith('sys_')) {
+          return;
+        }
         usersList.push(docSnap.data() as User);
+      });
+
+      // Maintain sensible sorting: superadmin first, then supervisor, then petugas
+      usersList.sort((a, b) => {
+        const order: Record<string, number> = { superadmin: 1, supervisor: 2, petugas: 3 };
+        return (order[a.role] || 9) - (order[b.role] || 9);
       });
 
       saveUsersToStorage(usersList);
@@ -267,6 +276,9 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
 // FORM CONFIGURATION CLOUD SYNCHRONIZATION
 // ==========================================
 
+const FORM_CONFIG_DOC_ID = 'config_form_configs';
+const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
+
 export function subscribeFormConfig(
   onConfigChanged: (config: {
     rooms: MasterRoom[];
@@ -274,7 +286,7 @@ export function subscribeFormConfig(
     settings: FormSettings;
   }) => void
 ): () => void {
-  const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+  const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
 
   return onSnapshot(
     docRef,
@@ -319,7 +331,7 @@ export function subscribeFormConfig(
 export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void> {
   saveMasterRooms(rooms);
   try {
-    const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+    const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
     await setDoc(docRef, { rooms: sanitizeForFirestore(rooms) }, { merge: true });
   } catch (err) {
     console.error('Failed to sync master rooms to cloud:', err);
@@ -329,7 +341,7 @@ export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void>
 export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[]): Promise<void> {
   saveMasterChecklists(checklists);
   try {
-    const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+    const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
     await setDoc(docRef, { checklists: sanitizeForFirestore(checklists) }, { merge: true });
   } catch (err) {
     console.error('Failed to sync master checklists to cloud:', err);
@@ -339,7 +351,7 @@ export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[])
 export async function saveFormSettingsToCloud(settings: FormSettings): Promise<void> {
   saveFormSettings(settings);
   try {
-    const docRef = doc(db, FORM_CONFIGS_COLLECTION, 'main');
+    const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
     await setDoc(docRef, { settings: sanitizeForFirestore(settings) }, { merge: true });
   } catch (err) {
     console.error('Failed to sync form settings to cloud:', err);
@@ -353,7 +365,7 @@ export async function saveFormSettingsToCloud(settings: FormSettings): Promise<v
 export function subscribeRoomSchedules(
   onSchedulesChanged: (schedules: RoomSchedule[]) => void
 ): () => void {
-  const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, 'active');
+  const docRef = doc(db, USERS_COLLECTION, ROOM_SCHEDULE_DOC_ID);
 
   return onSnapshot(
     docRef,
@@ -386,7 +398,7 @@ export function subscribeRoomSchedules(
 export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<void> {
   saveRoomSchedules(schedules);
   try {
-    const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, 'active');
+    const docRef = doc(db, USERS_COLLECTION, ROOM_SCHEDULE_DOC_ID);
     await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) }, { merge: true });
   } catch (err) {
     console.error('Failed to sync room schedules to cloud:', err);

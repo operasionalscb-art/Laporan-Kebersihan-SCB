@@ -62,6 +62,24 @@
         "avatarColor": { "type": "string" }
       },
       "required": ["id", "name", "username", "role", "pin", "isActive"]
+    },
+    "FormConfig": {
+      "title": "FormConfig",
+      "description": "Master rooms, checklists, and form settings configuration",
+      "type": "object",
+      "properties": {
+        "rooms": { "type": "array" },
+        "checklists": { "type": "array" },
+        "settings": { "type": "object" }
+      }
+    },
+    "RoomScheduleDoc": {
+      "title": "RoomScheduleDoc",
+      "description": "Active officer room schedules document",
+      "type": "object",
+      "properties": {
+        "schedules": { "type": "array" }
+      }
     }
   },
   "firestore": {
@@ -72,6 +90,14 @@
     "/users/{userId}": {
       "schema": "User",
       "description": "Registered officers and administrators"
+    },
+    "/form_configs/{configId}": {
+      "schema": "FormConfig",
+      "description": "Master form configurations"
+    },
+    "/room_schedules/{scheduleId}": {
+      "schema": "RoomScheduleDoc",
+      "description": "Officer room assignment schedules"
     }
   }
 }

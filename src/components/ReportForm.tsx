@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   User, 
   CleaningReport, 
@@ -87,10 +87,12 @@ export const ReportForm: React.FC<ReportFormProps> = ({
   const isOfficer = currentUser?.role === 'petugas';
   const isSuperOrSpv = currentUser?.role === 'superadmin' || currentUser?.role === 'supervisor';
 
-  // Rooms assigned to currentUser today
-  const myAssignedRoomsToday = currentUser
-    ? getOfficerScheduledRooms(currentUser.id, currentUser.name, todayStr)
-    : [];
+  // Rooms assigned to currentUser today (dynamically reactive to propRoomSchedules updates)
+  const myAssignedRoomsToday = useMemo(() => {
+    return currentUser
+      ? getOfficerScheduledRooms(currentUser.id, currentUser.name, todayStr, allSchedules)
+      : [];
+  }, [currentUser, todayStr, allSchedules]);
 
   // 1. Nama Petugas
   const [selectedPetugas, setSelectedPetugas] = useState<string>('');
@@ -104,6 +106,13 @@ export const ReportForm: React.FC<ReportFormProps> = ({
     : (activeRooms[0]?.name || 'KM MASJID PUTRA');
 
   const [selectedArea, setSelectedArea] = useState<string>(defaultArea);
+
+  // Sync selected area when myAssignedRoomsToday changes
+  useEffect(() => {
+    if (isOfficer && myAssignedRoomsToday.length > 0 && !myAssignedRoomsToday.includes(selectedArea)) {
+      setSelectedArea(myAssignedRoomsToday[0]);
+    }
+  }, [isOfficer, myAssignedRoomsToday, selectedArea]);
   const [isAreaOther, setIsAreaOther] = useState<boolean>(false);
   const [customAreaText, setCustomAreaText] = useState<string>('');
 
@@ -229,7 +238,8 @@ export const ReportForm: React.FC<ReportFormProps> = ({
         currentUser.name,
         targetAreaName,
         todayStr,
-        currentUser.role
+        currentUser.role,
+        allSchedules
       );
 
       if (!permission.allowed) {

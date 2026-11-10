@@ -350,7 +350,7 @@ export default function App() {
   // Handlers for Users
   const handleAddUser = async (userData: Omit<User, 'id' | 'createdAt'>) => {
     const created = addUser(userData);
-    setUsers(getUsers());
+    setUsers((prev) => [...prev.filter((u) => u.id !== created.id), created]);
     showToast(`Petugas ${created.name} berhasil ditambahkan!`);
 
     try {
@@ -361,8 +361,8 @@ export default function App() {
   };
 
   const handleUpdateUser = async (id: string, updates: Partial<User>) => {
+    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...updates } : u)));
     const updated = updateUser(id, updates);
-    setUsers(getUsers());
     if (currentUser?.id === id && updated) {
       setCurrentUserState(updated);
       setCurrentUser(updated);
@@ -379,8 +379,8 @@ export default function App() {
   };
 
   const handleDeleteUser = async (id: string) => {
+    setUsers((prev) => prev.filter((u) => u.id !== id));
     deleteUser(id);
-    setUsers(getUsers());
     showToast('Akun berhasil dihapus.', 'info');
 
     try {

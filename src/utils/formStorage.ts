@@ -449,8 +449,12 @@ export function getIndonesianDayName(dayIndex: number): string {
 /**
  * Gets the scheduled officer for a specific room on a specific day/date
  */
-export function getScheduledOfficerForRoom(roomName: string, dateStr?: string): RoomSchedule | undefined {
-  const schedules = getRoomSchedules();
+export function getScheduledOfficerForRoom(
+  roomName: string,
+  dateStr?: string,
+  customSchedules?: RoomSchedule[]
+): RoomSchedule | undefined {
+  const schedules = customSchedules && customSchedules.length > 0 ? customSchedules : getRoomSchedules();
   const targetDay = getDayIndex(dateStr);
   const cleanRoom = (roomName || '').trim().toUpperCase();
 
@@ -475,7 +479,8 @@ export function isOfficerAllowedToReportRoom(
   officerName: string,
   roomName: string,
   dateStr?: string,
-  userRole?: string
+  userRole?: string,
+  customSchedules?: RoomSchedule[]
 ): { allowed: boolean; reason?: string; scheduledOfficer?: string } {
   // Superadmin and supervisor have full override authority for inspections/monitoring
   if (userRole === 'superadmin' || userRole === 'supervisor') {
@@ -491,7 +496,7 @@ export function isOfficerAllowedToReportRoom(
     return { allowed: true };
   }
 
-  const schedule = getScheduledOfficerForRoom(roomName, dateStr);
+  const schedule = getScheduledOfficerForRoom(roomName, dateStr, customSchedules);
 
   if (!schedule) {
     // If room is not scheduled to anyone today, allowed as fallback
@@ -516,8 +521,13 @@ export function isOfficerAllowedToReportRoom(
 /**
  * Returns all room names assigned to an officer for today / specific date
  */
-export function getOfficerScheduledRooms(officerId: string, officerName: string, dateStr?: string): string[] {
-  const schedules = getRoomSchedules();
+export function getOfficerScheduledRooms(
+  officerId: string,
+  officerName: string,
+  dateStr?: string,
+  customSchedules?: RoomSchedule[]
+): string[] {
+  const schedules = customSchedules && customSchedules.length > 0 ? customSchedules : getRoomSchedules();
   const targetDay = getDayIndex(dateStr);
   const cleanOfficerName = (officerName || '').trim().toLowerCase();
 
