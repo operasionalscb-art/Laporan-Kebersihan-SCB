@@ -285,7 +285,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   const handleConnectGoogleAuth = async () => {
     setIsLoadingGoogle(true);
     try {
-      const result = await googleSignIn('auto');
+      const result = await googleSignIn('auto', undefined, 'drive');
       if (result?.accessToken) {
         setGoogleProfile(result.profile);
         setIsGoogleConnected(true);
@@ -362,7 +362,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       let token = await getGoogleAccessToken();
       if (!token) {
         onShowToast('Membuka otorisasi Google Drive...', 'info');
-        const loginRes = await googleSignIn('gis');
+        const loginRes = await googleSignIn('gis', undefined, 'drive');
         token = loginRes?.accessToken;
         setIsGoogleConnected(true);
         setGoogleProfile(loginRes.profile);
@@ -393,7 +393,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       let token = await getGoogleAccessToken();
       if (!token) {
         onShowToast('Membuka otorisasi Google Drive...', 'info');
-        const loginRes = await googleSignIn('gis');
+        const loginRes = await googleSignIn('gis', undefined, 'drive');
         token = loginRes?.accessToken;
         setIsGoogleConnected(true);
         setGoogleProfile(loginRes.profile);

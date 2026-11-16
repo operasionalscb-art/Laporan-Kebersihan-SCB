@@ -8,6 +8,7 @@ interface PrintModalProps {
   isOpen: boolean;
   onClose: () => void;
   reports: CleaningReport[];
+  periodeLabel?: string;
   currentUser: User | null;
 }
 
@@ -15,6 +16,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
   isOpen,
   onClose,
   reports,
+  periodeLabel,
   currentUser,
 }) => {
   const [showExportPopup, setShowExportPopup] = useState<boolean>(false);
@@ -42,6 +44,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
       // Generate crisp vector PDF table in milliseconds (no screenshot / html2canvas)
       const result = generateReportsPdf(reports, {
         currentUser,
+        periodeLabel,
         fileName: `Rekap_Kebersihan_SCB_${today}.pdf`,
       });
 
@@ -163,7 +166,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
               REKAPITULASI LAPORAN KEBERSIHAN KAMAR MANDI & TEMPAT WUDHU
             </h3>
             <p className="text-xs text-slate-600 mt-1">
-              Tanggal Cetak: {today} | Total Dokumen Terverifikasi: {reports.length} Laporan
+              {periodeLabel ? `Periode: ${periodeLabel} | ` : ''}Tanggal Cetak: {today} | Total Dokumen: {reports.length} Laporan
             </p>
           </div>
 

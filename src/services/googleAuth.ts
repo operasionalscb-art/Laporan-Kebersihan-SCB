@@ -16,13 +16,23 @@ export interface GoogleUserProfile {
   authMethod: 'firebase' | 'gis';
 }
 
-// Clean and standard Google Drive & Profile scopes
-export const SCOPES = [
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/drive',
+// Non-sensitive identity scopes for User Login SSO (avoids sensitive/restricted Drive warnings)
+export const LOGIN_SCOPES = [
+  'openid',
   'email',
   'profile',
 ];
+
+// App-created file scope for Google Drive Backup feature (avoids restricted full-drive scope)
+export const DRIVE_SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'email',
+  'profile',
+];
+
+export const SCOPES = DRIVE_SCOPES;
+
+export type AuthScopeMode = 'login' | 'drive';
 
 const STORAGE_ACCESS_TOKEN_KEY = 'scb_gdrive_access_token';
 const STORAGE_PROFILE_KEY = 'scb_gdrive_profile';
@@ -68,8 +78,12 @@ try {
 
 export const auth = authInstance;
 
-const provider = new GoogleAuthProvider();
-SCOPES.forEach((scope) => provider.addScope(scope));
+const loginProvider = new GoogleAuthProvider();
+loginProvider.setCustomParameters({ prompt: 'select_account' });
+
+const driveProvider = new GoogleAuthProvider();
+DRIVE_SCOPES.forEach((scope) => driveProvider.addScope(scope));
+driveProvider.setCustomParameters({ prompt: 'select_account' });
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
@@ -267,7 +281,8 @@ export const initGoogleAuth = (
  */
 export const signInWithGIS = async (
   silent = false,
-  emailHint?: string
+  emailHint?: string,
+  scopeMode: AuthScopeMode = 'login'
 ): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
   const clientId = getActiveOAuthClientId();
   if (!clientId) {
@@ -293,12 +308,14 @@ export const signInWithGIS = async (
     });
   }
 
+  const activeScopes = scopeMode === 'drive' ? DRIVE_SCOPES : LOGIN_SCOPES;
+
   return new Promise((resolve, reject) => {
     try {
       const google = (window as any).google;
       const client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        scope: SCOPES.join(' '),
+        scope: activeScopes.join(' '),
         prompt: silent ? '' : 'select_account',
         callback: async (response: any) => {
           if (response.error) {
@@ -358,7 +375,7 @@ export const signInWithGIS = async (
             } catch {}
           }
 
-          if (profile.email) {
+          if (profile.email && scopeMode === 'drive') {
             saveGoogleAuth(accessToken, profile, expiresIn);
           }
           resolve({ profile, accessToken });
@@ -382,17 +399,32 @@ export const signInWithGIS = async (
 /**
  * Sign in using Firebase Auth with GoogleAuthProvider
  */
-export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
+export const signInWithFirebase = async (
+  scopeMode: AuthScopeMode = 'login',
+  emailHint?: string
+): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
   if (!auth) {
     throw new Error('Firebase Auth instance is not initialized.');
   }
 
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
+    const selectedProvider = scopeMode === 'drive' ? driveProvider : loginProvider;
+    if (emailHint && emailHint.trim()) {
+      selectedProvider.setCustomParameters({
+        prompt: 'select_account',
+        login_hint: emailHint.trim(),
+      });
+    } else {
+      selectedProvider.setCustomParameters({ prompt: 'select_account' });
+    }
+
+    const result = await signInWithPopup(auth, selectedProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('Gagal mendapatkan access token Google dari Firebase.');
+    const accessToken = credential?.accessToken || '';
+
+    if (scopeMode === 'drive' && !accessToken) {
+      throw new Error('Gagal mendapatkan access token Google Drive dari Firebase.');
     }
 
     const profile: GoogleUserProfile = {
@@ -402,8 +434,10 @@ export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile
       authMethod: 'firebase',
     };
 
-    saveGoogleAuth(credential.accessToken, profile, 3500);
-    return { profile, accessToken: credential.accessToken };
+    if (scopeMode === 'drive' && accessToken) {
+      saveGoogleAuth(accessToken, profile, 3500);
+    }
+    return { profile, accessToken };
   } catch (error: any) {
     console.error('Firebase Auth Error:', error);
     throw error;
@@ -414,29 +448,33 @@ export const signInWithFirebase = async (): Promise<{ profile: GoogleUserProfile
 
 /**
  * Unified Sign In:
- * Uses Google Identity Services directly for seamless SPA auth, with Firebase as fallback.
+ * - 'login' mode uses ONLY non-sensitive identity scopes (openid email profile)
+ *   and prefers Firebase Auth / GIS without requesting Google Drive access.
+ * - 'drive' mode requests drive.file scope for Google Drive backups.
  */
 export const googleSignIn = async (
   preferredMethod: 'auto' | 'firebase' | 'gis' = 'auto',
-  emailHint?: string
+  emailHint?: string,
+  scopeMode: AuthScopeMode = 'login'
 ): Promise<{ profile: GoogleUserProfile; accessToken: string }> => {
   if (preferredMethod === 'gis') {
-    return signInWithGIS(false, emailHint);
+    return signInWithGIS(false, emailHint, scopeMode);
   }
 
   if (preferredMethod === 'firebase') {
-    return signInWithFirebase();
+    return signInWithFirebase(scopeMode, emailHint);
   }
 
-  // 'auto' mode: Prefer GIS for Google OAuth, fallback to Firebase
+  // 'auto' mode:
+  // For basic user login, GIS with ['openid', 'email', 'profile'] avoids both unauthorized-domain issues on custom domains AND sensitive-scope warnings.
+  // Fallback to Firebase Auth if GIS fails.
   try {
-    return await signInWithGIS(false, emailHint);
+    return await signInWithGIS(false, emailHint, scopeMode);
   } catch (gisErr: any) {
     console.warn('GIS sign in attempt had error, falling back to Firebase...', gisErr);
     try {
-      return await signInWithFirebase();
+      return await signInWithFirebase(scopeMode, emailHint);
     } catch (firebaseErr: any) {
-      // Throw the most descriptive error
       throw parseAuthError(gisErr?.message ? gisErr : firebaseErr);
     }
   }

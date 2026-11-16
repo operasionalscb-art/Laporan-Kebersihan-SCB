@@ -92,6 +92,7 @@ export default function App() {
   // Modals
   const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
   const [printReportsData, setPrintReportsData] = useState<CleaningReport[] | null>(null);
+  const [printPeriodeLabel, setPrintPeriodeLabel] = useState<string | undefined>(undefined);
 
   // Toast Notification
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -462,7 +463,10 @@ export default function App() {
             onAddNewReport={handleRequestInputReport}
             onUpdateReport={handleUpdateReport}
             onDeleteReport={handleDeleteReport}
-            onOpenPrintModal={(filtered) => setPrintReportsData(filtered)}
+            onOpenPrintModal={(filtered, periodeLabel) => {
+              setPrintReportsData(filtered);
+              setPrintPeriodeLabel(periodeLabel);
+            }}
             onOpenLoginModal={handleOpenLoginModal}
             onSwitchUser={(user) => {
               setCurrentUser(user);
@@ -641,8 +645,12 @@ export default function App() {
       {printReportsData && (
         <PrintModal
           isOpen={!!printReportsData}
-          onClose={() => setPrintReportsData(null)}
+          onClose={() => {
+            setPrintReportsData(null);
+            setPrintPeriodeLabel(undefined);
+          }}
           reports={printReportsData}
+          periodeLabel={printPeriodeLabel}
           currentUser={currentUser}
         />
       )}

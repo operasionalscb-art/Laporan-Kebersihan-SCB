@@ -120,7 +120,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     setGoogleSuccessInfo(null);
 
     try {
-      const { profile } = await googleSignIn('auto', hintEmail);
+      const { profile } = await googleSignIn('auto', hintEmail, 'login');
       const googleEmail = (profile.email || '').trim().toLowerCase();
 
       if (!googleEmail) {
@@ -336,11 +336,26 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           )}
 
           {/* Security & Support Note */}
-          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-500 flex items-start gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-            <div className="leading-relaxed">
-              <span>Keamanan terpusat SCB: Akses form laporan dan jadwal ruangan dibatasi sesuai penugasan personel terjadwal.</span>
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-500 space-y-1.5">
+            <div className="flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <span className="leading-relaxed">
+                Keamanan terpusat SCB: Login SSO hanya membaca <strong>Email &amp; Profil Dasar</strong> (tanpa akses file Google Drive).
+              </span>
             </div>
+            <details className="pl-6 group">
+              <summary className="text-[10px] font-semibold text-amber-700 hover:text-amber-800 cursor-pointer list-none flex items-center gap-1">
+                <span>Muncul pesan "Google belum memverifikasi aplikasi ini"? Klik di sini</span>
+              </summary>
+              <div className="mt-1.5 p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[10px] leading-relaxed space-y-1">
+                <p>
+                  1. Di jendela popup Google, klik teks <strong>&ldquo;Lanjutan&rdquo;</strong> di pojok kiri bawah, lalu klik <strong>&ldquo;Buka ... (tidak aman)&rdquo;</strong> untuk melanjutkan login.
+                </p>
+                <p>
+                  2. Agar peringatan ini hilang permanen untuk semua petugas, admin Google Cloud dapat membuka <em>APIs &amp; Services &rarr; OAuth consent screen</em> &rarr; klik <strong>Publish App</strong> (scope dasar email/profil tidak butuh verifikasi berbayar).
+                </p>
+              </div>
+            </details>
           </div>
         </div>
       </div>

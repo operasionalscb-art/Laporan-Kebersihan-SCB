@@ -85,7 +85,7 @@ interface DashboardViewProps {
   onAddNewReport: (areaName?: string) => void;
   onUpdateReport: (id: string, updates: Partial<CleaningReport>) => void;
   onDeleteReport: (id: string) => void;
-  onOpenPrintModal: (filteredReports: CleaningReport[]) => void;
+  onOpenPrintModal: (filteredReports: CleaningReport[], periodeLabel?: string) => void;
   onOpenLoginModal?: (reason?: string, tab?: string) => void;
   onSwitchUser?: (user: User) => void;
 }
@@ -142,6 +142,62 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   const todayStr = getTodayDateString();
+
+  // Top Export PDF Period Filter State (Month & Year)
+  const [pdfFilterMonth, setPdfFilterMonth] = useState<string>(() => getTodayDateString().slice(5, 7));
+  const [pdfFilterYear, setPdfFilterYear] = useState<string>(() => getTodayDateString().slice(0, 4));
+
+  const pdfAvailableYears = useMemo(() => {
+    const yearsSet = new Set<string>([todayStr.slice(0, 4)]);
+    reports.forEach((r) => {
+      if (r.tanggal && r.tanggal.length >= 4) {
+        yearsSet.add(r.tanggal.slice(0, 4));
+      }
+    });
+    return Array.from(yearsSet).sort((a, b) => b.localeCompare(a));
+  }, [reports, todayStr]);
+
+  const pdfFilteredReports = useMemo(() => {
+    return reports.filter((r) => {
+      if (!r.tanggal) return false;
+      if (pdfFilterYear !== 'all' && r.tanggal.slice(0, 4) !== pdfFilterYear) return false;
+      if (pdfFilterMonth !== 'all' && r.tanggal.slice(5, 7) !== pdfFilterMonth) return false;
+      return true;
+    });
+  }, [reports, pdfFilterYear, pdfFilterMonth]);
+
+  const pdfPeriodeMeta = useMemo(() => {
+    const monthNames = [
+      'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+    ];
+    const monthLabel =
+      pdfFilterMonth === 'all'
+        ? 'Semua Bulan'
+        : monthNames[parseInt(pdfFilterMonth, 10) - 1] || pdfFilterMonth;
+    if (pdfFilterMonth !== 'all' && pdfFilterYear !== 'all') {
+      return {
+        label: `${monthLabel} ${pdfFilterYear}`,
+        fileName: `Rekap_Kebersihan_SCB_${pdfFilterYear}-${pdfFilterMonth}.pdf`,
+      };
+    }
+    if (pdfFilterMonth === 'all' && pdfFilterYear !== 'all') {
+      return {
+        label: `Tahun ${pdfFilterYear} (Semua Bulan)`,
+        fileName: `Rekap_Kebersihan_SCB_Tahun_${pdfFilterYear}.pdf`,
+      };
+    }
+    if (pdfFilterMonth !== 'all' && pdfFilterYear === 'all') {
+      return {
+        label: `Bulan ${monthLabel} (Semua Tahun)`,
+        fileName: `Rekap_Kebersihan_SCB_Bulan_${pdfFilterMonth}.pdf`,
+      };
+    }
+    return {
+      label: 'Semua Periode',
+      fileName: `Rekap_Kebersihan_SCB_Semua_Periode.pdf`,
+    };
+  }, [pdfFilterMonth, pdfFilterYear]);
 
   // Helper to determine if an issue report has received follow-up or resolution
   const isReportFollowedUp = (report: CleaningReport, allReports: CleaningReport[]) => {
@@ -1103,22 +1159,79 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => {
-              const reps = filteredReports.length > 0 ? filteredReports : reports;
-              downloadReportsPdf(reps);
-            }}
-            className="flex items-center space-x-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold rounded-xl transition-all shadow-xs cursor-pointer active:scale-95"
-            title="Download langsung berkas format Tabel PDF resmi A4 tanpa jeda"
-          >
-            <FileDown className="w-4 h-4" />
-            <span>Export PDF</span>
-          </button>
+          {/* Export PDF dengan Filter Waktu Bulan & Tahun */}
+          <div className="flex flex-wrap items-center bg-white border border-emerald-200 rounded-xl p-1 shadow-2xs gap-1">
+            <div className="flex items-center gap-1 pl-1.5 text-emerald-700" title="Filter Bulan & Tahun untuk Export PDF">
+              <Calendar className="w-3.5 h-3.5 shrink-0" />
+            </div>
+            <select
+              aria-label="Pilih Bulan Export PDF"
+              value={pdfFilterMonth}
+              onChange={(e) => setPdfFilterMonth(e.target.value)}
+              className="bg-transparent text-xs font-semibold text-slate-700 py-1 pl-1 pr-1.5 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+            >
+              <option value="all">Semua Bulan</option>
+              <option value="01">Januari</option>
+              <option value="02">Februari</option>
+              <option value="03">Maret</option>
+              <option value="04">April</option>
+              <option value="05">Mei</option>
+              <option value="06">Juni</option>
+              <option value="07">Juli</option>
+              <option value="08">Agustus</option>
+              <option value="09">September</option>
+              <option value="10">Oktober</option>
+              <option value="11">November</option>
+              <option value="12">Desember</option>
+            </select>
+            <span className="text-slate-300 text-xs">/</span>
+            <select
+              aria-label="Pilih Tahun Export PDF"
+              value={pdfFilterYear}
+              onChange={(e) => setPdfFilterYear(e.target.value)}
+              className="bg-transparent text-xs font-semibold text-slate-700 py-1 pl-1 pr-1.5 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+            >
+              {pdfAvailableYears.map((yr) => (
+                <option key={yr} value={yr}>
+                  {yr}
+                </option>
+              ))}
+              <option value="all">Semua Tahun</option>
+            </select>
+            <button
+              onClick={() => {
+                if (pdfFilteredReports.length === 0) {
+                  showApprovalToast(
+                    `Tidak ada data laporan pada periode ${pdfPeriodeMeta.label}.`,
+                    'info'
+                  );
+                  return;
+                }
+                downloadReportsPdf(pdfFilteredReports, {
+                  periodeLabel: pdfPeriodeMeta.label,
+                  fileName: pdfPeriodeMeta.fileName,
+                  currentUser,
+                });
+                showApprovalToast(
+                  `✓ PDF periode ${pdfPeriodeMeta.label} (${pdfFilteredReports.length} laporan) diunduh.`,
+                  'success'
+                );
+              }}
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all shadow-2xs cursor-pointer active:scale-95"
+              title={`Download langsung PDF Tabel A4 periode ${pdfPeriodeMeta.label} (${pdfFilteredReports.length} data)`}
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              <span>Export PDF</span>
+              <span className="px-1.5 py-0.2 rounded bg-emerald-800/70 text-emerald-50 text-[10px] font-extrabold">
+                {pdfFilteredReports.length}
+              </span>
+            </button>
+          </div>
 
           <button
-            onClick={() => onOpenPrintModal(filteredReports.length > 0 ? filteredReports : reports)}
+            onClick={() => onOpenPrintModal(pdfFilteredReports, pdfPeriodeMeta.label)}
             className="flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-medium rounded-xl transition-colors cursor-pointer"
-            title="Buka pratinjau lembar rekap atau cetak fisik printer"
+            title={`Buka pratinjau lembar rekap periode ${pdfPeriodeMeta.label} atau cetak fisik printer`}
           >
             <Printer className="w-4 h-4 text-slate-600" />
             <span>Pratinjau / Cetak</span>
@@ -2793,8 +2906,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
               <button
                 onClick={() => {
-                  const reps = filteredReports.length > 0 ? filteredReports : reports;
-                  downloadReportsPdf(reps);
+                  const activeMonth = dateFilter === 'month' ? todayStr.slice(0, 7) : selectedMonth;
+                  if (filteredReports.length === 0) {
+                    showApprovalToast(`Tidak ada laporan pada bulan ${formatMonthIndo(activeMonth)}.`, 'info');
+                    return;
+                  }
+                  downloadReportsPdf(filteredReports, {
+                    periodeLabel: formatMonthIndo(activeMonth),
+                    fileName: `Rekap_Kebersihan_SCB_${activeMonth}.pdf`,
+                    currentUser,
+                  });
                 }}
                 className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg transition-all flex items-center gap-1 shadow-2xs text-xs cursor-pointer active:scale-95"
                 title="Download langsung file PDF tabel resmi bulan ini"
@@ -2803,7 +2924,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span>Export PDF</span>
               </button>
               <button
-                onClick={() => onOpenPrintModal(filteredReports.length > 0 ? filteredReports : reports)}
+                onClick={() => {
+                  const activeMonth = dateFilter === 'month' ? todayStr.slice(0, 7) : selectedMonth;
+                  onOpenPrintModal(filteredReports, formatMonthIndo(activeMonth));
+                }}
                 className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs text-xs"
                 title="Pratinjau rekap dokumen laporan bulan ini"
               >
