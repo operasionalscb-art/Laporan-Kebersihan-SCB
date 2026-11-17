@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { User } from '../types';
 import {
   Building2,
@@ -8,8 +8,17 @@ import {
   ArrowRight,
   Loader2,
   Info,
+  ExternalLink,
+  RefreshCw,
 } from 'lucide-react';
-import { googleSignIn } from '../services/googleAuth';
+import {
+  googleSignIn,
+  GoogleUserProfile,
+  ensureGISScriptLoaded,
+  renderGoogleFedCMButton,
+  signInWithRedirectFirebase,
+  isEmbeddedIframe,
+} from '../services/googleAuth';
 import { fetchUserByEmailFromCloud } from '../services/firestoreSync';
 
 export const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -50,66 +59,62 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   promptReason,
 }) => {
   const [isGoogleLoading, setIsGoogleLoading] = useState<boolean>(false);
+  const [isRedirectLoading, setIsRedirectLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [isPopupBlocked, setIsPopupBlocked] = useState<boolean>(false);
+  const [fedcmReady, setFedcmReady] = useState<boolean>(false);
 
-  useEffect(() => {
-    if (isOpen) {
-      setIsGoogleLoading(false);
-      setErrorMessage('');
-    }
-  }, [isOpen]);
+  const fedcmContainerRef = useRef<HTMLDivElement | null>(null);
+  const inIframe = isEmbeddedIframe();
+  const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
 
-  if (!isOpen) return null;
+  const matchRegisteredUser = useCallback(
+    (email: string, userList: User[]): { user?: User; isDisabled?: boolean } => {
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail) return {};
 
-  const handleClose = () => {
+      // 1. Direct email match
+      const anyEmailMatch = userList.find(
+        (u) => u.email && u.email.trim().toLowerCase() === cleanEmail
+      );
+      if (anyEmailMatch) {
+        if (anyEmailMatch.isActive === false) return { isDisabled: true };
+        return { user: anyEmailMatch };
+      }
+
+      // 2. Designated Superadmin email
+      if (cleanEmail === 'operasional.scb@gmail.com') {
+        const admin = userList.find((u) => u.role === 'superadmin' && u.isActive !== false);
+        if (admin) return { user: admin };
+      }
+
+      // 3. Official @scb.sch.id username match
+      if (cleanEmail.endsWith('@scb.sch.id')) {
+        const prefix = cleanEmail.split('@')[0];
+        const usernameMatch = userList.find(
+          (u) => u.username && u.username.trim().toLowerCase() === prefix
+        );
+        if (usernameMatch) {
+          if (usernameMatch.isActive === false) return { isDisabled: true };
+          return { user: usernameMatch };
+        }
+      }
+
+      return {};
+    },
+    []
+  );
+
+  const handleClose = useCallback(() => {
     setErrorMessage('');
     setIsGoogleLoading(false);
+    setIsRedirectLoading(false);
+    setIsPopupBlocked(false);
     onClose();
-  };
+  }, [onClose]);
 
-  const matchRegisteredUser = (
-    email: string,
-    userList: User[]
-  ): { user?: User; isDisabled?: boolean } => {
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail) return {};
-
-    // 1. Direct email match
-    const anyEmailMatch = userList.find(
-      (u) => u.email && u.email.trim().toLowerCase() === cleanEmail
-    );
-    if (anyEmailMatch) {
-      if (anyEmailMatch.isActive === false) return { isDisabled: true };
-      return { user: anyEmailMatch };
-    }
-
-    // 2. Designated Superadmin email
-    if (cleanEmail === 'operasional.scb@gmail.com') {
-      const admin = userList.find((u) => u.role === 'superadmin' && u.isActive !== false);
-      if (admin) return { user: admin };
-    }
-
-    // 3. Official @scb.sch.id username match
-    if (cleanEmail.endsWith('@scb.sch.id')) {
-      const prefix = cleanEmail.split('@')[0];
-      const usernameMatch = userList.find(
-        (u) => u.username && u.username.trim().toLowerCase() === prefix
-      );
-      if (usernameMatch) {
-        if (usernameMatch.isActive === false) return { isDisabled: true };
-        return { user: usernameMatch };
-      }
-    }
-
-    return {};
-  };
-
-  const handleGoogleLogin = async () => {
-    setIsGoogleLoading(true);
-    setErrorMessage('');
-
-    try {
-      const { profile } = await googleSignIn('auto', undefined, 'login');
+  const completeProfileLogin = useCallback(
+    async (profile: GoogleUserProfile) => {
       const googleEmail = (profile.email || '').trim().toLowerCase();
 
       if (!googleEmail) {
@@ -152,6 +157,61 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           `Akses ditolak: Akun Google "${googleEmail}" belum terdaftar sebagai personil SIM-BERSIH SCB. Hubungi Superadmin untuk mendaftarkan email Anda.`
         );
       }
+    },
+    [users, matchRegisteredUser, onLoginSuccess, handleClose]
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    setIsGoogleLoading(false);
+    setIsRedirectLoading(false);
+    setErrorMessage('');
+    setIsPopupBlocked(false);
+    setFedcmReady(false);
+
+    let cancelled = false;
+    ensureGISScriptLoaded()
+      .then(async () => {
+        if (cancelled || !fedcmContainerRef.current) return;
+        await renderGoogleFedCMButton(
+          fedcmContainerRef.current,
+          async (profile) => {
+            if (cancelled) return;
+            setIsGoogleLoading(true);
+            setErrorMessage('');
+            try {
+              await completeProfileLogin(profile);
+            } finally {
+              if (!cancelled) setIsGoogleLoading(false);
+            }
+          },
+          (err) => {
+            if (cancelled) return;
+            setErrorMessage(err?.message || 'Gagal autentikasi via tombol Google.');
+          }
+        );
+        if (!cancelled) setFedcmReady(true);
+      })
+      .catch(() => {
+        if (!cancelled) setFedcmReady(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, completeProfileLogin]);
+
+  if (!isOpen) return null;
+
+  const handleGoogleLogin = async () => {
+    setIsGoogleLoading(true);
+    setErrorMessage('');
+    setIsPopupBlocked(false);
+
+    try {
+      const { profile } = await googleSignIn('auto', undefined, 'login');
+      await completeProfileLogin(profile);
     } catch (err: any) {
       const rawMsg = err?.message || String(err || '');
       const code = err?.code || '';
@@ -167,7 +227,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         rawMsg.toLowerCase().includes('terblokir') ||
         rawMsg.toLowerCase().includes('popup')
       ) {
-        setErrorMessage('Pop-up Google diblokir oleh browser. Mohon izinkan pop-up lalu coba kembali.');
+        setIsPopupBlocked(true);
+        setErrorMessage(
+          'Pop-up Google diblokir oleh browser Anda. Gunakan salah satu opsi masuk tanpa pop-up di bawah ini atau izinkan pop-up pada address bar browser.'
+        );
       } else {
         setErrorMessage(rawMsg || 'Gagal terhubung ke Google. Pastikan koneksi internet aktif.');
       }
@@ -176,9 +239,20 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
   };
 
+  const handleRedirectLogin = async () => {
+    setIsRedirectLoading(true);
+    setErrorMessage('');
+    try {
+      await signInWithRedirectFirebase('login');
+    } catch (err: any) {
+      setIsRedirectLoading(false);
+      setErrorMessage(err?.message || 'Gagal mengalihkan ke halaman login Google.');
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-      <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden relative">
+      <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden relative max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="bg-gradient-to-r from-emerald-800 to-teal-800 p-5 text-white relative">
           <button
@@ -212,21 +286,79 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           )}
 
           {errorMessage && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
-              <div className="flex-1 leading-relaxed">
-                <p className="font-bold text-rose-900 mb-0.5">Login Tidak Dapat Dilanjutkan</p>
-                <p>{errorMessage}</p>
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs space-y-2.5">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+                <div className="flex-1 leading-relaxed">
+                  <p className="font-bold text-rose-900 mb-0.5">
+                    {isPopupBlocked ? 'Pop-up Login Diblokir Browser' : 'Login Tidak Dapat Dilanjutkan'}
+                  </p>
+                  <p>{errorMessage}</p>
+                </div>
               </div>
+
+              {isPopupBlocked && (
+                <div className="pt-2 border-t border-rose-200/80 space-y-2">
+                  <p className="text-[11px] font-semibold text-rose-900">
+                    Solusi cepat untuk Admin &amp; Pengelola:
+                  </p>
+                  <ul className="text-[11px] text-rose-800 space-y-1 list-disc pl-4 leading-relaxed">
+                    <li>
+                      Klik tombol resmi <strong>Sign in with Google</strong> di bawah (mendukung login langsung tanpa jendela pop-up), atau
+                    </li>
+                    <li>
+                      Klik ikon <strong>Pop-up Diblokir</strong> di ujung kanan address bar browser lalu pilih <strong>Selalu izinkan pop-up</strong>.
+                    </li>
+                  </ul>
+
+                  <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                    {inIframe ? (
+                      <a
+                        href={currentUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-lg font-semibold text-[11px] transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Buka di Tab Baru (Anti Blokir)</span>
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleRedirectLogin}
+                        disabled={isRedirectLoading}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-lg font-semibold text-[11px] transition-colors cursor-pointer disabled:opacity-60"
+                      >
+                        {isRedirectLoading ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="w-3.5 h-3.5" />
+                        )}
+                        <span>Masuk via Pengalihan Halaman</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={handleGoogleLogin}
+                      disabled={isGoogleLoading}
+                      className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-rose-300 hover:bg-rose-100/60 text-rose-900 rounded-lg font-semibold text-[11px] transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Coba Pop-up Lagi</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Google SSO Action */}
+          {/* Primary Google SSO Action */}
           <div className="space-y-3">
             <button
               type="button"
               onClick={handleGoogleLogin}
-              disabled={isGoogleLoading}
+              disabled={isGoogleLoading || isRedirectLoading}
               className="w-full py-3.5 px-4 bg-white hover:bg-slate-50 border border-slate-300 hover:border-emerald-500 rounded-xl font-semibold text-slate-800 text-sm shadow-2xs transition-all flex items-center justify-center gap-3 group cursor-pointer active:scale-[0.99] disabled:opacity-60"
             >
               {isGoogleLoading ? (
@@ -242,6 +374,36 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 </>
               )}
             </button>
+
+            {/* Official FedCM / Embedded Google Button (works even when window.open popups are blocked) */}
+            <div className={fedcmReady ? 'space-y-2' : 'hidden'}>
+              <div className="relative flex items-center py-0.5">
+                <div className="grow border-t border-slate-200" />
+                <span className="shrink mx-3 text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                  atau tanpa pop-up
+                </span>
+                <div className="grow border-t border-slate-200" />
+              </div>
+              <div
+                ref={fedcmContainerRef}
+                className="flex justify-center min-h-[42px] overflow-hidden"
+              />
+            </div>
+
+            {!inIframe && !isPopupBlocked && (
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={handleRedirectLogin}
+                  disabled={isGoogleLoading || isRedirectLoading}
+                  className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline underline-offset-2 cursor-pointer disabled:opacity-50"
+                >
+                  {isRedirectLoading
+                    ? 'Mengalihkan ke Google...'
+                    : 'Pop-up terblokir? Masuk via pengalihan halaman'}
+                </button>
+              </div>
+            )}
 
             <p className="text-xs text-slate-500 text-center leading-relaxed">
               Masuk menggunakan email Google Anda yang sudah didaftarkan oleh pengelola SCB.

@@ -1,5 +1,8 @@
 import {
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signInWithCredential,
   GoogleAuthProvider,
   onAuthStateChanged,
   signOut as firebaseSignOut,
@@ -182,20 +185,25 @@ export const parseAuthError = (error: any): { title: string; message: string; co
     };
   }
 
-  if (code === 'auth/popup-blocked' || rawMsg.includes('popup')) {
+  if (
+    code === 'auth/popup-closed-by-user' ||
+    code === 'auth/cancelled-popup-request' ||
+    rawMsg.toLowerCase().includes('closed') ||
+    rawMsg.toLowerCase().includes('dibatalkan')
+  ) {
     return {
-      code: 'auth/popup-blocked',
-      title: 'Jendela Pop-up Terblokir',
-      message: 'Browser Anda memblokir jendela login Google. Silakan klik ikon izin pop-up di bilah URL browser Anda.',
+      code: code || 'auth/popup-closed-by-user',
+      title: 'Login Dibatalkan',
+      message: 'Jendela login ditutup sebelum proses autentikasi selesai.',
       isDomainError: false,
     };
   }
 
-  if (code === 'auth/popup-closed-by-user' || rawMsg.includes('closed') || rawMsg.includes('dibatalkan')) {
+  if (code === 'auth/popup-blocked' || rawMsg.toLowerCase().includes('popup')) {
     return {
-      code: 'auth/popup-closed-by-user',
-      title: 'Login Dibatalkan',
-      message: 'Jendela login ditutup sebelum proses autentikasi selesai.',
+      code: 'auth/popup-blocked',
+      title: 'Jendela Pop-up Terblokir',
+      message: 'Browser Anda memblokir jendela login Google. Gunakan tombol Google di bawah ini atau izinkan pop-up di bilah URL browser.',
       isDomainError: false,
     };
   }
@@ -257,6 +265,170 @@ export const initGoogleAuth = (
 };
 
 /**
+ * Ensures the Google Identity Services script is loaded cleanly (can be preloaded on mount)
+ */
+export const ensureGISScriptLoaded = (): Promise<void> => {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (typeof (window as any).google?.accounts?.id !== 'undefined' || typeof (window as any).google?.accounts?.oauth2 !== 'undefined') {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      clearInterval(pollId);
+      reject(new Error('Waktu memuat layanan Google Sign-In habis. Periksa koneksi internet Anda.'));
+    }, 10000);
+
+    const pollId = setInterval(() => {
+      if (typeof (window as any).google?.accounts !== 'undefined') {
+        clearInterval(pollId);
+        clearTimeout(timeoutId);
+        resolve();
+      }
+    }, 100);
+
+    const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
+    if (existing) {
+      existing.addEventListener('load', () => {
+        if (typeof (window as any).google?.accounts !== 'undefined') {
+          clearInterval(pollId);
+          clearTimeout(timeoutId);
+          resolve();
+        }
+      });
+      existing.addEventListener('error', () => {
+        clearInterval(pollId);
+        clearTimeout(timeoutId);
+        reject(new Error('Gagal memuat script Google Identity Services'));
+      });
+    } else {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        clearInterval(pollId);
+        clearTimeout(timeoutId);
+        resolve();
+      };
+      script.onerror = () => {
+        clearInterval(pollId);
+        clearTimeout(timeoutId);
+        reject(new Error('Gagal memuat script Google Identity Services'));
+      };
+      document.head.appendChild(script);
+    }
+  });
+};
+
+export const isEmbeddedIframe = (): boolean => {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+};
+
+/**
+ * Initiates Firebase signInWithRedirect as a popup-free fallback
+ */
+export const signInWithRedirectFirebase = async (
+  scopeMode: AuthScopeMode = 'login',
+  emailHint?: string
+): Promise<void> => {
+  if (!auth) {
+    throw new Error('Firebase Auth instance is not initialized.');
+  }
+  const selectedProvider = scopeMode === 'drive' ? driveProvider : loginProvider;
+  if (emailHint && emailHint.trim()) {
+    selectedProvider.setCustomParameters({
+      prompt: 'select_account',
+      login_hint: emailHint.trim(),
+    });
+  } else {
+    selectedProvider.setCustomParameters({ prompt: 'select_account' });
+  }
+  await signInWithRedirect(auth, selectedProvider);
+};
+
+/**
+ * Resolves any pending Firebase Auth redirect login result on page load
+ */
+export const consumeFirebaseRedirectResult = async (): Promise<GoogleUserProfile | null> => {
+  if (!auth) return null;
+  try {
+    const result = await getRedirectResult(auth);
+    if (!result?.user?.email) return null;
+    const profile: GoogleUserProfile = {
+      email: result.user.email,
+      displayName: result.user.displayName || result.user.email,
+      photoURL: result.user.photoURL || undefined,
+      authMethod: 'firebase',
+    };
+    currentProfile = profile;
+    return profile;
+  } catch (err) {
+    console.warn('Redirect sign-in check note:', err);
+    return null;
+  }
+};
+
+/**
+ * Renders the official Google Sign-In button (supports FedCM without browser popups)
+ * and exchanges the returned Google ID Token directly into Firebase Auth via signInWithCredential.
+ */
+export const renderGoogleFedCMButton = async (
+  container: HTMLElement,
+  onSuccess: (profile: GoogleUserProfile) => void,
+  onError: (err: Error) => void
+): Promise<void> => {
+  const clientId = getActiveOAuthClientId();
+  if (!clientId) return;
+
+  await ensureGISScriptLoaded();
+  const googleId = (window as any).google?.accounts?.id;
+  if (!googleId) return;
+
+  googleId.initialize({
+    client_id: clientId,
+    use_fedcm_for_prompt: true,
+    callback: async (response: { credential?: string }) => {
+      try {
+        const idToken = response?.credential;
+        if (!idToken) {
+          throw new Error('Kredensial Google tidak diterima.');
+        }
+        const credential = GoogleAuthProvider.credential(idToken);
+        const userCred = await signInWithCredential(auth, credential);
+        const profile: GoogleUserProfile = {
+          email: userCred.user.email || '',
+          displayName: userCred.user.displayName || userCred.user.email || 'Pengguna Google',
+          photoURL: userCred.user.photoURL || undefined,
+          authMethod: 'firebase',
+        };
+        currentProfile = profile;
+        onSuccess(profile);
+      } catch (err: any) {
+        onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    },
+  });
+
+  container.innerHTML = '';
+  const targetWidth = Math.min(Math.max(container.offsetWidth || 340, 240), 400);
+  googleId.renderButton(container, {
+    theme: 'outline',
+    size: 'large',
+    type: 'standard',
+    shape: 'rectangular',
+    text: 'continue_with',
+    logo_alignment: 'left',
+    width: targetWidth,
+    locale: 'id',
+  });
+};
+
+/**
  * Direct Google Identity Services (GIS) Token Client.
  * Works seamlessly in client-side SPA without requiring Firebase Authorized Domains.
  */
@@ -270,54 +442,9 @@ export const signInWithGIS = async (
     throw new Error('OAuth Client ID tidak ditemukan.');
   }
 
-  // Ensure GIS script is loaded reliably without hanging
+  // Ensure GIS script is loaded cleanly
   if (typeof (window as any).google?.accounts?.oauth2 === 'undefined') {
-    await new Promise<void>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        clearInterval(pollId);
-        reject(new Error('Waktu memuat layanan Google Sign-In habis. Periksa koneksi internet Anda.'));
-      }, 10000);
-
-      const pollId = setInterval(() => {
-        if (typeof (window as any).google?.accounts?.oauth2 !== 'undefined') {
-          clearInterval(pollId);
-          clearTimeout(timeoutId);
-          resolve();
-        }
-      }, 100);
-
-      const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
-      if (existing) {
-        existing.addEventListener('load', () => {
-          if (typeof (window as any).google?.accounts?.oauth2 !== 'undefined') {
-            clearInterval(pollId);
-            clearTimeout(timeoutId);
-            resolve();
-          }
-        });
-        existing.addEventListener('error', () => {
-          clearInterval(pollId);
-          clearTimeout(timeoutId);
-          reject(new Error('Gagal memuat script Google Identity Services'));
-        });
-      } else {
-        const script = document.createElement('script');
-        script.src = 'https://accounts.google.com/gsi/client';
-        script.async = true;
-        script.defer = true;
-        script.onload = () => {
-          clearInterval(pollId);
-          clearTimeout(timeoutId);
-          resolve();
-        };
-        script.onerror = () => {
-          clearInterval(pollId);
-          clearTimeout(timeoutId);
-          reject(new Error('Gagal memuat script Google Identity Services'));
-        };
-        document.head.appendChild(script);
-      }
-    });
+    await ensureGISScriptLoaded();
   }
 
   const activeScopes = scopeMode === 'drive' ? DRIVE_SCOPES : LOGIN_SCOPES;

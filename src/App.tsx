@@ -52,7 +52,8 @@ import {
   saveMasterChecklistsToCloud,
   saveFormSettingsToCloud,
   subscribeRoomSchedules,
-  saveRoomSchedulesToCloud
+  saveRoomSchedulesToCloud,
+  fetchUserByEmailFromCloud
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -65,7 +66,8 @@ import { GoogleDriveManager } from './components/GoogleDriveManager';
 import { 
   getGoogleAccessToken, 
   initGoogleAuth,
-  googleSignOut
+  googleSignOut,
+  consumeFirebaseRedirectResult
 } from './services/googleAuth';
 import { 
   uploadReportPhotosToDrive, 
@@ -205,8 +207,36 @@ export default function App() {
       setRoomSchedules(schedules);
     });
 
-    // 5. Initialize Google Auth and restore saved session
+    // 5. Initialize Google Auth and resolve any pending redirect sign-in
     const unsubscribeGoogle = initGoogleAuth();
+    consumeFirebaseRedirectResult().then(async (profile) => {
+      if (!profile?.email) return;
+      const cleanEmail = profile.email.trim().toLowerCase();
+      const localUsers = getUsers();
+      let matched = localUsers.find((u) => u.email && u.email.trim().toLowerCase() === cleanEmail);
+      if (!matched && cleanEmail === 'operasional.scb@gmail.com') {
+        matched = localUsers.find((u) => u.role === 'superadmin' && u.isActive !== false);
+      }
+      if (!matched) {
+        try {
+          const cloudUser = await fetchUserByEmailFromCloud(cleanEmail);
+          if (cloudUser) matched = cloudUser;
+        } catch {}
+      }
+      if (matched && matched.isActive !== false) {
+        const loggedUser: User = profile.photoURL ? { ...matched, photoURL: profile.photoURL } : matched;
+        setCurrentUser(loggedUser);
+        setCurrentUserState(loggedUser);
+        showToast(`Selamat datang, ${loggedUser.name}!`);
+        if (loggedUser.role === 'petugas') {
+          setActiveTab('input');
+        }
+      } else if (matched && matched.isActive === false) {
+        showToast(`Akun "${cleanEmail}" berstatus nonaktif. Hubungi Superadmin.`, 'error');
+      } else {
+        showToast(`Akun Google "${cleanEmail}" belum terdaftar sebagai personil SIM-BERSIH SCB.`, 'error');
+      }
+    });
 
     return () => {
       unsubscribeReports();
