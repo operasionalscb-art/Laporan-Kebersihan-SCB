@@ -7,16 +7,11 @@ import {
   Users, 
   LogOut, 
   ChevronDown, 
-  Sparkles,
   ShieldCheck,
   CheckCircle2,
   Lock,
-  Eye,
-  LogIn,
-  HardDrive,
   Database,
-  Sliders,
-  CalendarDays
+  Sliders
 } from 'lucide-react';
 import { GoogleIcon } from './LoginModal';
 

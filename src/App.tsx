@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   User, 
   CleaningReport, 
@@ -14,7 +14,6 @@ import {
 } from './types';
 import { 
   getUsers, 
-  saveUsers, 
   addUser, 
   updateUser, 
   deleteUser, 
@@ -35,11 +34,7 @@ import {
   getFormSettings,
   saveFormSettings,
   getRoomSchedules,
-  saveRoomSchedules,
-  DEFAULT_MASTER_ROOMS,
-  DEFAULT_MASTER_CHECKLISTS,
-  DEFAULT_FORM_SETTINGS,
-  DEFAULT_ROOM_SCHEDULES
+  saveRoomSchedules
 } from './utils/formStorage';
 import {
   subscribeReports,
@@ -75,7 +70,7 @@ import {
   isAutoBackupEnabled, 
   isAutoPhotosUploadEnabled 
 } from './services/googleDriveService';
-import { CheckCircle2, AlertCircle, Building2, Sparkles, UserCheck } from 'lucide-react';
+import { CheckCircle2, AlertCircle } from 'lucide-react';
 
 export default function App() {
   const [users, setUsers] = useState<User[]>([]);
@@ -443,6 +438,7 @@ export default function App() {
         setActiveTab={handleSafeTabChange}
         onSwitchUser={(user) => {
           setCurrentUser(user);
+          setCurrentUserState(user);
           showToast(`Berhasil masuk sebagai ${user.name} (${user.role.toUpperCase()})`, 'success');
         }}
         onLogout={handleLogout}
@@ -470,6 +466,7 @@ export default function App() {
             onOpenLoginModal={handleOpenLoginModal}
             onSwitchUser={(user) => {
               setCurrentUser(user);
+              setCurrentUserState(user);
               showToast(`Berhasil masuk sebagai ${user.name} (${user.role.toUpperCase()})`, 'success');
             }}
           />
@@ -625,7 +622,10 @@ export default function App() {
             <span>Sekolah Cendekia BAZNAS (SCB)</span>
           </div>
           <div className="flex items-center space-x-3 text-[11px] text-slate-400">
-            <span>Petugas Terjadwal: IDAY M YUSUF • ABDUL KODIR • WAHYUDIN</span>
+            <span>
+              Petugas Aktif:{' '}
+              {officers.filter((o) => o.isActive !== false).map((o) => o.name).join(' • ') || 'Petugas Kebersihan SCB'}
+            </span>
             <span>•</span>
             <span>Superadmin: operasional.scb@gmail.com</span>
           </div>

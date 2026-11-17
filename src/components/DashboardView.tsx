@@ -4,7 +4,6 @@ import { INITIAL_AREAS, exportReportsToCsv, getTodayDateString } from '../utils/
 import { getDayIndex } from '../utils/formStorage';
 import { downloadReportsPdf } from '../utils/pdfExport';
 import {
-  ClipboardCheck,
   CheckCircle2,
   AlertTriangle,
   Wrench,
@@ -65,6 +64,13 @@ export function shiftMonth(yearMonth: string, delta: number): string {
 
 const isTestAreaName = (name?: string) =>
   /^(test|tes|testing|coba|dummy|sample|other)$/i.test((name || '').trim());
+
+function formatLocalYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 interface DashboardViewProps {
   reports: CleaningReport[];
@@ -748,8 +754,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const endDay = Math.min((w + 1) * 7, daysInMonth);
       const daysInWeek = dailyBreakdown.filter((d) => d.dayNum >= startDay && d.dayNum <= endDay);
       const repsInWeek = monthReports.filter((r) => {
-        const parts = r.tanggal.split('-');
-        const dNum = parseInt(parts[2], 10);
+        const parts = (r.tanggal || '').split('-');
+        const dNum = parseInt(parts[2] || '0', 10);
         return dNum >= startDay && dNum <= endDay;
       });
       const cleanInWeek = repsInWeek.filter((r) => r.kondisiAkhir === 'Bersih').length;
@@ -800,7 +806,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const now = new Date();
       const past7 = new Date(now);
       past7.setDate(now.getDate() - 6);
-      const past7Str = past7.toISOString().split('T')[0];
+      const past7Str = formatLocalYmd(past7);
       filteredForRooms = reports.filter((r) => r.tanggal >= past7Str && r.tanggal <= todayStr);
     } else if (roomTimeRange === 'month') {
       filteredForRooms = reports.filter((r) => r.tanggal.startsWith(selectedMonth));
@@ -849,7 +855,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       for (let i = 6; i >= 0; i--) {
         const d = new Date(now);
         d.setDate(now.getDate() - i);
-        const dStr = d.toISOString().split('T')[0];
+        const dStr = formatLocalYmd(d);
         const rep = allTimeAreaReps.find((r) => r.tanggal === dStr);
         let status: 'clean' | 'review' | 'damage' | 'none' = 'none';
         if (rep) {
