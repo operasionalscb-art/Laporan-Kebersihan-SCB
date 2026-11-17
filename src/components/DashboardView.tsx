@@ -1,57 +1,46 @@
 import React, { useState, useMemo } from 'react';
-import { CleaningReport, User, KondisiAkhir, AreaStatusSummary, MasterRoom, RoomSchedule } from '../types';
+import { CleaningReport, User, KondisiAkhir, MasterRoom, RoomSchedule } from '../types';
 import { INITIAL_AREAS, exportReportsToCsv, getTodayDateString } from '../utils/storage';
-import { getIndonesianDayName, getDayIndex } from '../utils/formStorage';
+import { getDayIndex } from '../utils/formStorage';
 import { downloadReportsPdf } from '../utils/pdfExport';
-import { 
-  ClipboardCheck, 
-  CheckCircle2, 
-  AlertTriangle, 
-  Wrench, 
-  Search, 
-  Filter, 
-  Download, 
-  Printer, 
-  FileDown, 
-  Calendar, 
-  Clock, 
-  User as UserIcon, 
-  MapPin, 
-  Check, 
-  Eye, 
-  Plus, 
-  Trash2, 
-  LayoutGrid, 
-  List, 
-  Sparkles,
+import {
+  ClipboardCheck,
+  CheckCircle2,
+  AlertTriangle,
+  Wrench,
+  Search,
+  Download,
+  Printer,
+  FileDown,
+  Calendar,
+  Clock,
+  User as UserIcon,
+  MapPin,
+  Check,
+  Eye,
+  Plus,
+  Trash2,
+  LayoutGrid,
+  List,
   ShieldCheck,
-  CheckSquare,
   X,
-  ExternalLink,
   Lock,
-  UserCheck,
   CheckCheck,
-  TrendingUp,
   BarChart2,
   Sun,
   Moon,
-  Award,
   Activity,
   AlertOctagon,
-  ThumbsUp,
-  Layers,
   ArrowRight,
   Target,
   CalendarDays,
-  BellRing,
-  Info,
   ChevronLeft,
   ChevronRight,
   History,
   CalendarRange,
   Building2,
-  PieChart,
-  SlidersHorizontal
+  SlidersHorizontal,
+  RotateCcw,
 } from 'lucide-react';
 
 export function formatMonthIndo(yearMonth: string): string {
@@ -59,7 +48,7 @@ export function formatMonthIndo(yearMonth: string): string {
   const [y, m] = yearMonth.split('-');
   const monthNames = [
     'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
   ];
   const monthIdx = parseInt(m, 10) - 1;
   return `${monthNames[monthIdx] || m} ${y}`;
@@ -74,6 +63,8 @@ export function shiftMonth(yearMonth: string, delta: number): string {
   return `${newY}-${newM}`;
 }
 
+const isTestAreaName = (name?: string) =>
+  /^(test|tes|testing|coba|dummy|sample|other)$/i.test((name || '').trim());
 
 interface DashboardViewProps {
   reports: CleaningReport[];
@@ -102,7 +93,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onDeleteReport,
   onOpenPrintModal,
   onOpenLoginModal,
-  onSwitchUser,
 }) => {
   // Filters state
   const [dateFilter, setDateFilter] = useState<'today' | '7days' | 'month' | 'specific_month' | 'all'>('today');
@@ -114,7 +104,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
 
-  // Target chart view mode: 'rooms' (Grafik per Ruangan) | 'weekly' (Senin s/d Sabtu) | 'monthly' (Histori Bulanan)
+  // Target chart view mode: 'rooms' | 'weekly' | 'monthly'
   const [targetChartView, setTargetChartView] = useState<'rooms' | 'weekly' | 'monthly'>('rooms');
 
   // Room Analytics Dashboard state
@@ -131,7 +121,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Target chart inspected date (null = today)
   const [inspectedTargetDate, setInspectedTargetDate] = useState<string | null>(null);
 
-  // In-place approval notification (zero popup windows)
+  // In-place notification toast
   const [approvalToast, setApprovalToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
 
   const showApprovalToast = (message: string, type: 'success' | 'info' = 'success') => {
@@ -169,7 +159,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const pdfPeriodeMeta = useMemo(() => {
     const monthNames = [
       'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
     ];
     const monthLabel =
       pdfFilterMonth === 'all'
@@ -195,18 +185,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
     return {
       label: 'Semua Periode',
-      fileName: `Rekap_Kebersihan_SCB_Semua_Periode.pdf`,
+      fileName: 'Rekap_Kebersihan_SCB_Semua_Periode.pdf',
     };
   }, [pdfFilterMonth, pdfFilterYear]);
 
+  // Active & mandatory room lists (synced with Master Rooms, excluding test entries)
+  const activeRoomsList = useMemo(() => {
+    if (masterRooms && masterRooms.length > 0) {
+      const valid = masterRooms
+        .filter((r) => r.isActive !== false && r.name && !isTestAreaName(r.name))
+        .map((r) => r.name.trim());
+      if (valid.length > 0) return Array.from(new Set(valid));
+    }
+    return INITIAL_AREAS;
+  }, [masterRooms]);
+
+  const mandatoryRoomsList = useMemo(() => {
+    if (masterRooms && masterRooms.length > 0) {
+      const activeMandatory = masterRooms.filter(
+        (r) => r.isActive !== false && r.isMandatoryDaily !== false && r.name && !isTestAreaName(r.name)
+      );
+      if (activeMandatory.length > 0) return Array.from(new Set(activeMandatory.map((r) => r.name.trim())));
+    }
+    return INITIAL_AREAS;
+  }, [masterRooms]);
+
   // Helper to determine if an issue report has received follow-up or resolution
   const isReportFollowedUp = (report: CleaningReport, allReports: CleaningReport[]) => {
-    // 1. If supervisor already approved / marked as resolved
-    if (report.statusVerifikasi === 'Disetujui') {
-      return true;
-    }
-
-    // 2. If there is a newer report for the exact same area that is 'Bersih', it has been resolved
+    if (report.statusVerifikasi === 'Disetujui') return true;
     const newerCleanReport = allReports.find((r) => {
       const isSameArea = r.isAreaOther
         ? (r.areaCustom || '').trim().toLowerCase() === (report.areaCustom || '').trim().toLowerCase()
@@ -218,14 +224,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         r.kondisiAkhir === 'Bersih'
       );
     });
-
     return !!newerCleanReport;
   };
 
-  // Quick category tag filter
+  // Quick category filter
   const [quickTagFilter, setQuickTagFilter] = useState<'all' | 'unresolved' | 'pending_approval' | 'clean' | 'damage'>('all');
 
-  // Supervisor / Admin Detection
   const isSupervisorOrAdmin = useMemo(() => {
     return (
       currentUser?.role === 'supervisor' ||
@@ -233,6 +237,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       currentUser?.email === 'operasional.scb@gmail.com'
     );
   }, [currentUser]);
+
+  const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
 
   const registeredSupervisors = useMemo(() => {
     const list = (allUsers || []).filter(
@@ -262,7 +268,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return list;
   }, [allUsers]);
 
-  // Verification counts for quick badges
   const verificationCounts = useMemo(() => {
     const pending = reports.filter((r) => r.statusVerifikasi === 'Menunggu').length;
     const approved = reports.filter((r) => r.statusVerifikasi === 'Disetujui').length;
@@ -270,12 +275,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return { pending, approved, needsRepair };
   }, [reports]);
 
-  // Operational reports for today
   const todayReports = useMemo(() => {
     return reports.filter((r) => r.tanggal === todayStr);
   }, [reports, todayStr]);
 
-  // Unresolved critical findings needing follow-up
   const unresolvedIssuesList = useMemo(() => {
     return reports.filter(
       (r) =>
@@ -284,10 +287,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   }, [reports]);
 
+  // Dynamic officer options for dropdowns
+  const availableOfficerNames = useMemo(() => {
+    const set = new Set<string>();
+    (officers || []).forEach((o) => {
+      if (o.isActive !== false && o.name) set.add(o.name);
+    });
+    (allUsers || []).forEach((u) => {
+      if (u.isActive !== false && u.role === 'petugas' && u.name) set.add(u.name);
+    });
+    reports.forEach((r) => {
+      if (r.namaPetugas) set.add(r.namaPetugas);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [officers, allUsers, reports]);
+
   // Filtered reports logic
   const filteredReports = useMemo(() => {
     return reports.filter((r) => {
-      // Date filter
       if (dateFilter === 'today' && r.tanggal !== todayStr) return false;
       if (dateFilter === '7days') {
         const diffDays = (Date.now() - r.timestamp) / (1000 * 3600 * 24);
@@ -301,7 +318,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         if (!r.tanggal || !r.tanggal.startsWith(selectedMonth)) return false;
       }
 
-      // Quick Tag Filter
       if (quickTagFilter === 'unresolved' && !(r.kondisiAkhir !== 'Bersih' && !isReportFollowedUp(r, reports))) {
         return false;
       }
@@ -315,27 +331,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         return false;
       }
 
-      // Officer filter
       if (selectedOfficer !== 'all' && r.namaPetugas !== selectedOfficer) {
         return false;
       }
 
-      // Area filter
       if (selectedArea !== 'all' && r.area !== selectedArea) {
         return false;
       }
 
-      // Kondisi filter
       if (selectedKondisi !== 'all' && r.kondisiAkhir !== selectedKondisi) {
         return false;
       }
 
-      // Status Verifikasi filter
       if (selectedStatusVerifikasi !== 'all' && r.statusVerifikasi !== selectedStatusVerifikasi) {
         return false;
       }
 
-      // Search Query
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const matchArea = r.area.toLowerCase().includes(query);
@@ -362,12 +373,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     todayStr,
   ]);
 
-  // Operational KPI calculations for today
+  // Operational KPI calculations
   const stats = useMemo(() => {
     const totalToday = todayReports.length;
     const cleanCount = todayReports.filter((r) => r.kondisiAkhir === 'Bersih').length;
 
-    // Calculate issues that have NOT received follow up or resolution
     const reviewPendingList = reports.filter(
       (r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang' && !isReportFollowedUp(r, reports)
     );
@@ -398,7 +408,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
   }, [reports, todayReports]);
 
-  // Shift Monitoring for today (Pagi: 06:00-10:59, Siang: 11:00-14:59, Sore/Malam: 15:00-21:00)
+  // Shift Monitoring for today
   const shiftStats = useMemo(() => {
     let pagi = 0;
     let siang = 0;
@@ -414,14 +424,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return { pagi, siang, sore };
   }, [todayReports]);
 
-  // Field Officer Daily Summary & Activity
+  // Field Officer Daily Summary (dynamic from active officers + today's reports)
   const officerStats = useMemo(() => {
     const map = new Map<string, { total: number; clean: number; issues: number; lastTime: string }>();
 
-    // Standard officers list
-    const names = ['IDAY M YUSUF', 'ABDUL KODIR', 'WAHYUDIN'];
-    names.forEach((n) => {
-      map.set(n, { total: 0, clean: 0, issues: 0, lastTime: '-' });
+    const activeRoster = (officers || []).filter((o) => o.isActive !== false && o.name);
+    activeRoster.forEach((o) => {
+      map.set(o.name, { total: 0, clean: 0, issues: 0, lastTime: '-' });
     });
 
     todayReports.forEach((r) => {
@@ -436,74 +445,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       map.set(name, cur);
     });
 
-    return Array.from(map.entries()).map(([name, data]) => ({
-      name,
-      ...data,
-      cleanRate: data.total > 0 ? Math.round((data.clean / data.total) * 100) : 0,
-    }));
-  }, [todayReports]);
+    return Array.from(map.entries())
+      .map(([name, data]) => ({
+        name,
+        ...data,
+        cleanRate: data.total > 0 ? Math.round((data.clean / data.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  }, [todayReports, officers]);
 
-  // Cleanliness quality rating badge
   const cleanlinessRating = useMemo(() => {
     const rate = stats.cleanPercentage;
     if (stats.totalToday === 0) {
-      return {
-        label: 'Menunggu Data Hari Ini',
-        subtext: 'Belum ada laporan checklist yang masuk hari ini',
-        badgeClass: 'bg-slate-100 text-slate-700 border-slate-200',
-        barColor: 'bg-slate-400',
-      };
+      return { label: 'Menunggu Data', toneClass: 'text-slate-600' };
     }
     if (rate >= 85) {
-      return {
-        label: 'Sangat Prima & Higienis',
-        subtext: `${stats.cleanCount} dari ${stats.totalToday} inspeksi dalam kondisi bersih sempurna`,
-        badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-300',
-        barColor: 'bg-emerald-500',
-      };
+      return { label: 'Sangat Prima', toneClass: 'text-emerald-700' };
     }
     if (rate >= 65) {
-      return {
-        label: 'Standar Terpenuhi',
-        subtext: 'Mayoritas area bersih dengan beberapa catatan ringan',
-        badgeClass: 'bg-blue-100 text-blue-800 border-blue-300',
-        barColor: 'bg-blue-500',
-      };
+      return { label: 'Standar Terpenuhi', toneClass: 'text-blue-700' };
     }
-    return {
-      label: 'Perlu Perhatian & Follow-up',
-      subtext: 'Terdapat temuan kendala yang perlu diselesaikan petugas',
-      badgeClass: 'bg-amber-100 text-amber-900 border-amber-300',
-      barColor: 'bg-amber-500',
-    };
+    return { label: 'Perlu Perhatian', toneClass: 'text-amber-700' };
   }, [stats]);
 
-  // SCB Operational Schedule: Senin s/d Sabtu (Monday through Saturday)
+  // Operational Schedule (Senin s/d Sabtu)
   const operationalSchedule = useMemo(() => {
     const today = new Date();
-    const dayOfWeek = today.getDay(); // 0 = Ahad/Minggu, 1 = Senin, ..., 6 = Sabtu
-    const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6; // Senin s/d Sabtu
+    const dayOfWeek = today.getDay();
+    const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6;
     const dayNames = ['Ahad (Minggu)', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
     return {
       dayOfWeek,
       isWorkingDay,
       dayName: dayNames[dayOfWeek],
-      scheduleRuleText: 'Senin s/d Sabtu • Target 100% Seluruh Ruangan Dilaporkan Setiap Hari',
     };
   }, []);
 
-  // Today's Room Target Status specifically for the high-priority Alert Banner
+  // Today's Room Target Status
   const todayRoomTargetStatus = useMemo(() => {
-    const totalTarget = INITIAL_AREAS.length; // 6 standard rooms
-    const reportedRooms: Array<{
-      areaName: string;
-      latestReport: CleaningReport;
-      totalToday: number;
-    }> = [];
+    const totalTarget = mandatoryRoomsList.length;
+    const reportedRooms: Array<{ areaName: string; latestReport: CleaningReport; totalToday: number }> = [];
     const unreportedRooms: string[] = [];
 
-    INITIAL_AREAS.forEach((areaName) => {
-      const areaReps = todayReports.filter((r) => r.area === areaName);
+    mandatoryRoomsList.forEach((areaName) => {
+      const normalized = areaName.trim().toUpperCase();
+      const areaReps = todayReports.filter((r) => (r.area || '').trim().toUpperCase() === normalized);
       if (areaReps.length > 0) {
         reportedRooms.push({
           areaName,
@@ -516,21 +502,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     });
 
     const reportedCount = reportedRooms.length;
-    const percentage = Math.round((reportedCount / totalTarget) * 100);
-    const isTargetAchieved = reportedCount === totalTarget;
+    const percentage = totalTarget > 0 ? Math.round((reportedCount / totalTarget) * 100) : 100;
 
     return {
       totalTarget,
       reportedCount,
       unreportedCount: unreportedRooms.length,
       percentage,
-      isTargetAchieved,
+      isTargetAchieved: reportedCount === totalTarget,
       reportedRooms,
       unreportedRooms,
     };
-  }, [todayReports]);
+  }, [todayReports, mandatoryRoomsList]);
 
-  // Active target date being inspected (defaults to today)
   const activeTargetDate = inspectedTargetDate || todayStr;
   const isInspectingToday = activeTargetDate === todayStr;
 
@@ -538,25 +522,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return reports.filter((r) => r.tanggal === activeTargetDate);
   }, [reports, activeTargetDate]);
 
-  const mandatoryRoomsList = useMemo(() => {
-    if (masterRooms && masterRooms.length > 0) {
-      const activeMandatory = masterRooms.filter((r) => r.isActive !== false && r.isMandatoryDaily !== false);
-      if (activeMandatory.length > 0) return activeMandatory.map((r) => r.name);
-    }
-    return INITIAL_AREAS;
-  }, [masterRooms]);
-
-  // Active Room Target Status for the selected/inspected date in the Target Dashboard
+  // Active Room Target Status for inspected date
   const activeRoomTargetStatus = useMemo(() => {
     const inspectedDayIndex = getDayIndex(activeTargetDate);
     const totalTarget = mandatoryRoomsList.length;
     const items = mandatoryRoomsList.map((areaName) => {
-      const areaReps = activeTargetReports.filter((r) => r.area === areaName);
+      const cleanArea = areaName.trim().toUpperCase();
+      const areaReps = activeTargetReports.filter((r) => (r.area || '').trim().toUpperCase() === cleanArea);
       const isReported = areaReps.length > 0;
       const latestReport = areaReps[0];
-      const cleanArea = areaName.trim().toUpperCase();
 
-      // 1. Look up schedule for the inspected day first
       let schedule = (roomSchedules || []).find(
         (s) =>
           s.roomName &&
@@ -565,14 +540,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           s.daysOfWeek.includes(inspectedDayIndex)
       );
 
-      // 2. If no schedule on this day, fallback to the general room assignment
       if (!schedule) {
         schedule = (roomSchedules || []).find(
           (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanArea
         );
       }
 
-      // 3. Resolve latest officer name from allUsers/officers by ID or name
       const assignedOfficer = (allUsers || officers || []).find(
         (u) =>
           (schedule?.officerId && u.id === schedule.officerId) ||
@@ -587,6 +560,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         latestKondisi: latestReport?.kondisiAkhir as KondisiAkhir | undefined,
         latestPetugas: latestReport?.namaPetugas,
         latestWaktu: latestReport?.waktu,
+        latestReport,
         reportId: latestReport?.id,
         scheduledOfficer: scheduledOfficerName,
         isCurrentUserAssigned: Boolean(
@@ -603,7 +577,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const reportedCount = items.filter((i) => i.isReported).length;
     const unreportedCount = totalTarget - reportedCount;
     const percentage = totalTarget > 0 ? Math.round((reportedCount / totalTarget) * 100) : 100;
-    const isTargetAchieved = reportedCount === totalTarget;
 
     return {
       items,
@@ -611,18 +584,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       reportedCount,
       unreportedCount,
       percentage,
-      isTargetAchieved,
+      isTargetAchieved: reportedCount === totalTarget,
     };
-  }, [activeTargetReports, mandatoryRoomsList, roomSchedules, activeTargetDate, currentUser]);
+  }, [activeTargetReports, mandatoryRoomsList, roomSchedules, activeTargetDate, currentUser, allUsers, officers]);
 
   // Weekly Target Fulfillment Chart (Senin s/d Sabtu)
   const weeklyTargetStats = useMemo(() => {
     const now = new Date();
-    const currentDayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon, 6 is Sat
-    // Offset to get Monday of this week:
-    // Sun (0) -> -6 days
-    // Mon (1) -> 0 days
-    // Tue (2) -> -1 days, etc.
+    const currentDayOfWeek = now.getDay();
     const offsetToMonday = currentDayOfWeek === 0 ? -6 : 1 - currentDayOfWeek;
     const mondayDate = new Date(now);
     mondayDate.setDate(now.getDate() + offsetToMonday);
@@ -638,6 +607,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     ];
 
     const todayDateString = getTodayDateString();
+    const target = mandatoryRoomsList.length || 1;
 
     const days = dayConfigs.map((config, index) => {
       const d = new Date(mondayDate);
@@ -648,16 +618,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const dateStr = `${year}-${month}-${day}`;
 
       const dayReps = reports.filter((r) => r.tanggal === dateStr);
-      const reportedAreas = INITIAL_AREAS.filter((areaName) =>
-        dayReps.some((r) => r.area === areaName)
+      const reportedAreas = mandatoryRoomsList.filter((areaName) =>
+        dayReps.some((r) => (r.area || '').trim().toUpperCase() === areaName.trim().toUpperCase())
       );
       const count = reportedAreas.length;
-      const target = INITIAL_AREAS.length;
       const percentage = Math.round((count / target) * 100);
-      const isToday = dateStr === todayDateString;
-      const isPast = dateStr < todayDateString;
-      const isFuture = dateStr > todayDateString;
-      const isTargetMet = count >= target;
 
       return {
         dayName: config.name,
@@ -666,12 +631,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         displayDate: `${d.getDate()} ${d.toLocaleDateString('id-ID', { month: 'short' })}`,
         totalReports: dayReps.length,
         reportedCount: count,
+        targetCount: target,
         missingCount: target - count,
         percentage,
-        isToday,
-        isPast,
-        isFuture,
-        isTargetMet,
+        isToday: dateStr === todayDateString,
+        isPast: dateStr < todayDateString,
+        isFuture: dateStr > todayDateString,
+        isTargetMet: count >= target,
       };
     });
 
@@ -690,25 +656,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       targetMetDaysCount,
       totalWeeklyReports,
     };
-  }, [reports]);
+  }, [reports, mandatoryRoomsList]);
 
-  // Backward-compatible areaCoverage for quick area filter
-  const areaCoverage = useMemo(() => {
-    return activeRoomTargetStatus.items.map((item) => ({
-      areaName: item.areaName,
-      isCleaned: item.isReported,
-      total: item.total,
-      latestKondisi: item.latestKondisi,
-      latestPetugas: item.latestPetugas,
-      latestWaktu: item.latestWaktu,
-    }));
-  }, [activeRoomTargetStatus]);
-
-  // List of available months based on reports data and current month
+  // Available months
   const availableMonths = useMemo(() => {
     const currentMonthStr = todayStr.slice(0, 7);
-    const set = new Set<string>();
-    set.add(currentMonthStr);
+    const set = new Set<string>([currentMonthStr]);
     reports.forEach((r) => {
       if (r.tanggal && r.tanggal.length >= 7) {
         set.add(r.tanggal.slice(0, 7));
@@ -717,17 +670,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return Array.from(set).sort().reverse();
   }, [reports, todayStr]);
 
-  // Monthly statistics & history overview for the selected month
+  // Monthly statistics
   const monthlyTargetStats = useMemo(() => {
     const targetMonth = selectedMonth || todayStr.slice(0, 7);
     const [yearStr, monthStr] = targetMonth.split('-');
     const year = parseInt(yearStr, 10);
     const month = parseInt(monthStr, 10);
-
-    // Number of days in this month
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    // Reports in this month
     const monthReports = reports.filter((r) => r.tanggal && r.tanggal.startsWith(targetMonth));
     const totalReports = monthReports.length;
     const cleanReports = monthReports.filter((r) => r.kondisiAkhir === 'Bersih').length;
@@ -735,7 +685,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const reviewReports = monthReports.filter((r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang').length;
     const damageReports = monthReports.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length;
 
-    // Daily breakdown for the month
+    const target = mandatoryRoomsList.length || 1;
     const dailyBreakdown: Array<{
       dateStr: string;
       dayNum: number;
@@ -752,15 +702,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     for (let day = 1; day <= daysInMonth; day++) {
       const d = new Date(year, month - 1, day);
-      const dayOfWeek = d.getDay(); // 0 is Sun, 1 is Mon, ..., 6 is Sat
-      const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6; // Senin s/d Sabtu
+      const dayOfWeek = d.getDay();
+      const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6;
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
       const repsOnDay = monthReports.filter((r) => r.tanggal === dateStr);
-      const reportedAreas = INITIAL_AREAS.filter((areaName) => repsOnDay.some((r) => r.area === areaName));
+      const reportedAreas = mandatoryRoomsList.filter((areaName) =>
+        repsOnDay.some((r) => (r.area || '').trim().toUpperCase() === areaName.trim().toUpperCase())
+      );
       const count = reportedAreas.length;
-      const percentage = Math.round((count / INITIAL_AREAS.length) * 100);
-      const isTargetMet = count >= INITIAL_AREAS.length;
+      const percentage = Math.round((count / target) * 100);
+      const isTargetMet = count >= target;
 
       if (isWorkingDay) {
         totalWorkingDays++;
@@ -779,7 +731,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       });
     }
 
-    // Weekly buckets (Minggu 1, 2, 3, 4, 5)
     const weeklyBuckets: Array<{
       weekLabel: string;
       weekNum: number;
@@ -812,7 +763,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       weeklyBuckets.push({
         weekLabel: `Mg ${w + 1}`,
         weekNum: w + 1,
-        dateRange: `${startDay}-${endDay}`,
+        dateRange: `${startDay}–${endDay}`,
         reportsCount: repsInWeek.length,
         cleanCount: cleanInWeek,
         avgCoverage,
@@ -820,18 +771,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         workingDaysCount: workingDaysInWeek.length,
       });
     }
-
-    // Room performance breakdown across the month
-    const roomMonthlySummary = INITIAL_AREAS.map((areaName) => {
-      const areaReps = monthReports.filter((r) => r.area === areaName);
-      const cleanCount = areaReps.filter((r) => r.kondisiAkhir === 'Bersih').length;
-      return {
-        areaName,
-        totalReports: areaReps.length,
-        cleanCount,
-        cleanRate: areaReps.length > 0 ? Math.round((cleanCount / areaReps.length) * 100) : 0,
-      };
-    });
 
     const monthlyComplianceRate =
       totalWorkingDays > 0 ? Math.round((fullComplianceDays / totalWorkingDays) * 100) : 0;
@@ -847,15 +786,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       totalWorkingDays,
       fullComplianceDays,
       monthlyComplianceRate,
-      dailyBreakdown,
       weeklyBuckets,
-      roomMonthlySummary,
     };
-  }, [reports, selectedMonth, todayStr]);
+  }, [reports, selectedMonth, todayStr, mandatoryRoomsList]);
 
-  // Room Analytics Dashboard Engine: Room-by-room comparative charts, checklist metrics, and timeline
+  // Room Analytics Engine
   const roomAnalyticsData = useMemo(() => {
-    // 1. Filter reports by roomTimeRange
     let filteredForRooms = reports;
 
     if (roomTimeRange === 'today') {
@@ -870,22 +806,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       filteredForRooms = reports.filter((r) => r.tanggal.startsWith(selectedMonth));
     }
 
-    // 2. Official active rooms from Master Ruangan (fallback to INITIAL_AREAS), excluding test/dummy entries
-    const isTestAreaName = (name?: string) =>
-      /^(test|tes|testing|coba|dummy|sample|other)$/i.test((name || '').trim());
-
-    const activeMasterAreas =
-      masterRooms && masterRooms.length > 0
-        ? masterRooms
-            .filter((r) => r.isActive !== false && r.name && !isTestAreaName(r.name))
-            .map((r) => r.name.trim())
-        : [];
-
-    const allKnownAreas = Array.from(
-      new Set(activeMasterAreas.length > 0 ? activeMasterAreas : INITIAL_AREAS)
-    );
-
-    const roomStats = allKnownAreas.map((areaName) => {
+    const roomStats = activeRoomsList.map((areaName) => {
       const normalizedTarget = areaName.trim().toUpperCase();
       const areaReps = filteredForRooms.filter(
         (r) => (r.area || '').trim().toUpperCase() === normalizedTarget
@@ -893,7 +814,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const allTimeAreaReps = reports.filter(
         (r) => (r.area || '').trim().toUpperCase() === normalizedTarget
       );
-      
+
       const total = areaReps.length;
       const cleanCount = areaReps.filter((r) => r.kondisiAkhir === 'Bersih').length;
       const reviewCount = areaReps.filter((r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang').length;
@@ -903,26 +824,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const reviewRate = total > 0 ? Math.round((reviewCount / total) * 100) : 0;
       const damageRate = total > 0 ? Math.round((damageCount / total) * 100) : 0;
 
-      // Latest report
-      const sortedByTime = [...allTimeAreaReps].sort((a, b) => b.timestamp - a.timestamp);
-      const latestReport = sortedByTime[0];
-
-      // Checklist completion stats
-      const checklistItems = [
-        'Kloset Bersih',
-        'Kran Ada',
-        'Ember Ada',
-        'Air ada',
-        'Gayung Ada',
-      ];
+      const checklistItems = ['Kloset Bersih', 'Kran Ada', 'Ember Ada', 'Air ada', 'Gayung Ada'];
       const checklistBreakdown = checklistItems.map((item) => {
         const checkedCount = areaReps.filter((r) => r.checklist && r.checklist.includes(item)).length;
         const rate = total > 0 ? Math.round((checkedCount / total) * 100) : 0;
         return { item, checkedCount, rate };
       });
 
-      // Officer distribution
-      const officerCounts: { [name: string]: number } = {};
+      const officerCounts: Record<string, number> = {};
       areaReps.forEach((r) => {
         officerCounts[r.namaPetugas] = (officerCounts[r.namaPetugas] || 0) + 1;
       });
@@ -930,42 +839,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count);
 
-      // Last 7 days trend
       const trendDays: {
         dateStr: string;
         displayDate: string;
         dayShort: string;
         status: 'clean' | 'review' | 'damage' | 'none';
-        report?: CleaningReport;
       }[] = [];
       const now = new Date();
       for (let i = 6; i >= 0; i--) {
         const d = new Date(now);
         d.setDate(now.getDate() - i);
         const dStr = d.toISOString().split('T')[0];
-        const dayReps = allTimeAreaReps.filter((r) => r.tanggal === dStr);
-        const rep = dayReps[0];
-        
+        const rep = allTimeAreaReps.find((r) => r.tanggal === dStr);
         let status: 'clean' | 'review' | 'damage' | 'none' = 'none';
         if (rep) {
           if (rep.kondisiAkhir === 'Bersih') status = 'clean';
           else if (rep.kondisiAkhir === 'Ada Kerusakan') status = 'damage';
           else status = 'review';
         }
-
         trendDays.push({
           dateStr: dStr,
           displayDate: `${d.getDate()}/${d.getMonth() + 1}`,
           dayShort: ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'][d.getDay()],
           status,
-          report: rep,
         });
       }
-
-      // Unresolved issues in this area
-      const activeIssues = allTimeAreaReps.filter(
-        (r) => r.kondisiAkhir !== 'Bersih' && !isReportFollowedUp(r, reports)
-      );
 
       const isCleanedToday = reports.some(
         (r) => (r.area || '').trim().toUpperCase() === normalizedTarget && r.tanggal === todayStr
@@ -980,43 +878,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         cleanRate,
         reviewRate,
         damageRate,
-        latestReport,
         checklistBreakdown,
         topOfficers,
         trendDays,
-        activeIssues,
         isCleanedToday,
       };
     });
 
-    // 3. Sorting
     const sortedRooms = [...roomStats].sort((a, b) => {
       if (roomSortBy === 'cleanRate') {
         if (b.cleanRate !== a.cleanRate) return b.cleanRate - a.cleanRate;
         return b.total - a.total;
       }
-      if (roomSortBy === 'reports') {
-        return b.total - a.total;
-      }
-      if (roomSortBy === 'issues') {
-        const issuesA = a.reviewCount + a.damageCount;
-        const issuesB = b.reviewCount + b.damageCount;
-        return issuesB - issuesA;
-      }
+      if (roomSortBy === 'reports') return b.total - a.total;
+      if (roomSortBy === 'issues') return b.reviewCount + b.damageCount - (a.reviewCount + a.damageCount);
       return 0;
     });
-
-    // 4. Highlight rankings
-    const roomsWithReports = roomStats.filter((r) => r.total > 0);
-    const cleanestRoom = roomsWithReports.length > 0
-      ? [...roomsWithReports].sort((a, b) => b.cleanRate - a.cleanRate)[0]
-      : roomStats[0];
-
-    const roomWithMostIssues = [...roomStats].sort(
-      (a, b) => (b.reviewCount + b.damageCount) - (a.reviewCount + a.damageCount)
-    )[0];
-
-    const roomWithMostReports = [...roomStats].sort((a, b) => b.total - a.total)[0];
 
     const totalClean = roomStats.reduce((acc, r) => acc + r.cleanCount, 0);
     const totalAll = roomStats.reduce((acc, r) => acc + r.total, 0);
@@ -1024,13 +901,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     return {
       rooms: sortedRooms,
-      cleanestRoom,
-      roomWithMostIssues,
-      roomWithMostReports,
       overallCleanRate,
       totalReportsFiltered: totalAll,
     };
-  }, [reports, masterRooms, roomTimeRange, selectedMonth, todayStr, roomSortBy]);
+  }, [reports, activeRoomsList, roomTimeRange, selectedMonth, todayStr, roomSortBy]);
 
   const selectedRoomStats = useMemo(() => {
     return (
@@ -1049,7 +923,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
-  // Direct Execution of Verification
   const handleExecuteVerification = (
     reportId: string,
     status: 'Disetujui' | 'Perlu Perbaikan',
@@ -1069,8 +942,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
     const nowDate = getTodayDateString();
-
-    const noteToSave = note !== undefined ? note : (supervisorNoteInput.trim() || report.catatanSupervisor || '');
+    const noteToSave = note !== undefined ? note : supervisorNoteInput.trim() || report.catatanSupervisor || '';
 
     const updates: Partial<CleaningReport> = {
       statusVerifikasi: status,
@@ -1088,39 +960,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       });
     }
 
-    // In-place confirmation notification without opening any popup window or modal
     if (status === 'Disetujui') {
-      showApprovalToast(`✓ Laporan ${report.area} berhasil disetujui`);
+      showApprovalToast(`Laporan ${report.area} berhasil disetujui`);
     } else {
-      showApprovalToast(`⚠️ Laporan ${report.area} ditandai perlu perbaikan`, 'info');
+      showApprovalToast(`Laporan ${report.area} ditandai perlu perbaikan`, 'info');
     }
   };
 
-  // Direct 1-Click Approval Trigger from Cards / Table - ZERO POPUPS OR WINDOWS
-  const handleDirectCardVerify = (
-    report: CleaningReport,
-    status: 'Disetujui' | 'Perlu Perbaikan'
-  ) => {
-    // Determine verifier name from active user or default supervisor
+  const handleDirectCardVerify = (report: CleaningReport, status: 'Disetujui' | 'Perlu Perbaikan') => {
     const supervisorName =
       (currentUser?.role === 'supervisor' || currentUser?.role === 'superadmin') && currentUser.name
         ? currentUser.name
         : registeredSupervisors[0]?.name || 'SUPERVISOR SARPRAS SCB';
 
-    // Directly execute approval in-place: no popup modal, no navigation, no new window!
     handleExecuteVerification(report.id, status, undefined, supervisorName);
   };
 
-  // In-Place Verification inside Detail Modal
   const handleVerifyReport = (status: 'Disetujui' | 'Perlu Perbaikan') => {
     if (!activeReportDetail) return;
-
     const supervisorName =
       (currentUser?.role === 'supervisor' || currentUser?.role === 'superadmin') && currentUser.name
         ? currentUser.name
-        : (registeredSupervisors.find((s) => s.id === selectedModalSupervisorId)?.name ||
-           registeredSupervisors[0]?.name ||
-           'SUPERVISOR SARPRAS SCB');
+        : registeredSupervisors.find((s) => s.id === selectedModalSupervisorId)?.name ||
+          registeredSupervisors[0]?.name ||
+          'SUPERVISOR SARPRAS SCB';
 
     handleExecuteVerification(
       activeReportDetail.id,
@@ -1130,7 +993,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   };
 
-  // Bulk approve all pending reports by Supervisor directly in-place without browser confirm popup
   const handleBulkApprovePending = () => {
     const pendingList = reports.filter((r) => r.statusVerifikasi === 'Menunggu');
     if (pendingList.length === 0) return;
@@ -1151,43 +1013,86 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       });
     }
 
-    showApprovalToast(`✓ Berhasil menyetujui sekaligus ${pendingList.length} laporan kebersihan!`);
+    showApprovalToast(`Berhasil menyetujui sekaligus ${pendingList.length} laporan kebersihan.`);
   };
 
-  const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
+  const hasActiveFilters =
+    selectedOfficer !== 'all' ||
+    selectedArea !== 'all' ||
+    selectedKondisi !== 'all' ||
+    selectedStatusVerifikasi !== 'all' ||
+    quickTagFilter !== 'all' ||
+    searchQuery.trim() !== '' ||
+    dateFilter !== 'today';
+
+  const resetAllFilters = () => {
+    setSelectedOfficer('all');
+    setSelectedArea('all');
+    setSelectedKondisi('all');
+    setSelectedStatusVerifikasi('all');
+    setQuickTagFilter('all');
+    setSearchQuery('');
+    setDateFilter('today');
+  };
+
+  const scrollToReportsTable = () => {
+    const tableElem = document.getElementById('report-history-table');
+    if (tableElem) {
+      tableElem.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-      {/* Page Title & Action Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800">
-              Monitoring Operasional
+      {/* 1. COMMAND HEADER & EXPORT BAR */}
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 pb-5 border-b border-slate-200">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 font-medium">
+            <span>Sekolah Cendekia BAZNAS</span>
+            <span aria-hidden="true">·</span>
+            <span className="tabular-nums">
+              {new Date().toLocaleDateString('id-ID', {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric',
+              })}
             </span>
-            <span className="text-xs text-slate-500">
-              Update Terkini: {new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-            </span>
+            {!currentUser && (
+              <>
+                <span aria-hidden="true">·</span>
+                <button
+                  onClick={() =>
+                    onOpenLoginModal
+                      ? onOpenLoginModal('Masuk Akun Petugas Kebersihan / Pengelola SCB via Google', 'google')
+                      : onAddNewReport()
+                  }
+                  className="text-emerald-700 hover:text-emerald-900 font-semibold inline-flex items-center gap-1 cursor-pointer hover:underline"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>Mode Tamu (Login Petugas)</span>
+                </button>
+              </>
+            )}
           </div>
-          <h1 className="text-xl sm:text-2xl font-bold text-slate-900 mt-1">
-            Dashboard Laporan Kebersihan Kamar Mandi
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
+            Dashboard Kebersihan &amp; Sanitasi
           </h1>
-          <p className="text-xs sm:text-sm text-slate-500">
-            Sekolah Cendekia BAZNAS (SCB) • Pemantauan harian sanitasi dan fasilitas
+          <p className="text-sm text-slate-500">
+            Pemantauan target ruangan harian, indeks mutu kebersihan, dan verifikasi laporan petugas.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Export PDF dengan Filter Waktu Bulan & Tahun */}
-          <div className="flex flex-wrap items-center bg-white border border-emerald-200 rounded-xl p-1 shadow-2xs gap-1">
-            <div className="flex items-center gap-1 pl-1.5 text-emerald-700" title="Filter Bulan & Tahun untuk Export PDF">
-              <Calendar className="w-3.5 h-3.5 shrink-0" />
-            </div>
+        {/* Unified Action Controls */}
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {/* Period Filter + Export PDF */}
+          <div className="inline-flex items-center bg-white border border-slate-200 rounded-xl p-1 gap-1 shadow-2xs">
+            <Calendar className="w-3.5 h-3.5 text-slate-400 ml-1.5 shrink-0" />
             <select
               aria-label="Pilih Bulan Export PDF"
               value={pdfFilterMonth}
               onChange={(e) => setPdfFilterMonth(e.target.value)}
-              className="bg-transparent text-xs font-semibold text-slate-700 py-1 pl-1 pr-1.5 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+              className="bg-transparent text-xs font-semibold text-slate-700 py-1 px-1 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
               <option value="all">Semua Bulan</option>
               <option value="01">Januari</option>
@@ -1208,7 +1113,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               aria-label="Pilih Tahun Export PDF"
               value={pdfFilterYear}
               onChange={(e) => setPdfFilterYear(e.target.value)}
-              className="bg-transparent text-xs font-semibold text-slate-700 py-1 pl-1 pr-1.5 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+              className="bg-transparent text-xs font-semibold text-slate-700 py-1 px-1 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer tabular-nums"
             >
               {pdfAvailableYears.map((yr) => (
                 <option key={yr} value={yr}>
@@ -1220,10 +1125,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               onClick={() => {
                 if (pdfFilteredReports.length === 0) {
-                  showApprovalToast(
-                    `Tidak ada data laporan pada periode ${pdfPeriodeMeta.label}.`,
-                    'info'
-                  );
+                  showApprovalToast(`Tidak ada data laporan pada periode ${pdfPeriodeMeta.label}.`, 'info');
                   return;
                 }
                 downloadReportsPdf(pdfFilteredReports, {
@@ -1232,2286 +1134,1444 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   currentUser,
                 });
                 showApprovalToast(
-                  `✓ PDF periode ${pdfPeriodeMeta.label} (${pdfFilteredReports.length} laporan) diunduh.`,
+                  `PDF periode ${pdfPeriodeMeta.label} (${pdfFilteredReports.length} laporan) diunduh.`,
                   'success'
                 );
               }}
-              className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all shadow-2xs cursor-pointer active:scale-95"
-              title={`Download langsung PDF Tabel A4 periode ${pdfPeriodeMeta.label} (${pdfFilteredReports.length} data)`}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+              title={`Download PDF Tabel A4 periode ${pdfPeriodeMeta.label} (${pdfFilteredReports.length} data)`}
             >
               <FileDown className="w-3.5 h-3.5" />
               <span>Export PDF</span>
-              <span className="px-1.5 py-0.2 rounded bg-emerald-800/70 text-emerald-50 text-[10px] font-extrabold">
-                {pdfFilteredReports.length}
-              </span>
+              <span className="font-mono text-[11px] text-slate-300 tabular-nums">({pdfFilteredReports.length})</span>
             </button>
           </div>
 
           <button
             onClick={() => onOpenPrintModal(pdfFilteredReports, pdfPeriodeMeta.label)}
-            className="flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-medium rounded-xl transition-colors cursor-pointer"
-            title={`Buka pratinjau lembar rekap periode ${pdfPeriodeMeta.label} atau cetak fisik printer`}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap"
+            title={`Pratinjau lembar rekap periode ${pdfPeriodeMeta.label}`}
           >
-            <Printer className="w-4 h-4 text-slate-600" />
-            <span>Pratinjau / Cetak</span>
+            <Printer className="w-3.5 h-3.5 text-slate-500" />
+            <span>Cetak</span>
           </button>
 
           <button
             onClick={() => exportReportsToCsv(filteredReports)}
-            className="flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-medium rounded-xl transition-colors"
-            title="Download data laporan dalam format CSV/Excel"
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap"
+            title="Download CSV/Excel sesuai filter tabel"
           >
-            <Download className="w-4 h-4 text-slate-600" />
-            <span>Export Excel</span>
+            <Download className="w-3.5 h-3.5 text-slate-500" />
+            <span>Excel</span>
           </button>
 
           <button
             onClick={() => onAddNewReport()}
-            className={`flex items-center space-x-1.5 px-4 py-2 text-xs sm:text-sm font-bold rounded-xl shadow-sm transition-all ${
+            className={`inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
               currentUser
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
                 : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
             }`}
           >
-            {currentUser ? <Plus className="w-4 h-4" /> : <Lock className="w-3.5 h-3.5 text-emerald-700" />}
-            <span>{currentUser ? 'Input Laporan Baru' : 'Input Laporan (Kunci Petugas)'}</span>
+            {currentUser ? <Plus className="w-4 h-4" /> : <Lock className="w-3.5 h-3.5" />}
+            <span>{currentUser ? 'Input Laporan' : 'Login & Input'}</span>
           </button>
         </div>
       </div>
 
-      {/* Guest Notice Callout if non-user */}
-      {!currentUser && (
-        <div className="bg-emerald-50/90 border border-emerald-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-900 shadow-xs">
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-              <Eye className="w-4 h-4" />
+      {/* UNIFIED OPERATIONAL ACTION STRIP (Single focused alert — zero banner stacking) */}
+      {operationalSchedule.isWorkingDay && todayRoomTargetStatus.unreportedCount > 0 ? (
+        <div className="bg-rose-50/80 border border-rose-200 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-lg bg-rose-600 text-white flex items-center justify-center shrink-0">
+              <AlertOctagon className="w-5 h-5" />
             </div>
-            <div>
-              <p className="font-bold text-emerald-950 text-sm">Mode Tamu / Non-User Aktif (Hanya Melihat Dashboard)</p>
-              <p className="text-emerald-800 text-xs mt-0.5">
-                Anda hanya dapat memantau data kebersihan, melihat foto dokumentasi, dan mencetak rekap. Fitur pengisian laporan terkunci khusus akun Petugas.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => onOpenLoginModal ? onOpenLoginModal('Masuk Akun Petugas Kebersihan / Pengelola SCB via Google', 'google') : onAddNewReport()}
-            className="self-start sm:self-auto shrink-0 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
-          >
-            <Lock className="w-3.5 h-3.5" />
-            <span>Login via Google / Akun</span>
-          </button>
-        </div>
-      )}
-
-      {/* TARGET OPERATIONAL ALERT BANNER (Senin s/d Sabtu • Wajib 100% Ruangan Terlaporkan) */}
-      {operationalSchedule.isWorkingDay ? (
-        todayRoomTargetStatus.unreportedCount > 0 ? (
-          <div className="bg-gradient-to-r from-rose-500/10 via-amber-500/10 to-rose-500/10 border-2 border-rose-400 rounded-2xl p-4 sm:p-5 shadow-xs">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs relative">
-                  <AlertOctagon className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-3 h-3 bg-rose-500 rounded-full animate-ping" />
-                </div>
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-black text-[10px] uppercase tracking-wider">
-                      ALERT TARGET HARIAN
-                    </span>
-                    <span className="text-xs font-bold text-rose-950">
-                      Jadwal Petugas: Senin s/d Sabtu • Wajib 100% Terlaporkan
-                    </span>
-                  </div>
-                  <h3 className="font-black text-rose-950 text-base sm:text-lg mt-1">
-                    ⚠️ {todayRoomTargetStatus.unreportedCount} Ruangan Belum Dilaporkan Hari Ini!
-                  </h3>
-                  <p className="text-xs text-rose-800 mt-0.5 max-w-2xl">
-                    Semua 6 kamar mandi SCB wajib dilaporkan setiap hari kerja. Baru tercapai{' '}
-                    <strong>{todayRoomTargetStatus.reportedCount} dari {todayRoomTargetStatus.totalTarget} ruangan ({todayRoomTargetStatus.percentage}%)</strong>.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  onClick={() => onAddNewReport(todayRoomTargetStatus.unreportedRooms[0])}
-                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition-all flex items-center gap-1.5"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Input Laporan Ruangan Tertunda</span>
-                </button>
-              </div>
-            </div>
-
-            {/* List of Missing Rooms with Instant 1-Click Action */}
-            <div className="mt-3.5 pt-3 border-t border-rose-200/80">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-bold text-rose-900 mr-1 flex items-center gap-1">
-                  <BellRing className="w-3.5 h-3.5 text-rose-600" />
-                  Daftar Ruangan Belum Terlaporkan:
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <h2 className="text-sm font-bold text-rose-950">
+                  {todayRoomTargetStatus.unreportedCount} ruangan belum dilaporkan hari ini
+                </h2>
+                <span className="text-xs text-rose-700 font-medium tabular-nums">
+                  ({todayRoomTargetStatus.reportedCount}/{todayRoomTargetStatus.totalTarget} terpenuhi)
                 </span>
+                {unresolvedIssuesList.length > 0 && (
+                  <>
+                    <span className="text-rose-300" aria-hidden="true">·</span>
+                    <button
+                      onClick={() => {
+                        setQuickTagFilter('unresolved');
+                        setDateFilter('all');
+                        scrollToReportsTable();
+                      }}
+                      className="text-xs font-semibold text-amber-800 hover:underline cursor-pointer"
+                    >
+                      {unresolvedIssuesList.length} temuan kendala butuh tindak lanjut
+                    </button>
+                  </>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
                 {todayRoomTargetStatus.unreportedRooms.map((roomName) => (
                   <button
                     key={roomName}
                     onClick={() => onAddNewReport(roomName)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-100 text-rose-900 border border-rose-300 font-bold text-xs shadow-2xs transition-all hover:scale-105"
-                    title={`Klik untuk langsung isi laporan ${roomName}`}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-rose-100 text-rose-900 border border-rose-200 text-xs font-semibold transition-colors cursor-pointer"
+                    title={`Isi laporan ${roomName}`}
                   >
-                    <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                    <Plus className="w-3 h-3 text-rose-600" />
                     <span>{roomName}</span>
-                    <span className="text-[10px] text-rose-600 font-normal underline ml-1">+ Laporkan</span>
                   </button>
                 ))}
               </div>
             </div>
           </div>
-        ) : (
-          <div className="bg-emerald-50 border-2 border-emerald-300 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-900 shadow-xs">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                <CheckCircle2 className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white font-bold text-[10px] uppercase">
-                    TARGET HARIAN 100% TERCAPAI
-                  </span>
-                  <span className="text-xs text-emerald-700 font-semibold">
-                    Jadwal Operasional: {operationalSchedule.dayName}
-                  </span>
-                </div>
-                <h3 className="font-black text-emerald-950 text-sm sm:text-base mt-0.5">
-                  🎉 Seluruh 6 Ruangan Kamar Mandi Telah Selesai Dilaporkan Hari Ini!
-                </h3>
-                <p className="text-emerald-800 text-xs mt-0.5">
-                  Semua titik kamar mandi Sekolah Cendekia BAZNAS telah diinspeksi dan dilaporkan sesuai target harian operasional Senin s/d Sabtu.
-                </p>
-              </div>
-            </div>
-            <div className="shrink-0 flex items-center gap-2">
-              <span className="px-3.5 py-1.5 bg-emerald-100 text-emerald-900 font-extrabold rounded-xl text-xs border border-emerald-300">
-                ✓ 6/6 Ruangan Terpenuhi
-              </span>
-            </div>
-          </div>
-        )
-      ) : (
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-700 shadow-xs">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
-              <CalendarDays className="w-4 h-4" />
+
+          <button
+            onClick={() => onAddNewReport(todayRoomTargetStatus.unreportedRooms[0])}
+            className="self-start lg:self-center shrink-0 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Laporkan Sekarang</span>
+          </button>
+        </div>
+      ) : unresolvedIssuesList.length > 0 ? (
+        <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-amber-500 text-white flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-5 h-5" />
             </div>
             <div>
-              <p className="font-bold text-slate-900 text-sm">
-                Hari Ahad / Minggu: Jadwal Libur Rutin Operasional Petugas
-              </p>
-              <p className="text-slate-500 text-xs mt-0.5">
-                Jadwal tugas wajib harian petugas kebersihan SCB berlangsung <strong>Senin s/d Sabtu</strong>. Laporan insidental di hari libur tetap dicatat otomatis dalam sistem.
+              <h2 className="text-sm font-bold text-slate-900">
+                {unresolvedIssuesList.length} temuan kendala atau kerusakan menunggu tindak lanjut
+              </h2>
+              <p className="text-xs text-slate-600 mt-0.5">
+                {operationalSchedule.isWorkingDay
+                  ? `Target harian ${todayRoomTargetStatus.reportedCount}/${todayRoomTargetStatus.totalTarget} ruangan telah terpenuhi. Klik untuk meninjau temuan.`
+                  : 'Hari Ahad adalah jadwal libur rutin; sistem tetap mencatat laporan insidental.'}
               </p>
             </div>
           </div>
-          <span className="px-3 py-1 bg-slate-200 text-slate-800 font-semibold rounded-full text-[11px] shrink-0">
-            Jadwal Rutin: Senin s/d Sabtu
+          <button
+            onClick={() => {
+              setQuickTagFilter('unresolved');
+              setDateFilter('all');
+              scrollToReportsTable();
+            }}
+            className="self-start sm:self-center shrink-0 px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+          >
+            <span>Lihat {unresolvedIssuesList.length} Temuan</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      ) : (
+        <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2.5 text-emerald-950">
+            {operationalSchedule.isWorkingDay ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <CalendarDays className="w-4 h-4 text-blue-600 shrink-0" />
+            )}
+            <span className="font-semibold">
+              {operationalSchedule.isWorkingDay
+                ? `Seluruh ${todayRoomTargetStatus.totalTarget} ruangan wajib sudah dilaporkan hari ini dan tidak ada kerusakan tertunda.`
+                : 'Hari Ahad (Libur Rutin Operasional Senin–Sabtu) · Semua fasilitas terpantau aman.'}
+            </span>
+          </div>
+          <span className="text-emerald-700 font-semibold tabular-nums shrink-0">
+            Target Harian: {todayRoomTargetStatus.reportedCount}/{todayRoomTargetStatus.totalTarget}
           </span>
         </div>
       )}
 
-      {/* KPI Stats Cards */}
+      {/* 2. 4-COLUMN EXECUTIVE KPI STRIP */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        {/* Total Today */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs relative overflow-hidden">
+        {/* KPI 1: Target Ruangan Hari Ini */}
+        <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Laporan Hari Ini
-            </span>
-            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
-              <ClipboardCheck className="w-4 h-4" />
+            <span className="text-xs font-semibold text-slate-500">Target Ruangan Hari Ini</span>
+            <Target className="w-4 h-4 text-emerald-600 shrink-0" />
+          </div>
+          <div className="mt-3 flex items-baseline justify-between gap-2">
+            <div className="tabular-nums">
+              <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">
+                {todayRoomTargetStatus.reportedCount}
+              </span>
+              <span className="text-base font-bold text-slate-400">/{todayRoomTargetStatus.totalTarget}</span>
             </div>
-          </div>
-          <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">
-              {stats.totalToday}
+            <span className="text-sm font-bold text-emerald-700 tabular-nums">
+              {todayRoomTargetStatus.percentage}%
             </span>
-            <span className="text-xs text-slate-500">laporan masuk</span>
           </div>
-          <p className="text-[11px] text-emerald-700 font-medium mt-1">
-            {stats.cleanPercentage}% area berkondisi bersih
-          </p>
+          <div className="mt-2.5 space-y-1.5">
+            <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  todayRoomTargetStatus.isTargetAchieved ? 'bg-emerald-600' : 'bg-amber-500'
+                }`}
+                style={{ width: `${todayRoomTargetStatus.percentage}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-slate-500">
+              {operationalSchedule.dayName} · {stats.totalToday} laporan masuk
+            </p>
+          </div>
         </div>
 
-        {/* Bersih */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs">
+        {/* KPI 2: Indeks Kebersihan */}
+        <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Kondisi Bersih
-            </span>
-            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
-              <CheckCircle2 className="w-4 h-4" />
-            </div>
+            <span className="text-xs font-semibold text-slate-500">Indeks Kebersihan Hari Ini</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
           </div>
-          <div className="mt-3 flex items-baseline gap-2">
+          <div className="mt-3 flex items-baseline gap-2 tabular-nums">
             <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600">
-              {stats.cleanCount}
+              {stats.cleanPercentage}%
             </span>
-            <span className="text-xs text-slate-500">lokasi</span>
+            <span className={`text-xs font-semibold ${cleanlinessRating.toneClass}`}>
+              {cleanlinessRating.label}
+            </span>
           </div>
-          <p className="text-[11px] text-slate-500 mt-1">
-            Siap & nyaman digunakan santri/staf
+          <p className="text-[11px] text-slate-500 mt-3 tabular-nums">
+            {stats.cleanCount} dari {stats.totalToday} inspeksi berkondisi bersih
           </p>
         </div>
 
-        {/* Perlu Pengecekan */}
-        <div
-          onClick={() => setSelectedKondisi(selectedKondisi === 'Perlu Pengecekan Ulang' ? 'all' : 'Perlu Pengecekan Ulang')}
-          className={`bg-white p-4 sm:p-5 rounded-2xl border shadow-xs cursor-pointer transition-all hover:shadow-md ${
-            selectedKondisi === 'Perlu Pengecekan Ulang'
-              ? 'border-amber-500 ring-2 ring-amber-400/30 bg-amber-50/20'
-              : 'border-slate-200'
+        {/* KPI 3: Menunggu Verifikasi / Perlu Cek */}
+        <button
+          type="button"
+          onClick={() => {
+            setQuickTagFilter(quickTagFilter === 'pending_approval' ? 'all' : 'pending_approval');
+            setDateFilter('all');
+            scrollToReportsTable();
+          }}
+          className={`bg-white p-4 sm:p-5 rounded-xl border text-left transition-colors flex flex-col justify-between cursor-pointer ${
+            quickTagFilter === 'pending_approval'
+              ? 'border-blue-500 ring-1 ring-blue-500 bg-blue-50/20'
+              : 'border-slate-200 hover:border-slate-300'
           }`}
-          title="Klik untuk memfilter laporan yang perlu pengecekan ulang"
+          title="Klik untuk memfilter laporan yang menunggu persetujuan"
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Perlu Pengecekan
-            </span>
-            <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
-              <AlertTriangle className="w-4 h-4" />
-            </div>
+          <div className="flex items-center justify-between w-full">
+            <span className="text-xs font-semibold text-slate-500">Menunggu Verifikasi</span>
+            <Clock className="w-4 h-4 text-blue-600 shrink-0" />
           </div>
-          <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-amber-600">
-              {stats.reviewCount}
+          <div className="mt-3 flex items-baseline gap-2 tabular-nums">
+            <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">
+              {verificationCounts.pending}
             </span>
-            <span className="text-xs text-slate-500">belum follow-up</span>
+            <span className="text-xs text-slate-500">laporan</span>
           </div>
-          <p className="text-[11px] font-medium mt-1 flex items-center gap-1.5">
+          <p className="text-[11px] text-slate-500 mt-3 tabular-nums">
             {stats.reviewCount > 0 ? (
-              <>
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-                <span className="text-amber-800 font-semibold">{stats.reviewCount} belum mendapatkan tindak lanjut</span>
-              </>
+              <span className="text-amber-700 font-semibold">{stats.reviewCount} perlu cek ulang belum selesai</span>
             ) : (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                <span className="text-emerald-700 font-semibold">Semua sudah ditindaklanjuti</span>
-              </>
+              <span>{verificationCounts.approved} laporan sudah disetujui</span>
             )}
           </p>
-          {stats.reviewResolvedCount > 0 && (
-            <p className="text-[10px] text-slate-400 mt-1">
-              ✓ {stats.reviewResolvedCount} laporan terdahulu sudah selesai ditindaklanjuti
-            </p>
-          )}
-        </div>
+        </button>
 
-        {/* Ada Kerusakan */}
-        <div
-          onClick={() => setSelectedKondisi(selectedKondisi === 'Ada Kerusakan' ? 'all' : 'Ada Kerusakan')}
-          className={`bg-white p-4 sm:p-5 rounded-2xl border shadow-xs cursor-pointer transition-all hover:shadow-md ${
-            selectedKondisi === 'Ada Kerusakan'
-              ? 'border-rose-500 ring-2 ring-rose-400/30 bg-rose-50/20'
-              : 'border-slate-200'
+        {/* KPI 4: Temuan Kerusakan */}
+        <button
+          type="button"
+          onClick={() => {
+            setQuickTagFilter(quickTagFilter === 'damage' ? 'all' : 'damage');
+            setDateFilter('all');
+            scrollToReportsTable();
+          }}
+          className={`bg-white p-4 sm:p-5 rounded-xl border text-left transition-colors flex flex-col justify-between cursor-pointer ${
+            quickTagFilter === 'damage'
+              ? 'border-rose-500 ring-1 ring-rose-500 bg-rose-50/20'
+              : 'border-slate-200 hover:border-slate-300'
           }`}
-          title="Klik untuk memfilter laporan dengan kerusakan fasilitas"
+          title="Klik untuk memfilter laporan dengan temuan kerusakan"
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Ada Kerusakan
-            </span>
-            <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
-              <Wrench className="w-4 h-4" />
-            </div>
+          <div className="flex items-center justify-between w-full">
+            <span className="text-xs font-semibold text-slate-500">Kerusakan Aktif</span>
+            <Wrench className="w-4 h-4 text-rose-600 shrink-0" />
           </div>
-          <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-rose-600">
+          <div className="mt-3 flex items-baseline gap-2 tabular-nums">
+            <span className={`text-2xl sm:text-3xl font-extrabold ${stats.damageCount > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
               {stats.damageCount}
             </span>
-            <span className="text-xs text-slate-500">belum ditindaklanjuti</span>
+            <span className="text-xs text-slate-500">belum tuntas</span>
           </div>
-          <p className="text-[11px] font-medium mt-1 flex items-center gap-1.5">
-            {stats.damageCount > 0 ? (
-              <>
-                <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
-                <span className="text-rose-800 font-semibold">{stats.damageCount} belum ada tindak lanjut teknisi</span>
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                <span className="text-emerald-700 font-semibold">Semua kerusakan sudah tuntas diperbaiki</span>
-              </>
-            )}
+          <p className="text-[11px] text-slate-500 mt-3 tabular-nums">
+            {stats.damageResolvedCount > 0
+              ? `${stats.damageResolvedCount} perbaikan sebelumnya selesai`
+              : 'Tidak ada kerusakan tertunda'}
           </p>
-          {stats.damageResolvedCount > 0 && (
-            <p className="text-[10px] text-slate-400 mt-1">
-              ✓ {stats.damageResolvedCount} perbaikan fasilitas telah selesai
-            </p>
-          )}
-        </div>
+        </button>
       </div>
 
-      {/* DASHBOARD & GRAFIK TARGET PEMENUHAN RUANGAN (SENIN S/D SABTU) */}
-      <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-xs space-y-5">
-        {/* Header Panel */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+      {/* 3. OPERATIONAL WORKSPACE: LIVE ROOM STATUS MATRIX (8 COLS) + SHIFT & OFFICERS (4 COLS) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+        {/* Left 8 Columns: Room Status Matrix */}
+        <div className="lg:col-span-8 bg-white rounded-xl border border-slate-200 p-5 flex flex-col justify-between">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 flex items-center gap-1">
-                <Target className="w-3.5 h-3.5" />
-                Target Operasional 100%
-              </span>
-              <span className="text-xs text-slate-500 font-medium">
-                Jadwal: Senin s/d Sabtu
-              </span>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-100">
+              <div>
+                <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Status Inspeksi Ruangan</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                  {isInspectingToday ? `Hari Ini (${operationalSchedule.dayName}, ${todayStr})` : `Tanggal Terpilih: ${activeTargetDate}`} ·{' '}
+                  {activeRoomTargetStatus.reportedCount} dari {activeRoomTargetStatus.totalTarget} titik terlaporkan
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {inspectedTargetDate && (
+                  <button
+                    onClick={() => setInspectedTargetDate(null)}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Kembali ke Hari Ini
+                  </button>
+                )}
+              </div>
             </div>
-            <h2 className="text-lg sm:text-xl font-bold text-slate-900 mt-1 flex items-center gap-2">
-              Grafik & Pemenuhan Target Harian Ruangan
-            </h2>
-            <p className="text-xs text-slate-500">
-              Target Standar SCB: Semua 6 ruangan kamar mandi wajib diinspeksi & dilaporkan setiap hari (Senin–Sabtu)
-            </p>
-          </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-auto">
-            {inspectedTargetDate && (
-              <button
-                onClick={() => setInspectedTargetDate(null)}
-                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors flex items-center gap-1"
-                title="Kembali melihat target hari ini"
-              >
-                <span>Lihat Hari Ini</span>
-              </button>
-            )}
-            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700">
-              {isInspectingToday ? (
-                <span>Inspeksi Hari Ini ({operationalSchedule.dayName})</span>
-              ) : (
-                <span>Melihat Tanggal: {activeTargetDate}</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Top 2-Card Row: Metric Gauge & Weekly Target Bar Chart */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-          {/* Card 1 (Col 1-5): Daily Target Achievement Gauge */}
-          <div className="lg:col-span-5 bg-gradient-to-br from-slate-50 to-emerald-50/30 p-5 rounded-2xl border border-slate-200/90 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                  <Target className="w-4 h-4 text-emerald-600" />
-                  Capaian Target {isInspectingToday ? 'Hari Ini' : 'Tanggal Terpilih'}
-                </span>
-                <span
-                  className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border ${
-                    activeRoomTargetStatus.isTargetAchieved
-                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                      : 'bg-rose-100 text-rose-800 border-rose-300'
+            {/* Clean 2-column grid of Room Status Items */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+              {activeRoomTargetStatus.items.map((room) => (
+                <div
+                  key={room.areaName}
+                  className={`p-3.5 rounded-xl border transition-colors flex flex-col justify-between gap-3 ${
+                    room.isReported
+                      ? 'border-slate-200 bg-white hover:bg-slate-50/70'
+                      : 'border-rose-200 bg-rose-50/30 hover:bg-rose-50/50'
                   }`}
                 >
-                  {activeRoomTargetStatus.isTargetAchieved ? '100% Target Tercapai' : `Tertunda ${activeRoomTargetStatus.unreportedCount} Ruangan`}
-                </span>
-              </div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold text-slate-900 truncate">{room.areaName}</h3>
+                      <p className="text-xs text-slate-500 truncate mt-0.5">
+                        Jadwal: <span className="font-medium text-slate-700">{room.scheduledOfficer}</span>
+                      </p>
+                    </div>
 
-              <div className="flex items-baseline justify-between mt-2">
-                <div>
-                  <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
-                    {activeRoomTargetStatus.reportedCount}
-                  </span>
-                  <span className="text-xl sm:text-2xl font-bold text-slate-400">
-                    {' '}/ {activeRoomTargetStatus.totalTarget}
-                  </span>
-                  <span className="text-xs text-slate-500 font-semibold ml-2">Ruangan Terlaporkan</span>
-                </div>
-                <div className="text-right">
-                  <span className="text-2xl sm:text-3xl font-black text-emerald-600">
-                    {activeRoomTargetStatus.percentage}%
-                  </span>
-                </div>
-              </div>
-
-              {/* Visual Progress Bar with 100% Target Marker */}
-              <div className="mt-4">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 mb-1.5">
-                  <span>Progres Pemenuhan</span>
-                  <span className="text-emerald-700 font-bold">Target SCB: 100% (6/6 Ruangan)</span>
-                </div>
-                <div className="w-full bg-slate-200 h-3.5 rounded-full overflow-hidden relative p-0.5">
-                  <div
-                    className={`h-full rounded-full transition-all duration-700 ${
-                      activeRoomTargetStatus.isTargetAchieved
-                        ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
-                        : activeRoomTargetStatus.percentage > 0
-                        ? 'bg-gradient-to-r from-amber-500 to-emerald-500'
-                        : 'bg-slate-300'
-                    }`}
-                    style={{ width: `${activeRoomTargetStatus.percentage}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Sub-metrics breakdown */}
-            <div className="pt-4 mt-4 border-t border-slate-200/70 grid grid-cols-2 gap-3 text-xs">
-              <div className="p-2.5 rounded-xl bg-white border border-slate-200">
-                <span className="text-[10px] font-bold text-emerald-700 uppercase">Sudah Dilaporkan</span>
-                <p className="text-lg font-black text-slate-900 mt-0.5">
-                  {activeRoomTargetStatus.reportedCount} <span className="text-xs font-normal text-slate-500">titik</span>
-                </p>
-                <p className="text-[10px] text-slate-400">Tercatat di sistem</p>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-white border border-slate-200">
-                <span className="text-[10px] font-bold text-rose-700 uppercase">Belum Dilaporkan</span>
-                <p className="text-lg font-black text-rose-600 mt-0.5">
-                  {activeRoomTargetStatus.unreportedCount} <span className="text-xs font-normal text-slate-500">titik</span>
-                </p>
-                <p className="text-[10px] text-slate-400">
-                  {activeRoomTargetStatus.unreportedCount > 0 ? 'Perlu tindakan segera' : 'Nihil keterlambatan'}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Card 2 (Col 6-12): Target Chart & Monthly History (Weekly vs Monthly Toggle) */}
-          <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-slate-200 flex flex-col justify-between">
-            <div>
-              {/* Card 2 Header with View Toggle */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3">
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    {targetChartView === 'rooms' ? (
-                      <Building2 className="w-4 h-4 text-emerald-600" />
-                    ) : targetChartView === 'weekly' ? (
-                      <BarChart2 className="w-4 h-4 text-blue-600" />
+                    {room.isReported ? (
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold shrink-0 whitespace-nowrap ${
+                          room.latestKondisi === 'Bersih'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : room.latestKondisi === 'Ada Kerusakan'
+                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>{room.latestKondisi === 'Ada Kerusakan' ? 'Rusak' : room.latestKondisi === 'Bersih' ? 'Bersih' : 'Cek Ulang'}</span>
+                      </span>
                     ) : (
-                      <CalendarRange className="w-4 h-4 text-emerald-600" />
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[11px] font-bold shrink-0 whitespace-nowrap">
+                        <AlertTriangle className="w-3 h-3" />
+                        <span>Belum Lapor</span>
+                      </span>
                     )}
-                    <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      {targetChartView === 'rooms'
-                        ? 'Dashboard Grafik Berdasarkan Ruangan'
-                        : targetChartView === 'weekly'
-                        ? 'Grafik Target Mingguan (Senin s/d Sabtu)'
-                        : `Histori & Target Bulanan: ${monthlyTargetStats.formattedMonth}`}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    {targetChartView === 'rooms'
-                      ? 'Perbandingan persentase kebersihan, volume laporan, dan tren fasilitas di setiap kamar mandi SCB'
-                      : targetChartView === 'weekly'
-                      ? 'Tingkat ketercapaian target 6 ruangan pada setiap hari kerja dalam minggu ini'
-                      : 'Rekapitulasi riwayat ketercapaian target operasional selama sebulan penuh'}
-                  </p>
-                </div>
-
-                {/* View Switcher: Grafik Ruangan vs Mingguan vs Bulanan */}
-                <div className="flex flex-wrap items-center bg-slate-100 p-0.5 rounded-xl text-xs font-bold shrink-0 self-start sm:self-auto gap-0.5">
-                  <button
-                    onClick={() => setTargetChartView('rooms')}
-                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                      targetChartView === 'rooms'
-                        ? 'bg-white text-emerald-800 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    <Building2 className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Grafik Ruangan</span>
-                    <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-full font-bold">
-                      Fokus
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => setTargetChartView('weekly')}
-                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 ${
-                      targetChartView === 'weekly'
-                        ? 'bg-white text-emerald-800 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    <BarChart2 className="w-3.5 h-3.5" />
-                    <span>Mingguan</span>
-                  </button>
-                  <button
-                    onClick={() => setTargetChartView('monthly')}
-                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 ${
-                      targetChartView === 'monthly'
-                        ? 'bg-white text-emerald-800 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    <History className="w-3.5 h-3.5" />
-                    <span>Bulanan</span>
-                  </button>
-                </div>
-              </div>
-
-              {targetChartView === 'rooms' ? (
-                /* VIEW 3: ROOM-BY-ROOM COMPARATIVE CHARTS & ANALYTICS DASHBOARD */
-                <div className="space-y-4 animate-in fade-in duration-200">
-                  {/* Controls: Time Range Filter & Sort */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mr-1">
-                        Rentang Waktu:
-                      </span>
-                      <button
-                        onClick={() => setRoomTimeRange('today')}
-                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
-                          roomTimeRange === 'today'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
-                        }`}
-                      >
-                        Hari Ini
-                      </button>
-                      <button
-                        onClick={() => setRoomTimeRange('7days')}
-                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
-                          roomTimeRange === '7days'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
-                        }`}
-                      >
-                        7 Hari
-                      </button>
-                      <button
-                        onClick={() => setRoomTimeRange('month')}
-                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
-                          roomTimeRange === 'month'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
-                        }`}
-                      >
-                        Bulan Ini
-                      </button>
-                      <button
-                        onClick={() => setRoomTimeRange('all')}
-                        className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
-                          roomTimeRange === 'all'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
-                        }`}
-                      >
-                        Semua
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="text-[11px] font-bold text-slate-500">Urut:</span>
-                      <select
-                        value={roomSortBy}
-                        onChange={(e) => setRoomSortBy(e.target.value as any)}
-                        className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-                      >
-                        <option value="cleanRate">Indeks Bersih (%)</option>
-                        <option value="reports">Total Laporan Terbanyak</option>
-                        <option value="issues">Temuan Kendala/Rusak</option>
-                      </select>
-                    </div>
                   </div>
 
-                  {/* 3 Metric Summary Badges */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-                    <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex items-center justify-between">
-                      <div>
-                        <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">
-                          Ruangan Terbersih
+                  <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
+                    {room.isReported ? (
+                      <>
+                        <span className="text-slate-600 truncate tabular-nums">
+                          {room.latestPetugas} · {room.latestWaktu} WIB ({room.total}x)
                         </span>
-                        <strong className="text-xs font-black text-emerald-950 truncate block mt-0.5 max-w-[150px]">
-                          {roomAnalyticsData.cleanestRoom.areaName}
-                        </strong>
-                      </div>
-                      <span className="text-base font-black text-emerald-700 bg-white px-2 py-0.5 rounded-lg border border-emerald-200 shadow-2xs">
-                        {roomAnalyticsData.cleanestRoom.cleanRate}%
-                      </span>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-amber-50/70 border border-amber-200 flex items-center justify-between">
-                      <div>
-                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">
-                          Temuan Kendala Terbanyak
-                        </span>
-                        <strong className="text-xs font-black text-amber-950 truncate block mt-0.5 max-w-[150px]">
-                          {roomAnalyticsData.roomWithMostIssues.areaName}
-                        </strong>
-                      </div>
-                      <span className="text-base font-black text-amber-700 bg-white px-2 py-0.5 rounded-lg border border-amber-200 shadow-2xs">
-                        {roomAnalyticsData.roomWithMostIssues.reviewCount + roomAnalyticsData.roomWithMostIssues.damageCount}
-                      </span>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                      <div>
-                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
-                          Rata-rata Indeks Bersih
-                        </span>
-                        <span className="text-[11px] text-slate-500 block mt-0.5">
-                          {roomAnalyticsData.totalReportsFiltered} Total Laporan
-                        </span>
-                      </div>
-                      <span className="text-base font-black text-slate-900 bg-white px-2 py-0.5 rounded-lg border border-slate-200 shadow-2xs">
-                        {roomAnalyticsData.overallCleanRate}%
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* ROOM-BY-ROOM COMPARISON BARS (GRAFIK BATANG PER RUANGAN) */}
-                  <div className="space-y-2.5 pt-1">
-                    <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
-                      <span className="font-bold flex items-center gap-1.5">
-                        <BarChart2 className="w-3.5 h-3.5 text-emerald-600" />
-                        Grafik Perbandingan Kondisi per Ruangan ({roomAnalyticsData.rooms.length} Ruangan):
-                      </span>
-                      <div className="flex items-center gap-2 text-[10px] text-slate-500">
-                        <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Bersih
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Perlu Cek
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" /> Rusak
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      {roomAnalyticsData.rooms.map((room) => {
-                        const isSelected = selectedRoomForDetail === room.areaName;
-
-                        return (
-                          <div
-                            key={room.areaName}
-                            onClick={() => setSelectedRoomForDetail(room.areaName)}
-                            className={`p-2.5 sm:p-3 rounded-xl border transition-all cursor-pointer ${
-                              isSelected
-                                ? 'bg-emerald-50/40 border-emerald-500 ring-2 ring-emerald-500/20 shadow-xs'
-                                : 'bg-white hover:bg-slate-50/80 border-slate-200'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2 mb-1.5">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span
-                                  className={`w-2 h-2 rounded-full shrink-0 ${
-                                    room.cleanRate >= 80
-                                      ? 'bg-emerald-500'
-                                      : room.cleanRate >= 50
-                                      ? 'bg-amber-500'
-                                      : 'bg-rose-500'
-                                  }`}
-                                />
-                                <span className="font-black text-slate-900 text-xs truncate">
-                                  {room.areaName}
-                                </span>
-                                {room.isCleanedToday ? (
-                                  <span className="hidden sm:inline-block text-[9px] font-bold text-emerald-700 bg-emerald-100/80 px-1.5 py-0.2 rounded">
-                                    Hari ini aktif
-                                  </span>
-                                ) : (
-                                  <span className="hidden sm:inline-block text-[9px] font-bold text-rose-700 bg-rose-100/80 px-1.5 py-0.2 rounded">
-                                    Belum hari ini
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex items-center gap-2 shrink-0">
-                                <span className="text-[10px] text-slate-500">
-                                  {room.total} lap
-                                </span>
-                                <span
-                                  className={`text-xs font-black px-2 py-0.5 rounded-md ${
-                                    room.cleanRate >= 80
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : room.cleanRate >= 50
-                                      ? 'bg-amber-100 text-amber-800'
-                                      : 'bg-rose-100 text-rose-800'
-                                  }`}
-                                >
-                                  {room.cleanRate}% Bersih
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Stacked Percentage Bar for this Room */}
-                            <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden flex">
-                              {room.total > 0 ? (
-                                <>
-                                  <div
-                                    className="bg-emerald-500 h-full transition-all duration-500"
-                                    style={{ width: `${room.cleanRate}%` }}
-                                    title={`${room.cleanCount} Laporan Bersih (${room.cleanRate}%)`}
-                                  />
-                                  <div
-                                    className="bg-amber-400 h-full transition-all duration-500"
-                                    style={{ width: `${room.reviewRate}%` }}
-                                    title={`${room.reviewCount} Laporan Perlu Cek (${room.reviewRate}%)`}
-                                  />
-                                  <div
-                                    className="bg-rose-500 h-full transition-all duration-500"
-                                    style={{ width: `${room.damageRate}%` }}
-                                    title={`${room.damageCount} Laporan Ada Kerusakan (${room.damageRate}%)`}
-                                  />
-                                </>
-                              ) : (
-                                <div className="w-full bg-slate-200 h-full flex items-center justify-center text-[9px] text-slate-400">
-                                  Belum ada laporan pada rentang waktu ini
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Subtext info */}
-                            <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
-                              <span className="truncate">
-                                {room.cleanCount} Bersih • {room.reviewCount} Perlu Cek • {room.damageCount} Rusak
-                              </span>
-                              <span className="text-emerald-700 font-bold hover:underline shrink-0">
-                                {isSelected ? 'Sedang Ditinjau' : 'Klik untuk Detail & Tren'}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* DETAIL & TIMELINE DEEP DIVE FOR SELECTED ROOM */}
-                  {selectedRoomStats && (
-                    <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
-                            <Building2 className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <h4 className="font-black text-slate-900 text-xs sm:text-sm">
-                              Detail & Riwayat Tren: {selectedRoomStats.areaName}
-                            </h4>
-                            <p className="text-[11px] text-slate-500">
-                              Total {selectedRoomStats.total} laporan • Indeks Bersih: {selectedRoomStats.cleanRate}%
-                            </p>
-                          </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {room.latestReport && (
+                            <button
+                              onClick={() => handleOpenDetail(room.latestReport!)}
+                              className="text-emerald-700 hover:text-emerald-900 font-semibold hover:underline cursor-pointer whitespace-nowrap"
+                            >
+                              Detail
+                            </button>
+                          )}
                         </div>
-
-                        <div className="flex items-center gap-1.5 self-start sm:self-auto">
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-rose-700 font-medium truncate">
+                          {room.isCurrentUserAssigned ? 'Tugas Anda hari ini' : 'Menunggu laporan petugas'}
+                        </span>
+                        {currentUser?.role === 'petugas' && !room.isCurrentUserAssigned ? (
+                          <span className="text-[11px] text-slate-400 font-medium shrink-0">Bukan jadwal</span>
+                        ) : (
                           <button
-                            onClick={() => {
-                              setSelectedArea(selectedRoomStats.areaName);
-                              const tableElem = document.getElementById('report-history-table');
-                              if (tableElem) {
-                                tableElem.scrollIntoView({ behavior: 'smooth' });
-                              }
-                            }}
-                            className="px-2.5 py-1 bg-white hover:bg-slate-200 text-slate-700 font-bold rounded-lg border border-slate-200 text-[11px] transition-colors cursor-pointer"
-                          >
-                            Tampilkan di Tabel
-                          </button>
-                          <button
-                            onClick={() => onAddNewReport(selectedRoomStats.areaName)}
-                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[11px] transition-colors flex items-center gap-1 cursor-pointer"
+                            onClick={() => onAddNewReport(room.areaName)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors shrink-0 cursor-pointer whitespace-nowrap"
                           >
                             <Plus className="w-3 h-3" />
                             <span>Laporkan</span>
                           </button>
-                        </div>
-                      </div>
-
-                      {/* 7-Day Day-by-Day Timeline for this Room */}
-                      <div>
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
-                          Riwayat Kondisi 7 Hari Terakhir:
-                        </span>
-                        <div className="grid grid-cols-7 gap-1 text-center">
-                          {selectedRoomStats.trendDays.map((day) => (
-                            <div
-                              key={day.dateStr}
-                              className={`p-1.5 rounded-lg border text-xs ${
-                                day.status === 'clean'
-                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                                  : day.status === 'review'
-                                  ? 'bg-amber-50 border-amber-200 text-amber-900'
-                                  : day.status === 'damage'
-                                  ? 'bg-rose-50 border-rose-200 text-rose-900'
-                                  : 'bg-white border-slate-200 text-slate-400'
-                              }`}
-                              title={`${day.dayShort} (${day.dateStr}): ${
-                                day.status === 'clean'
-                                  ? 'Bersih'
-                                  : day.status === 'review'
-                                  ? 'Perlu Cek'
-                                  : day.status === 'damage'
-                                  ? 'Ada Kerusakan'
-                                  : 'Tidak ada laporan'
-                              }`}
-                            >
-                              <p className="text-[9px] font-bold text-slate-500">{day.dayShort}</p>
-                              <p className="text-[8px] text-slate-400">{day.displayDate}</p>
-                              <div className="mt-1 flex justify-center">
-                                {day.status === 'clean' ? (
-                                  <span className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[9px] font-bold">✓</span>
-                                ) : day.status === 'review' ? (
-                                  <span className="w-4 h-4 rounded-full bg-amber-500 text-white flex items-center justify-center text-[9px] font-bold">!</span>
-                                ) : day.status === 'damage' ? (
-                                  <span className="w-4 h-4 rounded-full bg-rose-500 text-white flex items-center justify-center text-[9px] font-bold">✕</span>
-                                ) : (
-                                  <span className="w-4 h-4 rounded-full bg-slate-200 text-slate-400 flex items-center justify-center text-[9px]">-</span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Checklist Breakdown for this Room */}
-                      <div>
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
-                          Tingkat Keterpenuhan Checklist Titik Pantau ({selectedRoomStats.total} laporan):
-                        </span>
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-xs">
-                          {selectedRoomStats.checklistBreakdown.map((chk) => (
-                            <div key={chk.item} className="p-2 rounded-lg bg-white border border-slate-200 text-center">
-                              <span className="text-[10px] text-slate-600 block truncate">{chk.item}</span>
-                              <strong className="text-xs font-black text-slate-900 block mt-0.5">{chk.rate}%</strong>
-                              <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden mt-1">
-                                <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${chk.rate}%` }} />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Top Officers for this Room */}
-                      {selectedRoomStats.topOfficers.length > 0 && (
-                        <div className="flex items-center gap-2 text-[11px] text-slate-600 pt-1">
-                          <UserIcon className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span>
-                            Petugas Teraktif:{' '}
-                            <strong>{selectedRoomStats.topOfficers[0].name}</strong> ({selectedRoomStats.topOfficers[0].count}x pembersihan)
-                            {selectedRoomStats.topOfficers.length > 1 && (
-                              <span className="text-slate-400">, {selectedRoomStats.topOfficers[1].name} ({selectedRoomStats.topOfficers[1].count}x)</span>
-                            )}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : targetChartView === 'weekly' ? (
-                /* VIEW 1: WEEKLY BAR CHART (SENIN S/D SABTU) */
-                <div>
-                  <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-                    <span>Capaian harian jadwal kerja Senin–Sabtu:</span>
-                    <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                      Rata-rata: {weeklyTargetStats.averageCompliance}%
-                    </span>
-                  </div>
-
-                  {/* The 6-Day Weekly Bar Chart */}
-                  <div className="relative pt-6 pb-2">
-                    {/* 100% Target Reference Benchmark Line */}
-                    <div className="absolute top-6 left-0 right-0 flex items-center gap-2 pointer-events-none z-10">
-                      <div className="w-full border-b-2 border-dashed border-emerald-400/80" />
-                      <span className="text-[9px] font-extrabold text-emerald-700 bg-emerald-100/90 px-1.5 py-0.5 rounded whitespace-nowrap">
-                        Target 100% (6 Ruangan)
-                      </span>
-                    </div>
-
-                    {/* Bars Grid */}
-                    <div className="grid grid-cols-6 gap-2 sm:gap-3 items-end h-36 pt-4">
-                      {weeklyTargetStats.days.map((day) => {
-                        const isSelected = activeTargetDate === day.dateStr;
-                        return (
-                          <div
-                            key={day.dayName}
-                            onClick={() => setInspectedTargetDate(day.dateStr === todayStr ? null : day.dateStr)}
-                            className={`flex flex-col items-center justify-end h-full cursor-pointer group transition-all p-1 rounded-xl ${
-                              isSelected
-                                ? 'bg-slate-100 ring-2 ring-emerald-500'
-                                : 'hover:bg-slate-50'
-                            }`}
-                            title={`${day.dayName} (${day.dateStr}): ${day.reportedCount}/6 ruangan (${day.percentage}%) - Klik untuk tinjau`}
-                          >
-                            {/* Day Target Status Label above Bar */}
-                            <div className="text-[10px] font-black text-slate-700 mb-1 transition-transform group-hover:-translate-y-0.5">
-                              {day.isFuture ? (
-                                <span className="text-slate-300">-</span>
-                              ) : (
-                                <span>{day.reportedCount}/6</span>
-                              )}
-                            </div>
-
-                            {/* Bar Body */}
-                            <div className="w-full bg-slate-100 rounded-t-lg overflow-hidden flex flex-col justify-end h-24 relative">
-                              <div
-                                className={`w-full transition-all duration-500 rounded-t-lg ${
-                                  day.isFuture
-                                    ? 'bg-slate-200 h-1'
-                                    : day.isTargetMet
-                                    ? 'bg-emerald-500 group-hover:bg-emerald-600'
-                                    : day.percentage > 0
-                                    ? 'bg-amber-500 group-hover:bg-amber-600'
-                                    : 'bg-rose-400 group-hover:bg-rose-500'
-                                }`}
-                                style={{
-                                  height: day.isFuture ? '4px' : `${Math.max(day.percentage, 8)}%`,
-                                }}
-                              />
-                            </div>
-
-                            {/* Day Info Below Bar */}
-                            <div className="text-center mt-2 w-full">
-                              <p className="text-[11px] font-black text-slate-800 truncate">
-                                {day.shortName}
-                              </p>
-                              <p className="text-[9px] text-slate-400 font-medium truncate">
-                                {day.displayDate}
-                              </p>
-                              {day.isToday && (
-                                <span className="inline-block mt-0.5 px-1 py-0.2 bg-emerald-600 text-white rounded text-[8px] font-black tracking-wider uppercase">
-                                  Hari Ini
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                /* VIEW 2: MONTHLY HISTORY & ANALYTICS OVERVIEW */
-                <div className="space-y-3.5">
-                  {/* Month Navigator Header */}
-                  <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => setSelectedMonth(shiftMonth(selectedMonth, -1))}
-                        className="p-1 rounded-lg hover:bg-white text-slate-600 hover:text-slate-900 border border-transparent hover:border-slate-200 transition-colors"
-                        title="Bulan Sebelumnya"
-                      >
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                      <select
-                        value={selectedMonth}
-                        onChange={(e) => setSelectedMonth(e.target.value)}
-                        className="font-bold text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
-                      >
-                        {availableMonths.map((m) => (
-                          <option key={m} value={m}>
-                            {formatMonthIndo(m)} {m === todayStr.slice(0, 7) ? '(Bulan Ini)' : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => setSelectedMonth(shiftMonth(selectedMonth, 1))}
-                        className="p-1 rounded-lg hover:bg-white text-slate-600 hover:text-slate-900 border border-transparent hover:border-slate-200 transition-colors"
-                        title="Bulan Berikutnya"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      {selectedMonth !== todayStr.slice(0, 7) && (
-                        <button
-                          onClick={() => setSelectedMonth(todayStr.slice(0, 7))}
-                          className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold rounded-lg border border-slate-200 transition-colors"
-                        >
-                          Bulan Ini
-                        </button>
-                      )}
-                      <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md">
-                        {monthlyTargetStats.totalReports} Laporan
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Monthly 4-Metric Grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
-                    <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-                      <span className="text-[10px] text-slate-500 block">Total Laporan</span>
-                      <strong className="text-base font-black text-slate-900">{monthlyTargetStats.totalReports}</strong>
-                      <span className="text-[9px] text-slate-400 block mt-0.5">sepanjang bulan</span>
-                    </div>
-                    <div className="p-2 rounded-xl bg-emerald-50/60 border border-emerald-100">
-                      <span className="text-[10px] text-emerald-700 block">Indeks Bersih</span>
-                      <strong className="text-base font-black text-emerald-800">{monthlyTargetStats.cleanPercentage}%</strong>
-                      <span className="text-[9px] text-emerald-600 block mt-0.5">{monthlyTargetStats.cleanReports} lap bersih</span>
-                    </div>
-                    <div className="p-2 rounded-xl bg-blue-50/60 border border-blue-100">
-                      <span className="text-[10px] text-blue-700 block">Target Penuh</span>
-                      <strong className="text-base font-black text-blue-800">{monthlyTargetStats.fullComplianceDays} Hari</strong>
-                      <span className="text-[9px] text-blue-600 block mt-0.5">dari {monthlyTargetStats.totalWorkingDays} hr kerja</span>
-                    </div>
-                    <div className="p-2 rounded-xl bg-amber-50/60 border border-amber-100">
-                      <span className="text-[10px] text-amber-700 block">Kendala/Rusak</span>
-                      <strong className="text-base font-black text-amber-800">{monthlyTargetStats.reviewReports + monthlyTargetStats.damageReports}</strong>
-                      <span className="text-[9px] text-amber-600 block mt-0.5">temuan terlapor</span>
-                    </div>
-                  </div>
-
-                  {/* Weekly Progress Breakdown (Minggu 1 s/d 5) */}
-                  <div className="space-y-1.5 pt-1">
-                    <span className="text-[11px] font-bold text-slate-600 block">
-                      Rata-rata Ketercapaian per Minggu ({monthlyTargetStats.formattedMonth}):
-                    </span>
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                      {monthlyTargetStats.weeklyBuckets.map((bucket) => (
-                        <div key={bucket.weekLabel} className="p-2 rounded-xl bg-slate-50 border border-slate-100 text-center">
-                          <p className="text-[10px] font-bold text-slate-700">{bucket.weekLabel}</p>
-                          <p className="text-[9px] text-slate-400">{bucket.dateRange}</p>
-                          <p className="text-xs font-black text-slate-900 mt-1">
-                            {bucket.avgCoverage}%
-                          </p>
-                          <p className="text-[9px] text-slate-500">
-                            {bucket.reportsCount} laporan
-                          </p>
-                          <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1">
-                            <div
-                              className="bg-emerald-500 h-full rounded-full"
-                              style={{ width: `${bucket.avgCoverage}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Footer Summary & Quick Action */}
-            <div className="pt-3 mt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-              {targetChartView === 'rooms' ? (
-                <>
-                  <span className="flex items-center gap-1.5">
-                    <Building2 className="w-3.5 h-3.5 text-emerald-600" />
-                    Grafik memantau <strong>{roomAnalyticsData.rooms.length} area ruangan</strong> ({roomTimeRange === 'today' ? 'Hari Ini' : roomTimeRange === '7days' ? '7 Hari Terakhir' : roomTimeRange === 'month' ? 'Bulan Ini' : 'Sepanjang Waktu'}) • Rata-rata Bersih: <strong className="text-emerald-700">{roomAnalyticsData.overallCleanRate}%</strong>
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setTargetChartView('weekly')}
-                      className="text-emerald-700 hover:text-emerald-900 font-bold flex items-center gap-1 underline text-[11px]"
-                    >
-                      <span>Lihat Grafik Mingguan</span>
-                      <ArrowRight className="w-3 h-3" />
-                    </button>
-                    <span className="text-slate-300">•</span>
-                    <button
-                      onClick={() => setTargetChartView('monthly')}
-                      className="text-slate-600 hover:text-slate-900 font-medium flex items-center gap-1 text-[11px]"
-                    >
-                      <span>Bulanan</span>
-                    </button>
-                  </div>
-                </>
-              ) : targetChartView === 'weekly' ? (
-                <>
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                    Target 100% tercapai pada <strong>{weeklyTargetStats.targetMetDaysCount} dari {weeklyTargetStats.elapsedDaysCount} hari kerja</strong>
-                  </span>
-                  <button
-                    onClick={() => setTargetChartView('monthly')}
-                    className="text-emerald-700 hover:text-emerald-900 font-bold flex items-center gap-1 underline text-[11px]"
-                  >
-                    <span>Buka Riwayat Bulanan</span>
-                    <ArrowRight className="w-3 h-3" />
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span className="flex items-center gap-1.5">
-                    <History className="w-3.5 h-3.5 text-blue-600" />
-                    Kepatuhan bulanan: <strong>{monthlyTargetStats.monthlyComplianceRate}% hari kerja memenuhi target 100%</strong>
-                  </span>
-                  <button
-                    onClick={() => {
-                      setDateFilter('specific_month');
-                      const tableElem = document.getElementById('report-history-table');
-                      if (tableElem) {
-                        tableElem.scrollIntoView({ behavior: 'smooth' });
-                      }
-                    }}
-                    className="text-emerald-700 hover:text-emerald-900 font-bold flex items-center gap-1 underline text-[11px]"
-                  >
-                    <span>Tampilkan {monthlyTargetStats.totalReports} Laporan di Tabel</span>
-                    <ArrowRight className="w-3 h-3" />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom Matrix: Checklist Status of the 6 SCB Rooms */}
-        <div className="pt-2">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                <MapPin className="w-4 h-4 text-emerald-600" />
-                Matriks Status Target 6 Ruangan Kamar Mandi SCB
-              </h3>
-              <p className="text-xs text-slate-500">
-                Status inspeksi harian untuk 6 titik wajib Sekolah Cendekia BAZNAS ({isInspectingToday ? 'Hari Ini' : activeTargetDate})
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-3 py-1 rounded-full">
-                {activeRoomTargetStatus.reportedCount} dari {activeRoomTargetStatus.totalTarget} Terlaporkan
-              </span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {activeRoomTargetStatus.items.map((room) => (
-              <div
-                key={room.areaName}
-                className={`p-3.5 rounded-2xl border transition-all ${
-                  room.isReported
-                    ? 'border-emerald-200 bg-emerald-50/20 hover:bg-emerald-50/40'
-                    : 'border-rose-300 bg-rose-50/30 ring-1 ring-rose-200 hover:bg-rose-50/50'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <span className="text-xs font-black text-slate-900 block truncate">
-                      {room.areaName}
-                    </span>
-                    <span className="text-[10px] text-slate-400">
-                      Titik Sanitasi Wajib SCB
-                    </span>
-                  </div>
-
-                  {room.isReported ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold shrink-0">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      Terpenuhi
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-black shrink-0 animate-pulse">
-                      <AlertTriangle className="w-3 h-3 text-rose-600" />
-                      Belum Dilaporkan
-                    </span>
-                  )}
-                </div>
-
-                {room.isReported ? (
-                  <div className="mt-3 pt-2.5 border-t border-emerald-100 text-xs flex items-center justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[11px] text-slate-700 truncate">
-                        Petugas Terjadwal: <strong className="text-slate-900 font-bold">{room.scheduledOfficer}</strong>
-                      </p>
-                      <p className="text-[10px] text-emerald-700 truncate mt-0.5">
-                        ✓ Diperiksa oleh {room.latestPetugas} • {room.latestWaktu} WIB ({room.total}x)
-                      </p>
-                    </div>
-                    <div className="flex flex-col items-end gap-1.5 shrink-0">
-                      <span
-                        className={`text-[9px] font-bold px-2 py-0.5 rounded ${
-                          room.latestKondisi === 'Bersih'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : room.latestKondisi === 'Ada Kerusakan'
-                            ? 'bg-rose-100 text-rose-800'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {room.latestKondisi === 'Ada Kerusakan' ? 'Ada Kerusakan' : room.latestKondisi === 'Bersih' ? 'Bersih' : 'Perlu Cek'}
-                      </span>
-                      <button
-                        onClick={() => setSelectedArea(room.areaName)}
-                        className="text-[10px] text-emerald-700 hover:text-emerald-900 font-bold underline"
-                      >
-                        Filter Laporan
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-3 pt-2.5 border-t border-rose-200 text-xs flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold text-rose-800 flex items-center gap-1">
-                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                        <span>Belum Dilaporkan</span>
-                      </p>
-                      <p className="text-[11px] text-rose-800 mt-0.5">
-                        Petugas Terjadwal: <strong className="text-rose-950 font-bold">{room.scheduledOfficer}</strong>
-                      </p>
-                      {room.isCurrentUserAssigned && (
-                        <span className="inline-block mt-1 text-[9px] font-bold bg-rose-200 text-rose-900 px-1.5 py-0.2 rounded">
-                          Tugas Anda Hari Ini
-                        </span>
-                      )}
-                    </div>
-                    {currentUser?.role === 'petugas' && !room.isCurrentUserAssigned ? (
-                      <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 font-semibold text-[10px] border border-slate-200 shrink-0">
-                        Bukan Jadwal Anda
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => onAddNewReport(room.areaName)}
-                        className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-2xs transition-all flex items-center gap-1 shrink-0 cursor-pointer"
-                        title={`Klik untuk mengisi laporan kebersihan untuk ${room.areaName}`}
-                      >
-                        <Plus className="w-3 h-3" />
-                        <span>Laporkan</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* EXECUTIVE INTELLIGENCE & SHIFT MONITORING (Makes reading dashboard status effortless) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Metric 1: Cleanliness Quality & Health Index */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-emerald-600" />
-                Indeks Mutu Sanitasi
-              </span>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${cleanlinessRating.badgeClass}`}>
-                {cleanlinessRating.label}
-              </span>
-            </div>
-
-            <div className="flex items-baseline gap-2 mt-2">
-              <span className="text-3xl font-black text-slate-900 tracking-tight">
-                {stats.cleanPercentage}%
-              </span>
-              <span className="text-xs text-slate-500 font-medium">tingkat kebersihan hari ini</span>
-            </div>
-
-            {/* Stacked Quality Bar */}
-            <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden mt-3 flex">
-              <div
-                className="bg-emerald-500 h-full transition-all duration-500"
-                style={{ width: `${stats.totalToday > 0 ? (stats.cleanCount / stats.totalToday) * 100 : 0}%` }}
-                title={`Bersih: ${stats.cleanCount}`}
-              />
-              <div
-                className="bg-amber-400 h-full transition-all duration-500"
-                style={{ width: `${stats.totalToday > 0 ? (stats.reviewCount / stats.totalToday) * 100 : 0}%` }}
-                title={`Perlu Cek: ${stats.reviewCount}`}
-              />
-              <div
-                className="bg-rose-500 h-full transition-all duration-500"
-                style={{ width: `${stats.totalToday > 0 ? (stats.damageCount / stats.totalToday) * 100 : 0}%` }}
-                title={`Kerusakan: ${stats.damageCount}`}
-              />
-            </div>
-          </div>
-
-          <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" /> {stats.cleanCount} Bersih
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-amber-400" /> {stats.reviewCount} Cek Ulang
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-rose-500" /> {stats.damageCount} Rusak
-            </span>
-          </div>
-        </div>
-
-        {/* Metric 2: Shift Monitoring & Inspection Frequency */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                <Clock className="w-4 h-4 text-blue-600" />
-                Siklus Shift Pembersihan
-              </span>
-              <span className="text-[10px] text-slate-400 font-medium">Hari Ini</span>
-            </div>
-
-            <p className="text-xs text-slate-600 mb-3">
-              Distribusi inspeksi berdasarkan jam kerja operasional petugas:
-            </p>
-
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-                <div className="flex items-center justify-center text-amber-500 mb-1">
-                  <Sun className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-base font-black text-slate-900">{shiftStats.pagi}</div>
-                <div className="text-[10px] text-slate-500 font-medium">Pagi (06-11)</div>
-              </div>
-
-              <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-                <div className="flex items-center justify-center text-orange-500 mb-1">
-                  <Activity className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-base font-black text-slate-900">{shiftStats.siang}</div>
-                <div className="text-[10px] text-slate-500 font-medium">Siang (11-15)</div>
-              </div>
-
-              <div className="p-2 rounded-xl bg-slate-50 border border-slate-100">
-                <div className="flex items-center justify-center text-indigo-500 mb-1">
-                  <Moon className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-base font-black text-slate-900">{shiftStats.sore}</div>
-                <div className="text-[10px] text-slate-500 font-medium">Sore (15-21)</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-2.5 mt-2.5 border-t border-slate-100 text-[11px] text-slate-500 flex items-center justify-between">
-            <span>Total inspeksi shift:</span>
-            <strong className="text-slate-800">{stats.totalToday} kali inspeksi</strong>
-          </div>
-        </div>
-
-        {/* Metric 3: Duty Officers Workload & Presence */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                <Award className="w-4 h-4 text-emerald-600" />
-                Aktivitas Petugas Hari Ini
-              </span>
-              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                {officerStats.filter((o) => o.total > 0).length} Petugas Aktif
-              </span>
-            </div>
-
-            <div className="space-y-2 mt-2">
-              {officerStats.map((officer) => (
-                <div
-                  key={officer.name}
-                  onClick={() => setSelectedOfficer(selectedOfficer === officer.name ? 'all' : officer.name)}
-                  className={`flex items-center justify-between p-2 rounded-xl border text-xs cursor-pointer transition-all ${
-                    selectedOfficer === officer.name
-                      ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500'
-                      : 'border-slate-100 hover:bg-slate-50'
-                  }`}
-                  title={`Klik untuk filter laporan oleh ${officer.name}`}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-[10px] shrink-0">
-                      {officer.name.charAt(0)}
-                    </div>
-                    <span className="font-bold text-slate-800 text-[11px] truncate">
-                      {officer.name}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0 text-right">
-                    <span className="font-bold text-slate-900 text-xs">
-                      {officer.total} lap
-                    </span>
-                    {officer.lastTime !== '-' && (
-                      <span className="text-[10px] text-slate-400">({officer.lastTime})</span>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
               ))}
             </div>
           </div>
+        </div>
 
-          <p className="text-[10px] text-slate-400 mt-2 text-center">
-            Klik nama petugas untuk memfilter laporan spesifik
-          </p>
+        {/* Right 4 Columns: Shift Coverage & Officer Activity */}
+        <div className="lg:col-span-4 bg-white rounded-xl border border-slate-200 p-5 flex flex-col justify-between gap-5">
+          {/* Shift Distribution */}
+          <div>
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>Inspeksi per Shift</span>
+              </h2>
+              <span className="text-xs text-slate-500 tabular-nums">{stats.totalToday} total</span>
+            </div>
+
+            <div className="grid grid-cols-3 divide-x divide-slate-100 mt-3 text-center">
+              <div className="px-2 py-1">
+                <div className="inline-flex items-center justify-center text-amber-500 mb-1">
+                  <Sun className="w-4 h-4" />
+                </div>
+                <div className="text-xl font-extrabold text-slate-900 tabular-nums">{shiftStats.pagi}</div>
+                <div className="text-[11px] text-slate-500">Pagi · 06–11</div>
+              </div>
+              <div className="px-2 py-1">
+                <div className="inline-flex items-center justify-center text-orange-500 mb-1">
+                  <Activity className="w-4 h-4" />
+                </div>
+                <div className="text-xl font-extrabold text-slate-900 tabular-nums">{shiftStats.siang}</div>
+                <div className="text-[11px] text-slate-500">Siang · 11–15</div>
+              </div>
+              <div className="px-2 py-1">
+                <div className="inline-flex items-center justify-center text-indigo-500 mb-1">
+                  <Moon className="w-4 h-4" />
+                </div>
+                <div className="text-xl font-extrabold text-slate-900 tabular-nums">{shiftStats.sore}</div>
+                <div className="text-[11px] text-slate-500">Sore · 15–21</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Officer Activity Today */}
+          <div className="pt-4 border-t border-slate-100 flex-1 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <UserIcon className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Aktivitas Petugas</span>
+                </h2>
+                <span className="text-xs text-slate-500 tabular-nums">
+                  {officerStats.filter((o) => o.total > 0).length} aktif hari ini
+                </span>
+              </div>
+
+              <div className="divide-y divide-slate-100">
+                {officerStats.length === 0 ? (
+                  <p className="text-xs text-slate-400 py-4 text-center">Belum ada data petugas aktif.</p>
+                ) : (
+                  officerStats.map((officer) => (
+                    <button
+                      key={officer.name}
+                      type="button"
+                      onClick={() => {
+                        const next = selectedOfficer === officer.name ? 'all' : officer.name;
+                        setSelectedOfficer(next);
+                        if (next !== 'all') scrollToReportsTable();
+                      }}
+                      className={`w-full flex items-center justify-between py-2.5 px-2 rounded-lg text-left transition-colors cursor-pointer ${
+                        selectedOfficer === officer.name ? 'bg-emerald-50 text-emerald-900' : 'hover:bg-slate-50'
+                      }`}
+                      title={`Filter laporan oleh ${officer.name}`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center font-bold text-xs shrink-0">
+                          {officer.name.charAt(0)}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-800 truncate">{officer.name}</p>
+                          <p className="text-[11px] text-slate-400 tabular-nums">
+                            {officer.lastTime !== '-' ? `Terakhir ${officer.lastTime} WIB` : 'Belum ada laporan hari ini'}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs font-bold text-slate-900 tabular-nums shrink-0 ml-2">
+                        {officer.total} lap
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-400 pt-3 border-t border-slate-100">
+              Klik nama petugas untuk memfilter daftar laporan di bawah.
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* OPERATIONAL ATTENTION ALERT (Urgent Follow-Up Panel) */}
-      {unresolvedIssuesList.length > 0 ? (
-        <div className="bg-gradient-to-r from-amber-500/10 via-rose-500/10 to-amber-500/10 border-2 border-amber-400 rounded-2xl p-4 sm:p-5 shadow-xs">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs animate-pulse">
-                <AlertOctagon className="w-5 h-5" />
+      {/* 4. ANALYTICS & TREND SECTION (FULL WIDTH, CLEAN TABBED WORKSPACE) */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+          <div>
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
+              <BarChart2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>Analisis Kualitas &amp; Kepatuhan Target</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {targetChartView === 'rooms'
+                ? 'Perbandingan performa kebersihan tiap kamar mandi dan detail tren 7 hari terakhir'
+                : targetChartView === 'weekly'
+                ? 'Tingkat pemenuhan target ruangan harian Senin–Sabtu (klik batang hari untuk meninjau tanggal tersebut)'
+                : `Rekapitulasi kepatuhan dan laporan kebersihan bulan ${monthlyTargetStats.formattedMonth}`}
+            </p>
+          </div>
+
+          <div className="inline-flex items-center bg-slate-100 p-1 rounded-xl gap-1 self-start sm:self-auto shrink-0">
+            <button
+              onClick={() => setTargetChartView('rooms')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                targetChartView === 'rooms' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Per Ruangan</span>
+            </button>
+            <button
+              onClick={() => setTargetChartView('weekly')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                targetChartView === 'weekly' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <BarChart2 className="w-3.5 h-3.5 text-blue-600" />
+              <span>Mingguan</span>
+            </button>
+            <button
+              onClick={() => setTargetChartView('monthly')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                targetChartView === 'monthly' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <History className="w-3.5 h-3.5 text-slate-600" />
+              <span>Bulanan</span>
+            </button>
+          </div>
+        </div>
+
+        {targetChartView === 'rooms' ? (
+          <div className="space-y-5">
+            {/* Controls Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="inline-flex items-center bg-slate-100 p-1 rounded-lg gap-1 self-start">
+                {(
+                  [
+                    { id: 'today', label: 'Hari Ini' },
+                    { id: '7days', label: '7 Hari' },
+                    { id: 'month', label: 'Bulan Ini' },
+                    { id: 'all', label: 'Semua' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => setRoomTimeRange(opt.id)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      roomTimeRange === opt.id
+                        ? 'bg-white text-slate-900 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-black text-slate-900 text-sm sm:text-base">
-                    Perhatian Operasional: {unresolvedIssuesList.length} Temuan Butuh Tindak Lanjut
-                  </h3>
-                  <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-bold text-[10px] uppercase">
-                    Prioritas Tinggi
+
+              <div className="flex flex-wrap items-center gap-4 text-xs">
+                <div className="flex items-center gap-3 text-slate-500">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-emerald-500" /> Bersih
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-amber-400" /> Perlu Cek
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-rose-500" /> Rusak
                   </span>
                 </div>
-                <p className="text-xs text-slate-600 mt-1 max-w-2xl">
-                  Daftar laporan dengan status <em>Ada Kerusakan</em> atau <em>Perlu Pengecekan Ulang</em> yang belum mendapatkan tindak lanjut atau perbaikan tuntas oleh teknisi/petugas.
-                </p>
+
+                <div className="flex items-center gap-1.5">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
+                  <select
+                    aria-label="Urutkan Grafik Ruangan"
+                    value={roomSortBy}
+                    onChange={(e) => setRoomSortBy(e.target.value as 'cleanRate' | 'reports' | 'issues')}
+                    className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                  >
+                    <option value="cleanRate">Urut: Indeks Bersih (%)</option>
+                    <option value="reports">Urut: Laporan Terbanyak</option>
+                    <option value="issues">Urut: Kendala Terbanyak</option>
+                  </select>
+                </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                onClick={() => setQuickTagFilter(quickTagFilter === 'unresolved' ? 'all' : 'unresolved')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs ${
-                  quickTagFilter === 'unresolved'
-                    ? 'bg-amber-600 text-white'
-                    : 'bg-white hover:bg-amber-50 text-amber-900 border border-amber-300'
-                }`}
-              >
-                <AlertTriangle className="w-4 h-4 text-amber-500" />
-                <span>{quickTagFilter === 'unresolved' ? 'Tampilkan Semua' : 'Fokuskan Masalah Saja'}</span>
-              </button>
+            {/* 2-Column Split: Left Bar Comparison (7 cols) | Right Selected Room Deep Dive (5 cols) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-1">
+              <div className="lg:col-span-7 space-y-2.5">
+                {roomAnalyticsData.rooms.map((room) => {
+                  const isSelected = selectedRoomStats?.areaName === room.areaName;
+                  return (
+                    <button
+                      key={room.areaName}
+                      type="button"
+                      onClick={() => setSelectedRoomForDetail(room.areaName)}
+                      className={`w-full text-left p-3 rounded-xl border transition-colors cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-50/40 border-emerald-500'
+                          : 'bg-white border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs font-bold text-slate-900 truncate">{room.areaName}</span>
+                          <span className="text-[11px] text-slate-400 hidden sm:inline">
+                            · {room.isCleanedToday ? 'Aktif hari ini' : 'Belum hari ini'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2.5 shrink-0 tabular-nums text-xs">
+                          <span className="text-slate-500">{room.total} lap</span>
+                          <span
+                            className={`font-bold ${
+                              room.cleanRate >= 80
+                                ? 'text-emerald-700'
+                                : room.cleanRate >= 50
+                                ? 'text-amber-700'
+                                : 'text-rose-700'
+                            }`}
+                          >
+                            {room.cleanRate}% bersih
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden flex">
+                        {room.total > 0 ? (
+                          <>
+                            <div
+                              className="bg-emerald-500 h-full transition-all duration-500"
+                              style={{ width: `${room.cleanRate}%` }}
+                            />
+                            <div
+                              className="bg-amber-400 h-full transition-all duration-500"
+                              style={{ width: `${room.reviewRate}%` }}
+                            />
+                            <div
+                              className="bg-rose-500 h-full transition-all duration-500"
+                              style={{ width: `${room.damageRate}%` }}
+                            />
+                          </>
+                        ) : (
+                          <div className="w-full bg-slate-200 h-full" />
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1.5 tabular-nums">
+                        <span>
+                          {room.cleanCount} bersih · {room.reviewCount} cek ulang · {room.damageCount} rusak
+                        </span>
+                        <span className="text-emerald-700 font-semibold">
+                          {isSelected ? 'Ditampilkan' : 'Lihat tren →'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Right Column: Selected Room Deep Dive */}
+              {selectedRoomStats && (
+                <div className="lg:col-span-5 lg:border-l lg:border-slate-100 lg:pl-6 flex flex-col justify-between space-y-5">
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between gap-2 pb-3 border-b border-slate-100">
+                      <div>
+                        <span className="text-[11px] font-semibold text-emerald-700">Detail Ruangan Terpilih</span>
+                        <h3 className="text-base font-bold text-slate-900 mt-0.5">{selectedRoomStats.areaName}</h3>
+                        <p className="text-xs text-slate-500 tabular-nums mt-0.5">
+                          {selectedRoomStats.total} laporan · {selectedRoomStats.cleanRate}% indeks bersih
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => onAddNewReport(selectedRoomStats.areaName)}
+                        className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1 shrink-0 cursor-pointer whitespace-nowrap"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Laporkan</span>
+                      </button>
+                    </div>
+
+                    {/* 7-Day Timeline */}
+                    <div>
+                      <span className="text-xs font-semibold text-slate-700 block mb-2">
+                        Tren Kondisi 7 Hari Terakhir
+                      </span>
+                      <div className="grid grid-cols-7 gap-1.5 text-center">
+                        {selectedRoomStats.trendDays.map((day) => (
+                          <div
+                            key={day.dateStr}
+                            className={`py-2 px-1 rounded-lg border text-xs ${
+                              day.status === 'clean'
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                                : day.status === 'review'
+                                ? 'bg-amber-50 border-amber-200 text-amber-800'
+                                : day.status === 'damage'
+                                ? 'bg-rose-50 border-rose-200 text-rose-800'
+                                : 'bg-slate-50 border-slate-200 text-slate-400'
+                            }`}
+                            title={`${day.dayShort} (${day.dateStr})`}
+                          >
+                            <p className="text-[10px] font-bold">{day.dayShort}</p>
+                            <p className="text-[10px] opacity-75 tabular-nums">{day.displayDate}</p>
+                            <div className="mt-1 font-bold text-xs">
+                              {day.status === 'clean' ? '✓' : day.status === 'review' ? '!' : day.status === 'damage' ? '✕' : '–'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Checklist Completion Rates */}
+                    <div>
+                      <span className="text-xs font-semibold text-slate-700 block mb-2">
+                        Keterpenuhan Checklist ({selectedRoomStats.total} laporan)
+                      </span>
+                      <div className="space-y-2">
+                        {selectedRoomStats.checklistBreakdown.map((chk) => (
+                          <div key={chk.item} className="space-y-1">
+                            <div className="flex items-center justify-between text-xs tabular-nums">
+                              <span className="text-slate-600">{chk.item}</span>
+                              <span className="font-bold text-slate-900">{chk.rate}%</span>
+                            </div>
+                            <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                              <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${chk.rate}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
+                    <span className="text-slate-500 truncate">
+                      {selectedRoomStats.topOfficers.length > 0
+                        ? `Teraktif: ${selectedRoomStats.topOfficers[0].name} (${selectedRoomStats.topOfficers[0].count}x)`
+                        : 'Belum ada aktivitas pada rentang ini'}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setSelectedArea(selectedRoomStats.areaName);
+                        setDateFilter('all');
+                        scrollToReportsTable();
+                      }}
+                      className="text-emerald-700 hover:text-emerald-900 font-semibold hover:underline shrink-0 cursor-pointer whitespace-nowrap"
+                    >
+                      Lihat di Tabel →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
+        ) : targetChartView === 'weekly' ? (
+          /* WEEKLY BAR CHART */
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+              <span>Jadwal wajib Senin–Sabtu ({mandatoryRoomsList.length} ruangan per hari)</span>
+              <span className="font-bold text-emerald-700 tabular-nums">
+                Rata-rata minggu ini: {weeklyTargetStats.averageCompliance}% ({weeklyTargetStats.targetMetDaysCount}/{weeklyTargetStats.elapsedDaysCount} hari 100%)
+              </span>
+            </div>
 
-          {/* Quick list of urgent locations */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 mt-3 pt-3 border-t border-amber-200">
-            {unresolvedIssuesList.slice(0, 3).map((issue) => (
-              <div
-                key={issue.id}
-                onClick={() => handleOpenDetail(issue)}
-                className="p-2.5 rounded-xl bg-white/90 border border-amber-200 text-xs cursor-pointer hover:bg-white transition-all flex items-center justify-between shadow-2xs"
-              >
-                <div className="min-w-0 pr-2">
-                  <p className="font-bold text-slate-900 truncate text-[11px]">{issue.area}</p>
-                  <p className="text-[10px] text-slate-500 truncate">{issue.namaPetugas} • {issue.waktu} WIB</p>
-                </div>
-                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
-                  issue.kondisiAkhir === 'Ada Kerusakan' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
-                }`}>
-                  {issue.kondisiAkhir === 'Ada Kerusakan' ? 'Kerusakan' : 'Perlu Cek'}
+            <div className="relative pt-6 pb-2">
+              <div className="absolute top-6 left-0 right-0 flex items-center gap-2 pointer-events-none">
+                <div className="w-full border-b border-dashed border-emerald-400" />
+                <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded whitespace-nowrap">
+                  Target 100%
                 </span>
               </div>
-            ))}
-            {unresolvedIssuesList.length > 3 && (
+
+              <div className="grid grid-cols-6 gap-2 sm:gap-4 items-end h-44 pt-4">
+                {weeklyTargetStats.days.map((day) => {
+                  const isSelected = activeTargetDate === day.dateStr;
+                  return (
+                    <button
+                      key={day.dayName}
+                      type="button"
+                      onClick={() => setInspectedTargetDate(day.dateStr === todayStr ? null : day.dateStr)}
+                      className={`flex flex-col items-center justify-end h-full cursor-pointer group p-2 rounded-xl transition-colors ${
+                        isSelected ? 'bg-emerald-50 ring-1 ring-emerald-500' : 'hover:bg-slate-50'
+                      }`}
+                      title={`${day.dayName} (${day.dateStr}): ${day.reportedCount}/${day.targetCount} ruangan`}
+                    >
+                      <div className="text-xs font-bold text-slate-700 mb-1.5 tabular-nums">
+                        {day.isFuture ? '–' : `${day.reportedCount}/${day.targetCount}`}
+                      </div>
+                      <div className="w-full max-w-[56px] bg-slate-100 rounded-t-lg overflow-hidden flex flex-col justify-end h-28">
+                        <div
+                          className={`w-full transition-all duration-500 rounded-t-lg ${
+                            day.isFuture
+                              ? 'bg-slate-200 h-1'
+                              : day.isTargetMet
+                              ? 'bg-emerald-500 group-hover:bg-emerald-600'
+                              : day.percentage > 0
+                              ? 'bg-amber-500 group-hover:bg-amber-600'
+                              : 'bg-rose-400 group-hover:bg-rose-500'
+                          }`}
+                          style={{ height: day.isFuture ? '4px' : `${Math.max(day.percentage, 8)}%` }}
+                        />
+                      </div>
+                      <div className="text-center mt-2 w-full">
+                        <p className="text-xs font-bold text-slate-800">{day.dayName}</p>
+                        <p className="text-[11px] text-slate-400 tabular-nums">
+                          {day.displayDate} {day.isToday ? '· Hari Ini' : ''}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* MONTHLY HISTORY & ANALYTICS */
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex items-center gap-1">
+                <button
+                  onClick={() => setSelectedMonth(shiftMonth(selectedMonth, -1))}
+                  className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 cursor-pointer"
+                  title="Bulan Sebelumnya"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <select
+                  aria-label="Pilih Bulan Riwayat"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className="font-bold text-slate-800 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                >
+                  {availableMonths.map((m) => (
+                    <option key={m} value={m}>
+                      {formatMonthIndo(m)} {m === todayStr.slice(0, 7) ? '(Bulan Ini)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setSelectedMonth(shiftMonth(selectedMonth, 1))}
+                  className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 cursor-pointer"
+                  title="Bulan Berikutnya"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+
               <button
-                onClick={() => setQuickTagFilter('unresolved')}
-                className="p-2.5 rounded-xl bg-white/60 border border-dashed border-amber-300 text-xs font-bold text-amber-800 hover:bg-white flex items-center justify-center gap-1"
+                onClick={() => {
+                  setDateFilter('specific_month');
+                  scrollToReportsTable();
+                }}
+                className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 hover:underline inline-flex items-center gap-1 cursor-pointer"
               >
-                <span>+{unresolvedIssuesList.length - 3} temuan lainnya</span>
+                <span>Tampilkan {monthlyTargetStats.totalReports} Laporan di Tabel</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center justify-between text-xs text-emerald-900 shadow-xs">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-              <CheckCircle2 className="w-4 h-4" />
             </div>
-            <div>
-              <p className="font-bold text-emerald-950 text-sm">Semua Fasilitas Terpantau Aman & Siap Digunakan</p>
-              <p className="text-emerald-700 text-xs">
-                Tidak ada temuan kerusakan aktif yang tertunda. Sanitasi lingkungan berada dalam standar operasional SCB.
-              </p>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-100 border border-slate-200 rounded-xl bg-slate-50/50">
+              <div className="p-3.5 text-center tabular-nums">
+                <span className="text-xs text-slate-500 block">Total Laporan</span>
+                <strong className="text-xl font-extrabold text-slate-900 mt-0.5 block">
+                  {monthlyTargetStats.totalReports}
+                </strong>
+              </div>
+              <div className="p-3.5 text-center tabular-nums">
+                <span className="text-xs text-slate-500 block">Indeks Bersih</span>
+                <strong className="text-xl font-extrabold text-emerald-700 mt-0.5 block">
+                  {monthlyTargetStats.cleanPercentage}%
+                </strong>
+              </div>
+              <div className="p-3.5 text-center tabular-nums">
+                <span className="text-xs text-slate-500 block">Hari Target Penuh</span>
+                <strong className="text-xl font-extrabold text-blue-700 mt-0.5 block">
+                  {monthlyTargetStats.fullComplianceDays}/{monthlyTargetStats.totalWorkingDays}
+                </strong>
+              </div>
+              <div className="p-3.5 text-center tabular-nums">
+                <span className="text-xs text-slate-500 block">Temuan Kendala</span>
+                <strong className="text-xl font-extrabold text-amber-700 mt-0.5 block">
+                  {monthlyTargetStats.reviewReports + monthlyTargetStats.damageReports}
+                </strong>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              {monthlyTargetStats.weeklyBuckets.map((bucket) => (
+                <div key={bucket.weekLabel} className="p-3 rounded-xl border border-slate-200 bg-white space-y-1.5 tabular-nums">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-800">{bucket.weekLabel}</span>
+                    <span className="text-[11px] text-slate-400">Tgl {bucket.dateRange}</span>
+                  </div>
+                  <div className="text-lg font-extrabold text-slate-900">{bucket.avgCoverage}%</div>
+                  <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                    <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${bucket.avgCoverage}%` }} />
+                  </div>
+                  <p className="text-[11px] text-slate-500">{bucket.reportsCount} laporan</p>
+                </div>
+              ))}
             </div>
           </div>
-          <span className="hidden sm:inline-block px-3 py-1 bg-emerald-100 text-emerald-800 font-bold rounded-full text-[10px]">
-            100% Terkendali
-          </span>
-        </div>
-      )}
-
-      {/* QUICK 1-CLICK CATEGORY TABS & COLOR LEGEND */}
-      <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          {/* Quick Pills */}
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="font-bold text-slate-500 mr-1 text-[11px] uppercase tracking-wider">
-              Filter Cepat:
-            </span>
-            <button
-              onClick={() => setQuickTagFilter('all')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition-all ${
-                quickTagFilter === 'all'
-                  ? 'bg-slate-900 text-white shadow-xs'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              Semua ({reports.length})
-            </button>
-            <button
-              onClick={() => setQuickTagFilter('unresolved')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
-                quickTagFilter === 'unresolved'
-                  ? 'bg-amber-600 text-white shadow-xs'
-                  : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'
-              }`}
-            >
-              <AlertTriangle className="w-3.5 h-3.5" />
-              <span>Butuh Tindak Lanjut ({unresolvedIssuesList.length})</span>
-            </button>
-            <button
-              onClick={() => setQuickTagFilter('pending_approval')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
-                quickTagFilter === 'pending_approval'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'bg-blue-50 text-blue-800 hover:bg-blue-100 border border-blue-200'
-              }`}
-            >
-              <Clock className="w-3.5 h-3.5" />
-              <span>Menunggu Verifikasi ({verificationCounts.pending})</span>
-            </button>
-            <button
-              onClick={() => setQuickTagFilter('clean')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
-                quickTagFilter === 'clean'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200'
-              }`}
-            >
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Kondisi Bersih ({reports.filter((r) => r.kondisiAkhir === 'Bersih').length})</span>
-            </button>
-            <button
-              onClick={() => setQuickTagFilter('damage')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1 ${
-                quickTagFilter === 'damage'
-                  ? 'bg-rose-600 text-white shadow-xs'
-                  : 'bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200'
-              }`}
-            >
-              <Wrench className="w-3.5 h-3.5" />
-              <span>Kerusakan ({reports.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length})</span>
-            </button>
-          </div>
-
-          {/* Color Legend (Guides the reader) */}
-          <div className="flex items-center gap-3 text-[11px] text-slate-500 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100 shrink-0 self-start lg:self-auto">
-            <span className="font-semibold text-slate-600">Panduan Warna:</span>
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Bersih
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Perlu Cek
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Rusak
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-blue-500" /> Terverifikasi
-            </span>
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Filter and Search Bar */}
-      <div id="report-history-table" className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-          {/* Search bar */}
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Cari laporan (nama petugas, area, catatan kerusakan)..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-
-          {/* Date range filter tabs + Month History Dropdown */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center bg-slate-100 p-1 rounded-xl self-start md:self-auto text-xs font-medium">
-              <button
-                onClick={() => setDateFilter('today')}
-                className={`px-3 py-1.5 rounded-lg transition-all ${
-                  dateFilter === 'today'
-                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Hari Ini
-              </button>
-              <button
-                onClick={() => setDateFilter('7days')}
-                className={`px-3 py-1.5 rounded-lg transition-all ${
-                  dateFilter === '7days'
-                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                7 Hari
-              </button>
+      {/* 5. REPORTS LOG & VERIFICATION SECTION */}
+      <div id="report-history-table" className="space-y-4">
+        {/* Supervisor Action Bar when pending reports exist */}
+        {isSupervisorOrAdmin && verificationCounts.pending > 0 && (
+          <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 text-slate-800">
+              <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>
+                <strong className="tabular-nums">{verificationCounts.pending} laporan</strong> menunggu persetujuan supervisor ({currentUser?.name}).
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={() => {
-                  setDateFilter('month');
-                  setSelectedMonth(todayStr.slice(0, 7));
+                  setSelectedStatusVerifikasi('Menunggu');
+                  setDateFilter('all');
                 }}
-                className={`px-3 py-1.5 rounded-lg transition-all ${
-                  dateFilter === 'month'
-                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className="px-3 py-1.5 bg-white hover:bg-blue-100 text-blue-800 font-semibold rounded-lg border border-blue-200 transition-colors cursor-pointer whitespace-nowrap"
               >
-                Bulan Ini
+                Tampilkan Pending
               </button>
               <button
-                onClick={() => setDateFilter('all')}
-                className={`px-3 py-1.5 rounded-lg transition-all ${
-                  dateFilter === 'all'
-                    ? 'bg-white text-emerald-800 font-bold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
+                onClick={handleBulkApprovePending}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
-                Semua
-              </button>
-            </div>
-
-            {/* Riwayat Bulan Picker */}
-            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-xl text-xs">
-              <CalendarRange className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-              <span className="text-[11px] font-bold text-slate-500 whitespace-nowrap">Histori Bulan:</span>
-              <select
-                value={dateFilter === 'specific_month' ? selectedMonth : dateFilter === 'month' ? todayStr.slice(0, 7) : ''}
-                onChange={(e) => {
-                  if (e.target.value) {
-                    setSelectedMonth(e.target.value);
-                    setDateFilter('specific_month');
-                  }
-                }}
-                className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer"
-              >
-                <option value="" disabled>-- Pilih Bulan --</option>
-                {availableMonths.map((m) => (
-                  <option key={m} value={m}>
-                    {formatMonthIndo(m)} {m === todayStr.slice(0, 7) ? '(Bulan Ini)' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* View mode toggle (Grid vs Table) */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-slate-600">
-            <button
-              onClick={() => setViewMode('grid')}
-              className={`p-1.5 rounded-lg transition-all ${
-                viewMode === 'grid' ? 'bg-white text-emerald-700 shadow-xs' : 'hover:text-slate-900'
-              }`}
-              title="Tampilan Grid Kartu"
-            >
-              <LayoutGrid className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setViewMode('table')}
-              className={`p-1.5 rounded-lg transition-all ${
-                viewMode === 'table' ? 'bg-white text-emerald-700 shadow-xs' : 'hover:text-slate-900'
-              }`}
-              title="Tampilan Tabel"
-            >
-              <List className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Active Month History Banner */}
-        {(dateFilter === 'specific_month' || dateFilter === 'month') && (
-          <div className="bg-emerald-50/80 border border-emerald-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs shadow-2xs">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
-                <History className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="font-bold text-emerald-950 block sm:inline">
-                  Riwayat Laporan Bulan: {formatMonthIndo(dateFilter === 'month' ? todayStr.slice(0, 7) : selectedMonth)}
-                </span>
-                <span className="text-emerald-700 text-[11px] sm:ml-2">
-                  (Ditemukan {filteredReports.length} laporan • {filteredReports.filter((r) => r.kondisiAkhir === 'Bersih').length} bersih • {filteredReports.filter((r) => r.kondisiAkhir !== 'Bersih').length} temuan kendala)
-                </span>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
-              <button
-                onClick={() => {
-                  const activeMonth = dateFilter === 'month' ? todayStr.slice(0, 7) : selectedMonth;
-                  if (filteredReports.length === 0) {
-                    showApprovalToast(`Tidak ada laporan pada bulan ${formatMonthIndo(activeMonth)}.`, 'info');
-                    return;
-                  }
-                  downloadReportsPdf(filteredReports, {
-                    periodeLabel: formatMonthIndo(activeMonth),
-                    fileName: `Rekap_Kebersihan_SCB_${activeMonth}.pdf`,
-                    currentUser,
-                  });
-                }}
-                className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg transition-all flex items-center gap-1 shadow-2xs text-xs cursor-pointer active:scale-95"
-                title="Download langsung file PDF tabel resmi bulan ini"
-              >
-                <FileDown className="w-3.5 h-3.5" />
-                <span>Export PDF</span>
-              </button>
-              <button
-                onClick={() => {
-                  const activeMonth = dateFilter === 'month' ? todayStr.slice(0, 7) : selectedMonth;
-                  onOpenPrintModal(filteredReports, formatMonthIndo(activeMonth));
-                }}
-                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs text-xs"
-                title="Pratinjau rekap dokumen laporan bulan ini"
-              >
-                <Printer className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Pratinjau</span>
-              </button>
-              <button
-                onClick={() => exportReportsToCsv(filteredReports)}
-                className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-300 transition-colors flex items-center gap-1 shadow-2xs text-xs"
-                title="Download file CSV/Excel bulan ini"
-              >
-                <Download className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Export Excel</span>
-              </button>
-              <button
-                onClick={() => setDateFilter('today')}
-                className="text-[11px] text-slate-500 hover:text-slate-800 underline ml-1"
-              >
-                Kembali ke Hari Ini
+                <CheckCheck className="w-3.5 h-3.5" />
+                <span>Setujui Semua</span>
               </button>
             </div>
           </div>
         )}
 
-        {/* Dropdown Filters Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-2 border-t border-slate-100 text-xs">
-          {/* Officer filter */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-              Filter Petugas:
-            </label>
+        {/* Unified Filter & Search Container */}
+        <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Riwayat &amp; Daftar Laporan</h2>
+              <p className="text-xs text-slate-500 tabular-nums">
+                Menampilkan {filteredReports.length} dari {reports.length} laporan tersimpan
+              </p>
+            </div>
+
+            {/* Quick Category Filter Tabs */}
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              {(
+                [
+                  { id: 'all', label: `Semua (${reports.length})` },
+                  { id: 'unresolved', label: `Butuh Tindak Lanjut (${unresolvedIssuesList.length})` },
+                  { id: 'pending_approval', label: `Menunggu Verifikasi (${verificationCounts.pending})` },
+                  { id: 'clean', label: `Bersih (${reports.filter((r) => r.kondisiAkhir === 'Bersih').length})` },
+                  { id: 'damage', label: `Kerusakan (${reports.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length})` },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setQuickTagFilter(tab.id);
+                    if (tab.id !== 'all' && dateFilter === 'today') {
+                      setDateFilter('all');
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap tabular-nums ${
+                    quickTagFilter === tab.id
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Search + Date Tabs + View Mode */}
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pt-3 border-t border-slate-100">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Cari laporan berdasarkan petugas, area, atau catatan..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+                {(
+                  [
+                    { id: 'today', label: 'Hari Ini' },
+                    { id: '7days', label: '7 Hari' },
+                    { id: 'month', label: 'Bulan Ini' },
+                    { id: 'all', label: 'Semua' },
+                  ] as const
+                ).map((d) => (
+                  <button
+                    key={d.id}
+                    onClick={() => {
+                      setDateFilter(d.id);
+                      if (d.id === 'month') setSelectedMonth(todayStr.slice(0, 7));
+                    }}
+                    className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                      dateFilter === d.id ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl text-xs">
+                <CalendarRange className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <select
+                  aria-label="Filter Histori Bulan"
+                  value={dateFilter === 'specific_month' ? selectedMonth : dateFilter === 'month' ? todayStr.slice(0, 7) : ''}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setSelectedMonth(e.target.value);
+                      setDateFilter('specific_month');
+                    }
+                  }}
+                  className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
+                >
+                  <option value="" disabled>
+                    Pilih Bulan
+                  </option>
+                  {availableMonths.map((m) => (
+                    <option key={m} value={m}>
+                      {formatMonthIndo(m)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="inline-flex items-center bg-slate-100 p-1 rounded-xl text-slate-600">
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                    viewMode === 'grid' ? 'bg-white text-emerald-700 shadow-2xs' : 'hover:text-slate-900'
+                  }`}
+                  title="Tampilan Kartu"
+                >
+                  <LayoutGrid className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                    viewMode === 'table' ? 'bg-white text-emerald-700 shadow-2xs' : 'hover:text-slate-900'
+                  }`}
+                  title="Tampilan Tabel"
+                >
+                  <List className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Attribute Filter Selects */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 pt-3 border-t border-slate-100 text-xs">
             <select
+              aria-label="Filter Petugas"
               value={selectedOfficer}
               onChange={(e) => setSelectedOfficer(e.target.value)}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
               <option value="all">Semua Petugas</option>
-              {['IDAY M YUSUF', 'ABDUL KODIR', 'WAHYUDIN'].map((name) => (
+              {availableOfficerNames.map((name) => (
                 <option key={name} value={name}>
                   {name}
                 </option>
               ))}
-              {officers
-                .filter((o) => !['IDAY M YUSUF', 'ABDUL KODIR', 'WAHYUDIN'].includes(o.name))
-                .map((o) => (
-                  <option key={o.id} value={o.name}>
-                    {o.name}
-                  </option>
-                ))}
             </select>
-          </div>
 
-          {/* Area filter */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-              Filter Area:
-            </label>
             <select
+              aria-label="Filter Area"
               value={selectedArea}
               onChange={(e) => setSelectedArea(e.target.value)}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
-              <option value="all">Semua Area</option>
-              {INITIAL_AREAS.map((area) => (
+              <option value="all">Semua Area Ruangan</option>
+              {activeRoomsList.map((area) => (
                 <option key={area} value={area}>
                   {area}
                 </option>
               ))}
             </select>
-          </div>
 
-          {/* Kondisi filter */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-              Filter Kondisi Akhir:
-            </label>
             <select
+              aria-label="Filter Kondisi Akhir"
               value={selectedKondisi}
               onChange={(e) => setSelectedKondisi(e.target.value)}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
               <option value="all">Semua Kondisi</option>
               <option value="Bersih">Bersih</option>
               <option value="Perlu Pengecekan Ulang">Perlu Pengecekan Ulang</option>
               <option value="Ada Kerusakan">Ada Kerusakan</option>
             </select>
-          </div>
 
-          {/* Status Verifikasi filter */}
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-              Status Verifikasi:
-            </label>
             <select
+              aria-label="Filter Status Verifikasi"
               value={selectedStatusVerifikasi}
               onChange={(e) => setSelectedStatusVerifikasi(e.target.value)}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
               <option value="all">Semua Status Verifikasi</option>
-              <option value="Menunggu">⏳ Menunggu ({verificationCounts.pending})</option>
-              <option value="Disetujui">✅ Disetujui ({verificationCounts.approved})</option>
-              <option value="Perlu Perbaikan">⚠️ Perlu Perbaikan ({verificationCounts.needsRepair})</option>
+              <option value="Menunggu">Menunggu ({verificationCounts.pending})</option>
+              <option value="Disetujui">Disetujui ({verificationCounts.approved})</option>
+              <option value="Perlu Perbaikan">Perlu Perbaikan ({verificationCounts.needsRepair})</option>
             </select>
           </div>
-        </div>
-      </div>
 
-      {/* Supervisor Mode Active Banner */}
-      {isSupervisorOrAdmin && (
-        <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-emerald-50 border border-blue-200/80 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs shadow-xs">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-slate-900 text-sm">Wewenang Persetujuan Laporan (Level Supervisor Aktif)</span>
-                <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold text-[10px] uppercase">
-                  {currentUser?.role === 'superadmin' ? 'Super Admin' : 'Supervisor Sarpras SCB'}
-                </span>
-              </div>
-              <p className="text-slate-600 mt-0.5">
-                Masuk sebagai: <strong className="text-blue-900">{currentUser?.name}</strong>. Anda memiliki wewenang penuh level supervisor untuk menyetujui hasil kebersihan atau meminta perbaikan ulang.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {verificationCounts.pending > 0 && (
-              <>
-                <button
-                  onClick={() => setSelectedStatusVerifikasi('Menunggu')}
-                  className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs"
-                >
-                  <Clock className="w-3.5 h-3.5" />
-                  <span>{verificationCounts.pending} Menunggu Persetujuan</span>
-                </button>
-                <button
-                  onClick={handleBulkApprovePending}
-                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs"
-                  title="Setujui sekaligus seluruh laporan yang berstatus Menunggu"
-                >
-                  <CheckCheck className="w-4 h-4" />
-                  <span>Setujui Semua ({verificationCounts.pending})</span>
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Filter status indicator & reset */}
-      {(selectedOfficer !== 'all' || selectedArea !== 'all' || selectedKondisi !== 'all' || selectedStatusVerifikasi !== 'all' || searchQuery || dateFilter !== 'today') && (
-        <div className="flex items-center justify-between text-xs text-slate-600 bg-emerald-50/60 border border-emerald-100 px-3.5 py-2 rounded-xl">
-          <span>
-            Menampilkan <strong className="text-emerald-800">{filteredReports.length}</strong> laporan sesuai filter
-          </span>
-          <button
-            onClick={() => {
-              setSelectedOfficer('all');
-              setSelectedArea('all');
-              setSelectedKondisi('all');
-              setSelectedStatusVerifikasi('all');
-              setSearchQuery('');
-              setDateFilter('today');
-            }}
-            className="text-emerald-700 font-bold hover:underline"
-          >
-            Reset Semua Filter
-          </button>
-        </div>
-      )}
-
-      {/* Reports Display: Grid View or Table View */}
-      {filteredReports.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center">
-          <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
-            <Search className="w-6 h-6" />
-          </div>
-          <h3 className="text-base font-bold text-slate-800">
-            Tidak ada laporan ditemukan
-          </h3>
-          <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1 mb-4">
-            Coba sesuaikan tanggal atau pilihan filter Anda, atau buat laporan baru sekarang.
-          </p>
-          <button
-            onClick={() => onAddNewReport()}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl"
-          >
-            + Input Laporan Baru
-          </button>
-        </div>
-      ) : viewMode === 'grid' ? (
-        /* GRID VIEW */
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredReports.map((report) => (
-            <div
-              key={report.id}
-              className={`bg-white rounded-2xl border border-slate-200 shadow-xs hover:shadow-md transition-all overflow-hidden flex flex-col border-l-4 ${
-                report.kondisiAkhir === 'Bersih'
-                  ? 'border-l-emerald-500'
-                  : report.kondisiAkhir === 'Ada Kerusakan'
-                  ? 'border-l-rose-500'
-                  : 'border-l-amber-500'
-              }`}
-            >
-              {/* Card Photo Preview */}
-              <div
-                className="relative aspect-16/9 bg-slate-100 cursor-pointer group overflow-hidden"
-                onClick={() => handleOpenDetail(report)}
+          {hasActiveFilters && (
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+              <span className="text-slate-500 tabular-nums">
+                Filter aktif: <strong className="text-slate-900">{filteredReports.length} laporan</strong> ditemukan
+              </span>
+              <button
+                onClick={resetAllFilters}
+                className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-900 font-semibold hover:underline cursor-pointer"
               >
-                {report.fotoBukti && report.fotoBukti.length > 0 ? (
-                  <img
-                    src={report.fotoBukti[0]}
-                    alt={`Bukti ${report.area}`}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-slate-400 text-xs">
-                    Tidak ada foto
-                  </div>
-                )}
-
-                {/* Status Badges Overlay */}
-                <div className="absolute top-2.5 left-2.5 flex flex-wrap items-center gap-1.5 max-w-[70%]">
-                  <span
-                    className={`text-[11px] font-bold px-2 py-0.5 rounded-md shadow-xs ${
-                      report.kondisiAkhir === 'Bersih'
-                        ? 'bg-emerald-600 text-white'
-                        : report.kondisiAkhir === 'Ada Kerusakan'
-                        ? 'bg-rose-600 text-white'
-                        : 'bg-amber-600 text-white'
-                    }`}
-                  >
-                    {report.kondisiAkhir}
-                  </span>
-                  {report.kondisiAkhir !== 'Bersih' && (
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md shadow-xs flex items-center gap-1 ${
-                        !isReportFollowedUp(report, reports)
-                          ? 'bg-amber-600 text-white'
-                          : 'bg-emerald-700 text-white'
-                      }`}
-                    >
-                      {!isReportFollowedUp(report, reports) ? (
-                        <>
-                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                          <span>Belum Follow-Up</span>
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>Selesai</span>
-                        </>
-                      )}
-                    </span>
-                  )}
-                </div>
-
-                <div className="absolute top-2.5 right-2.5">
-                  <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shadow-xs ${
-                      report.statusVerifikasi === 'Disetujui'
-                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                        : report.statusVerifikasi === 'Perlu Perbaikan'
-                        ? 'bg-rose-50 text-rose-800 border-rose-300'
-                        : 'bg-slate-900/80 text-white border-transparent'
-                    }`}
-                  >
-                    {report.statusVerifikasi}
-                  </span>
-                </div>
-
-                <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-xs text-white text-[10px] font-semibold px-2 py-0.5 rounded-md">
-                  {report.fotoBukti.length} Foto
-                </div>
-              </div>
-
-              {/* Card Body */}
-              <div className="p-4 flex-1 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-start justify-between gap-2 mb-1.5">
-                    <h3 className="font-bold text-slate-900 text-sm leading-snug">
-                      {report.area}
-                    </h3>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-3">
-                    <span className="flex items-center gap-1">
-                      <UserIcon className="w-3.5 h-3.5 text-slate-400" />
-                      <strong className="text-slate-700">{report.namaPetugas}</strong>
-                    </span>
-                    <span>•</span>
-                    <span className="flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5 text-slate-400" />
-                      {report.tanggal} {report.waktu}
-                    </span>
-                  </div>
-
-                  {/* Checklist Pills */}
-                  <div className="flex flex-wrap gap-1 mb-3">
-                    {report.checklist.slice(0, 3).map((item, idx) => (
-                      <span
-                        key={idx}
-                        className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md"
-                      >
-                        ✓ {item}
-                      </span>
-                    ))}
-                    {report.checklist.length > 3 && (
-                      <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-md">
-                        +{report.checklist.length - 3} lagi
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Keterangan */}
-                  {report.keteranganTambahan && (
-                    <p className="text-xs text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100 line-clamp-2 mb-3">
-                      <strong className="text-slate-700">Catatan:</strong> {report.keteranganTambahan}
-                    </p>
-                  )}
-                </div>
-
-                {/* Card Actions */}
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs gap-2">
-                  <button
-                    onClick={() => handleOpenDetail(report)}
-                    className="flex items-center gap-1 text-emerald-700 font-bold hover:underline"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>Lihat Detail</span>
-                  </button>
-
-                  <div className="flex items-center gap-1.5">
-                    {report.statusVerifikasi === 'Menunggu' ? (
-                      <>
-                        <button
-                          onClick={() => handleDirectCardVerify(report, 'Disetujui')}
-                          className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[10px] shadow-xs flex items-center gap-1 transition-colors"
-                          title="Setujui laporan langsung sesuai akun terdaftar"
-                        >
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>Setujui</span>
-                        </button>
-                        <button
-                          onClick={() => handleDirectCardVerify(report, 'Perlu Perbaikan')}
-                          className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-lg text-[10px] border border-rose-200 flex items-center gap-1 transition-colors"
-                          title="Minta perbaikan langsung sesuai akun terdaftar"
-                        >
-                          <AlertTriangle className="w-3 h-3" />
-                          <span>Perbaikan</span>
-                        </button>
-                      </>
-                    ) : (
-                      <span className="text-[10px] text-slate-500 font-medium">
-                        Oleh: <strong>{report.diverifikasiOleh?.split(' ')[0] || 'Supervisor'}</strong>
-                      </span>
-                    )}
-
-                    {isSuperAdmin && (
-                      <button
-                        onClick={() => onDeleteReport(report.id)}
-                        className="text-slate-400 hover:text-rose-600 p-1"
-                        title="Hapus Laporan (Admin)"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset Filter</span>
+              </button>
             </div>
-          ))}
+          )}
         </div>
-      ) : (
-        /* TABLE VIEW */
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="py-3 px-4">Waktu</th>
-                  <th className="py-3 px-4">Petugas</th>
-                  <th className="py-3 px-4">Area Kamar Mandi</th>
-                  <th className="py-3 px-4">Kondisi Akhir</th>
-                  <th className="py-3 px-4">Checklist Lengkap</th>
-                  <th className="py-3 px-4">Keterangan / Temuan</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 text-right">Aksi</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
-                {filteredReports.map((report) => (
-                  <tr key={report.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <div className="font-semibold text-slate-900">{report.waktu} WIB</div>
-                      <div className="text-[10px] text-slate-400">{report.tanggal}</div>
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap font-bold text-slate-900">
-                      {report.namaPetugas}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span className="font-medium text-slate-800">{report.area}</span>
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <div className="flex flex-col gap-1 items-start">
-                        <span
-                          className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
-                            report.kondisiAkhir === 'Bersih'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : report.kondisiAkhir === 'Ada Kerusakan'
-                              ? 'bg-rose-100 text-rose-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {report.kondisiAkhir}
-                        </span>
-                        {report.kondisiAkhir !== 'Bersih' && (
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.2 rounded flex items-center gap-1 ${
-                              !isReportFollowedUp(report, reports)
-                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                                : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
-                            }`}
-                          >
-                            {!isReportFollowedUp(report, reports) ? (
-                              <>
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse" />
-                                <span>Belum Follow-Up</span>
-                              </>
-                            ) : (
-                              <>
-                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                                <span>Selesai</span>
-                              </>
-                            )}
-                          </span>
-                        )}
+
+        {/* Reports Content: Empty / Grid / Table */}
+        {filteredReports.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+            <div className="w-11 h-11 rounded-xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+              <Search className="w-5 h-5" />
+            </div>
+            <h3 className="text-sm font-bold text-slate-900">Tidak ada laporan yang cocok dengan filter</h3>
+            <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1 mb-4">
+              {dateFilter === 'today'
+                ? 'Belum ada laporan yang masuk untuk hari ini. Anda dapat mengubah rentang waktu ke "7 Hari" atau "Semua".'
+                : 'Coba ubah kata kunci pencarian atau reset filter yang sedang aktif.'}
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {hasActiveFilters && (
+                <button
+                  onClick={() => setDateFilter('all')}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl cursor-pointer"
+                >
+                  Tampilkan Semua Waktu
+                </button>
+              )}
+              <button
+                onClick={() => onAddNewReport()}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl cursor-pointer"
+              >
+                + Input Laporan Baru
+              </button>
+            </div>
+          </div>
+        ) : viewMode === 'grid' ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredReports.map((report) => {
+              const followedUp = report.kondisiAkhir === 'Bersih' || isReportFollowedUp(report, reports);
+              return (
+                <div
+                  key={report.id}
+                  className="bg-white rounded-xl border border-slate-200 hover:border-slate-300 transition-colors overflow-hidden flex flex-col"
+                >
+                  {/* Photo Evidence Thumbnail */}
+                  <div
+                    className="relative aspect-16/9 bg-slate-100 cursor-pointer group overflow-hidden"
+                    onClick={() => handleOpenDetail(report)}
+                  >
+                    {report.fotoBukti && report.fotoBukti.length > 0 ? (
+                      <img
+                        src={report.fotoBukti[0]}
+                        alt={`Bukti ${report.area}`}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 text-xs gap-1">
+                        <Building2 className="w-5 h-5 text-slate-300" />
+                        <span>Tidak ada foto</span>
                       </div>
-                    </td>
-                    <td className="py-3 px-4 max-w-[200px] truncate">
-                      {report.checklist.join(', ')}
-                    </td>
-                    <td className="py-3 px-4 max-w-[220px] truncate text-slate-600">
-                      {report.keteranganTambahan || '-'}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
+                    )}
+
+                    {/* Top Status Scrim Overlay */}
+                    <div className="absolute inset-x-0 top-0 p-2.5 bg-gradient-to-b from-black/45 to-transparent flex items-center justify-between gap-2">
                       <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                          report.kondisiAkhir === 'Bersih'
+                            ? 'bg-emerald-600 text-white'
+                            : report.kondisiAkhir === 'Ada Kerusakan'
+                            ? 'bg-rose-600 text-white'
+                            : 'bg-amber-600 text-white'
+                        }`}
+                      >
+                        {report.kondisiAkhir}
+                      </span>
+
+                      <span
+                        className={`text-[11px] font-semibold px-2 py-0.5 rounded-md ${
                           report.statusVerifikasi === 'Disetujui'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            ? 'bg-white/95 text-emerald-800'
                             : report.statusVerifikasi === 'Perlu Perbaikan'
-                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                            : 'bg-slate-100 text-slate-600'
+                            ? 'bg-white/95 text-rose-800'
+                            : 'bg-slate-900/80 text-white'
                         }`}
                       >
                         {report.statusVerifikasi}
                       </span>
-                    </td>
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-1.5">
-                        {report.statusVerifikasi === 'Menunggu' && (
+                    </div>
+
+                    {report.fotoBukti && report.fotoBukti.length > 0 && (
+                      <div className="absolute bottom-2 right-2 bg-black/65 text-white text-[11px] font-medium px-2 py-0.5 rounded-md tabular-nums">
+                        {report.fotoBukti.length} Foto
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Card Body */}
+                  <div className="p-4 flex-1 flex flex-col justify-between gap-3">
+                    <div className="space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="font-bold text-slate-900 text-sm leading-snug">{report.area}</h3>
+                        {report.kondisiAkhir !== 'Bersih' && (
+                          <span
+                            className={`text-[11px] font-semibold shrink-0 ${
+                              followedUp ? 'text-emerald-700' : 'text-amber-700'
+                            }`}
+                          >
+                            {followedUp ? '· Selesai' : '· Perlu Tindak Lanjut'}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 tabular-nums">
+                        <span className="font-semibold text-slate-700">{report.namaPetugas}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>
+                          {report.tanggal} {report.waktu} WIB
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-600 line-clamp-2">
+                        {report.checklist.slice(0, 3).map((item) => `✓ ${item}`).join('  ')}
+                        {report.checklist.length > 3 ? `  +${report.checklist.length - 3} lainnya` : ''}
+                      </p>
+
+                      {report.keteranganTambahan && (
+                        <p className="text-xs text-slate-600 bg-slate-50 p-2 rounded-lg line-clamp-2">
+                          <span className="font-semibold text-slate-700">Catatan:</span> {report.keteranganTambahan}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Card Footer Actions */}
+                    <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs gap-2">
+                      <button
+                        onClick={() => handleOpenDetail(report)}
+                        className="inline-flex items-center gap-1 text-emerald-700 font-semibold hover:underline cursor-pointer whitespace-nowrap"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Lihat Detail</span>
+                      </button>
+
+                      <div className="flex items-center gap-1.5">
+                        {report.statusVerifikasi === 'Menunggu' && isSupervisorOrAdmin ? (
                           <>
                             <button
                               onClick={() => handleDirectCardVerify(report, 'Disetujui')}
-                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-[11px] flex items-center gap-1 transition-colors shadow-xs"
-                              title="Setujui langsung sesuai akun terdaftar"
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-[11px] inline-flex items-center gap-1 transition-colors cursor-pointer"
                             >
                               <CheckCircle2 className="w-3 h-3" />
                               <span>Setujui</span>
                             </button>
                             <button
                               onClick={() => handleDirectCardVerify(report, 'Perlu Perbaikan')}
-                              className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-lg text-[11px] border border-rose-200 transition-colors"
-                              title="Minta perbaikan langsung sesuai akun terdaftar"
+                              className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-lg text-[11px] border border-rose-200 transition-colors cursor-pointer"
                             >
                               Perbaikan
                             </button>
                           </>
-                        )}
-                        <button
-                          onClick={() => handleOpenDetail(report)}
-                          className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-lg transition-colors"
-                        >
-                          Detail
-                        </button>
+                        ) : report.diverifikasiOleh ? (
+                          <span className="text-[11px] text-slate-400 truncate max-w-[120px]">
+                            {report.diverifikasiOleh.split(' (')[0]}
+                          </span>
+                        ) : null}
+
                         {isSuperAdmin && (
                           <button
                             onClick={() => onDeleteReport(report.id)}
-                            className="p-1 text-slate-400 hover:text-rose-600"
-                            title="Hapus"
+                            className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer"
+                            title="Hapus Laporan"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        </div>
-      )}
+        ) : (
+          /* TABLE VIEW */
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                  <tr>
+                    <th className="py-3 px-4">Waktu</th>
+                    <th className="py-3 px-4">Petugas</th>
+                    <th className="py-3 px-4">Area Ruangan</th>
+                    <th className="py-3 px-4">Kondisi</th>
+                    <th className="py-3 px-4">Checklist</th>
+                    <th className="py-3 px-4">Catatan</th>
+                    <th className="py-3 px-4">Verifikasi</th>
+                    <th className="py-3 px-4 text-right">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-700">
+                  {filteredReports.map((report) => (
+                    <tr key={report.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-3 px-4 whitespace-nowrap tabular-nums">
+                        <div className="font-semibold text-slate-900">{report.waktu} WIB</div>
+                        <div className="text-[11px] text-slate-400">{report.tanggal}</div>
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap font-semibold text-slate-900">
+                        {report.namaPetugas}
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800">{report.area}</td>
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        <span
+                          className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
+                            report.kondisiAkhir === 'Bersih'
+                              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                              : report.kondisiAkhir === 'Ada Kerusakan'
+                              ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                              : 'bg-amber-50 text-amber-800 border border-amber-200'
+                          }`}
+                        >
+                          {report.kondisiAkhir}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 max-w-[180px] truncate text-slate-600">
+                        {report.checklist.join(', ')}
+                      </td>
+                      <td className="py-3 px-4 max-w-[200px] truncate text-slate-600">
+                        {report.keteranganTambahan || '–'}
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        <span
+                          className={`text-[11px] font-semibold ${
+                            report.statusVerifikasi === 'Disetujui'
+                              ? 'text-emerald-700'
+                              : report.statusVerifikasi === 'Perlu Perbaikan'
+                              ? 'text-rose-700'
+                              : 'text-slate-500'
+                          }`}
+                        >
+                          {report.statusVerifikasi}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {report.statusVerifikasi === 'Menunggu' && isSupervisorOrAdmin && (
+                            <button
+                              onClick={() => handleDirectCardVerify(report, 'Disetujui')}
+                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Setujui</span>
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleOpenDetail(report)}
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-lg cursor-pointer"
+                          >
+                            Detail
+                          </button>
+                          {isSuperAdmin && (
+                            <button
+                              onClick={() => onDeleteReport(report.id)}
+                              className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
+                              title="Hapus"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* DETAIL MODAL WITH SUPERVISOR VERIFICATION */}
       {activeReportDetail && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-150">
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[90vh] flex flex-col">
-            {/* Modal Header */}
             <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                    Detail Laporan Kebersihan
-                  </span>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-bold text-emerald-700">Detail Laporan Kebersihan</span>
+                  <span className="text-slate-300" aria-hidden="true">·</span>
                   <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    className={`font-semibold ${
                       activeReportDetail.statusVerifikasi === 'Disetujui'
-                        ? 'bg-emerald-100 text-emerald-800'
+                        ? 'text-emerald-700'
                         : activeReportDetail.statusVerifikasi === 'Perlu Perbaikan'
-                        ? 'bg-rose-100 text-rose-800'
-                        : 'bg-amber-100 text-amber-800'
+                        ? 'text-rose-700'
+                        : 'text-amber-700'
                     }`}
                   >
-                    Status: {activeReportDetail.statusVerifikasi}
+                    {activeReportDetail.statusVerifikasi}
                   </span>
-                  {activeReportDetail.kondisiAkhir !== 'Bersih' && (
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 ${
-                        !isReportFollowedUp(activeReportDetail, reports)
-                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                          : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
-                      }`}
-                    >
-                      {!isReportFollowedUp(activeReportDetail, reports) ? (
-                        <>
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse" />
-                          <span>Belum Ada Tindak Lanjut</span>
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                          <span>Sudah Ditindaklanjuti</span>
-                        </>
-                      )}
-                    </span>
-                  )}
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 mt-0.5">
-                  {activeReportDetail.area}
-                </h3>
+                <h3 className="text-lg font-bold text-slate-900 mt-0.5">{activeReportDetail.area}</h3>
               </div>
               <button
                 onClick={() => setActiveReportDetail(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Modal Body */}
             <div className="p-5 sm:p-6 overflow-y-auto space-y-5 text-sm">
-              {/* Primary Meta Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-100 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-100 text-xs tabular-nums">
                 <div>
                   <span className="text-slate-400 block font-medium">Petugas</span>
                   <strong className="text-slate-900 text-sm">{activeReportDetail.namaPetugas}</strong>
@@ -3519,22 +2579,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div>
                   <span className="text-slate-400 block font-medium">Waktu Lapor</span>
                   <strong className="text-slate-900 text-sm">
-                    {activeReportDetail.tanggal} • {activeReportDetail.waktu}
+                    {activeReportDetail.tanggal} · {activeReportDetail.waktu}
                   </strong>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">Kondisi Akhir</span>
-                  <span
-                    className={`inline-block font-bold mt-0.5 px-2 py-0.5 rounded text-[11px] ${
+                  <strong
+                    className={`inline-block font-bold mt-0.5 ${
                       activeReportDetail.kondisiAkhir === 'Bersih'
-                        ? 'bg-emerald-100 text-emerald-800'
+                        ? 'text-emerald-700'
                         : activeReportDetail.kondisiAkhir === 'Ada Kerusakan'
-                        ? 'bg-rose-100 text-rose-800'
-                        : 'bg-amber-100 text-amber-800'
+                        ? 'text-rose-700'
+                        : 'text-amber-700'
                     }`}
                   >
                     {activeReportDetail.kondisiAkhir}
-                  </span>
+                  </strong>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">Bukti Foto</span>
@@ -3544,11 +2604,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              {/* Photo Evidence Gallery */}
               <div>
                 <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
                   <span>Foto Bukti Kegiatan</span>
-                  <span className="text-slate-400 font-normal">Klik untuk perbesar</span>
+                  <span className="text-slate-400 font-normal normal-case">Klik foto untuk perbesar</span>
                 </h4>
                 {activeReportDetail.fotoBukti && activeReportDetail.fotoBukti.length > 0 ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
@@ -3561,6 +2620,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <img
                           src={url}
                           alt="Foto bukti"
+                          referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
                         <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-semibold transition-opacity">
@@ -3574,7 +2634,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
 
-              {/* Checklist details */}
               <div>
                 <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-2">
                   Checklist Kebersihan Terpenuhi
@@ -3592,58 +2651,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              {/* Keterangan Tambahan */}
               <div>
                 <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-1.5">
-                  Keterangan Tambahan / Catatan Petugas
+                  Catatan Petugas
                 </h4>
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700">
                   {activeReportDetail.keteranganTambahan || 'Tidak ada catatan tambahan.'}
                 </div>
               </div>
 
-              {/* Supervisor Approval Box */}
-              <div className="bg-amber-50/50 border border-amber-200 rounded-xl p-4 space-y-3">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
-                  <div>
-                    <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                      Persetujuan Laporan Kebersihan (Level Supervisor)
-                    </h4>
-                    <p className="text-[11px] text-slate-500">
-                      Kendali mutu & evaluasi resmi kebersihan fasilitas Sekolah Cendekia BAZNAS
-                    </p>
-                  </div>
+                  <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    <span>Evaluasi &amp; Persetujuan Supervisor</span>
+                  </h4>
                   {activeReportDetail.diverifikasiOleh && (
-                    <span className="text-[11px] text-slate-600 bg-white px-2 py-0.5 rounded border border-slate-200 self-start sm:self-auto shrink-0">
-                      Disetujui: <strong>{activeReportDetail.diverifikasiOleh}</strong> ({activeReportDetail.diverifikasiPada})
+                    <span className="text-[11px] text-slate-600 tabular-nums">
+                      Oleh: <strong>{activeReportDetail.diverifikasiOleh}</strong> ({activeReportDetail.diverifikasiPada})
                     </span>
                   )}
                 </div>
 
-                {/* Verifier Identity Indicator - Direct Supervisor Authority */}
-                <div className="flex items-center justify-between p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-950">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
-                      <CheckCircle2 className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider block">
-                        Persetujuan Langsung Level Supervisor (Tanpa Verifikasi Email / Login)
-                      </span>
-                      <span>
-                        <strong>{currentUser?.name || registeredSupervisors[0]?.name || 'SUPERVISOR SARPRAS SCB'}</strong> (Supervisor Sarpras SCB)
-                      </span>
-                    </div>
-                  </div>
-                  <span className="text-[10px] font-bold bg-emerald-600 text-white px-2.5 py-1 rounded-full shadow-xs">
-                    Wewenang Langsung
-                  </span>
-                </div>
-
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Catatan Evaluasi Supervisor / Arahan Perbaikan:
+                    Catatan Evaluasi Supervisor:
                   </label>
                   <input
                     type="text"
@@ -3657,28 +2689,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="flex items-center gap-2 pt-1">
                   <button
                     onClick={() => handleVerifyReport('Disetujui')}
-                    className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors flex items-center justify-center gap-1.5"
+                    className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Setujui Laporan (Sesuai Standar)</span>
+                    <span>Setujui Laporan</span>
                   </button>
 
                   <button
                     onClick={() => handleVerifyReport('Perlu Perbaikan')}
-                    className="flex-1 py-2.5 px-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors flex items-center justify-center gap-1.5"
+                    className="flex-1 py-2.5 px-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <AlertTriangle className="w-4 h-4" />
-                    <span>Minta Perbaikan Ulang</span>
+                    <span>Minta Perbaikan</span>
                   </button>
                 </div>
               </div>
             </div>
 
-            {/* Modal Footer */}
             <div className="p-4 border-t border-slate-100 flex justify-end bg-slate-50">
               <button
                 onClick={() => setActiveReportDetail(null)}
-                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-semibold rounded-xl text-xs transition-colors"
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-semibold rounded-xl text-xs transition-colors cursor-pointer"
               >
                 Tutup
               </button>
@@ -3687,10 +2718,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* IN-PLACE APPROVAL TOAST NOTIFICATION (NO POPUPS) */}
+      {/* IN-PLACE APPROVAL TOAST NOTIFICATION */}
       {approvalToast && (
         <div className="fixed top-20 right-4 sm:right-6 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
-          <div className="bg-emerald-900/95 backdrop-blur-md text-white text-xs font-bold px-4 py-3 rounded-xl shadow-2xl border border-emerald-500/50 flex items-center gap-2.5">
+          <div className="bg-slate-900 text-white text-xs font-semibold px-4 py-3 rounded-xl shadow-xl border border-slate-700 flex items-center gap-2.5">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>{approvalToast.message}</span>
           </div>
@@ -3707,11 +2738,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <img
               src={selectedImagePreview}
               alt="Bukti foto resolusi tinggi"
+              referrerPolicy="no-referrer"
               className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl"
             />
             <button
               onClick={() => setSelectedImagePreview(null)}
-              className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black"
+              className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
