@@ -27,7 +27,9 @@ import {
   Sliders,
   Layers,
   Info,
-  ChevronRight
+  ChevronRight,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 export interface RolePermissionFeature {
@@ -160,10 +162,10 @@ export const ROLE_PERMISSIONS_DATA: RolePermissionFeature[] = [
   {
     id: 'login_pin',
     category: 'Pengelolaan Akun',
-    name: 'Pilih Akun Langsung & Masuk Cepat',
-    description: 'Masuk langsung dengan memilih nama petugas/supervisor di perangkat tanpa repot mengetik email panjang atau PIN.',
-    user: { allowed: true, label: 'Diizinkan', note: 'Pilih nama langsung untuk petugas' },
-    supervisor: { allowed: true, label: 'Diizinkan', note: 'Pilih akun langsung atau login sandi' },
+    name: 'Login Manual dengan Username / Email & Sandi / PIN',
+    description: 'Masuk secara langsung menggunakan Username atau Email beserta Kata Sandi atau PIN yang dikelola Superadmin tanpa pop-up Google.',
+    user: { allowed: true, label: 'Diizinkan', note: 'Username/Email + Sandi/PIN' },
+    supervisor: { allowed: true, label: 'Diizinkan', note: 'Username/Email + Sandi/PIN' },
     admin: { allowed: true, label: 'Diizinkan', note: 'Akses penuh akun operasional' },
   },
   {
@@ -278,12 +280,15 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchFeature, setSearchFeature] = useState<string>('');
 
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+
   // Form State for Add / Edit
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     username: '',
     password: '',
+    pin: '',
     role: 'petugas' as UserRole,
     phone: '',
     isActive: true,
@@ -291,11 +296,13 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
   const handleOpenAddModal = () => {
     setFormError('');
+    setShowPassword(false);
     setFormData({
       name: '',
       email: '',
       username: '',
       password: '',
+      pin: '',
       role: 'petugas',
       phone: '',
       isActive: true,
@@ -305,12 +312,14 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
   const handleOpenEditModal = (user: User) => {
     setFormError('');
+    setShowPassword(false);
     setEditingUser(user);
     setFormData({
       name: user.name,
       email: user.email,
       username: user.username,
       password: user.password || '',
+      pin: user.pin || '',
       role: user.role,
       phone: user.phone || '',
       isActive: user.isActive,
@@ -319,18 +328,40 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
   const handleSaveUser = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name.trim() || !formData.username.trim()) {
+    const cleanName = formData.name.trim();
+    const cleanUsername = formData.username.trim().toLowerCase();
+    const cleanEmail = (formData.email.trim() || `${cleanUsername}@scb.sch.id`).toLowerCase();
+
+    if (!cleanName || !cleanUsername) {
       setFormError('Nama Lengkap dan Username wajib diisi');
       return;
     }
+
+    const duplicateUsername = users.some(
+      (u) => u.id !== editingUser?.id && u.username.trim().toLowerCase() === cleanUsername
+    );
+    if (duplicateUsername) {
+      setFormError(`Username "@${cleanUsername}" sudah digunakan oleh akun lain.`);
+      return;
+    }
+
+    const duplicateEmail = users.some(
+      (u) => u.id !== editingUser?.id && u.email && u.email.trim().toLowerCase() === cleanEmail
+    );
+    if (duplicateEmail) {
+      setFormError(`Email "${cleanEmail}" sudah terdaftar pada akun lain.`);
+      return;
+    }
+
     setFormError('');
 
     if (editingUser) {
       onUpdateUser(editingUser.id, {
-        name: formData.name.trim().toUpperCase(),
-        email: formData.email.trim(),
-        username: formData.username.trim().toLowerCase(),
-        password: formData.password || 'password123',
+        name: cleanName.toUpperCase(),
+        email: cleanEmail,
+        username: cleanUsername,
+        password: formData.password.trim() || editingUser.password || '123456',
+        pin: formData.pin.trim() || undefined,
         role: formData.role,
         phone: formData.phone.trim(),
         isActive: formData.isActive,
@@ -338,10 +369,11 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
       setEditingUser(null);
     } else {
       onAddUser({
-        name: formData.name.trim().toUpperCase(),
-        email: formData.email.trim() || `${formData.username.trim().toLowerCase()}@scb.sch.id`,
-        username: formData.username.trim().toLowerCase(),
-        password: formData.password || 'password123',
+        name: cleanName.toUpperCase(),
+        email: cleanEmail,
+        username: cleanUsername,
+        password: formData.password.trim() || '123456',
+        pin: formData.pin.trim() || undefined,
         role: formData.role,
         phone: formData.phone.trim(),
         isActive: formData.isActive,
@@ -458,13 +490,13 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         <div className="space-y-6">
           {/* Info Callout */}
           <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-start gap-3">
-            <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+            <Key className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-bold text-emerald-950">
-                Otentikasi Resmi: Google Single Sign-On (SSO) Sesuai Email Terdaftar
+                Otentikasi Akun Manual: Username / Email &amp; Kata Sandi atau PIN
               </p>
               <p className="text-emerald-800 leading-relaxed">
-                Semua personel (Superadmin, Supervisor, dan Petugas) masuk menggunakan <strong>Google Sign-In</strong>. Sistem secara ketat mencocokkan email Google akun dengan kolom <strong>Email Terdaftar</strong> di bawah ini. Pastikan alamat email di tabel sesuai dengan akun Google yang digunakan masing-masing personel.
+                Semua personel (Superadmin, Supervisor, dan Petugas) masuk langsung menggunakan <strong>Username atau Email</strong> beserta <strong>Kata Sandi / PIN</strong> yang dikelola di sini tanpa perlu pop-up Google. Pastikan kredensial masing-masing personel diatur dengan benar.
               </p>
             </div>
           </div>
@@ -494,7 +526,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
                   <tr>
                     <th className="py-3 px-4">Nama Lengkap</th>
-                    <th className="py-3 px-4">Username / Email Google</th>
+                    <th className="py-3 px-4">Username / Email</th>
                     <th className="py-3 px-4">Peran (Role)</th>
                     <th className="py-3 px-4">Otentikasi</th>
                     <th className="py-3 px-4">Kontak / No WA</th>
@@ -557,8 +589,8 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
                         <td className="py-3.5 px-4 whitespace-nowrap">
                           <span className="text-[11px] font-medium text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 inline-flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                            Google SSO
+                            <Key className="w-3 h-3 text-emerald-600" />
+                            {user.pin ? 'Sandi & PIN' : 'Akun Manual'}
                           </span>
                         </td>
 
@@ -654,7 +686,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
               <div className="pt-2 border-t border-slate-100 text-[11px] space-y-1.5 text-slate-600">
                 <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
-                  <span>Login Otomatis via Akun Google di Ponsel/PC</span>
+                  <span>Login Mudah via Username/Email &amp; Sandi/PIN</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
@@ -717,12 +749,12 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 </div>
               </div>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Memegang <strong>otoritas penuh (Full Access)</strong>: manajemen personil & email Google, jadwal penugasan ruangan, kontrol Google Drive BAZNAS, backup & restore database cloud, serta audit log sistem.
+                Memegang <strong>otoritas penuh (Full Access)</strong>: manajemen personil &amp; kredensial akun, jadwal penugasan ruangan, kontrol Google Drive BAZNAS, backup &amp; restore database, serta audit log sistem.
               </p>
               <div className="pt-2 border-t border-slate-100 text-[11px] space-y-1.5 text-slate-600">
                 <div className="flex items-center gap-1.5 text-amber-800 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-                  <span>Pengelolaan Personil & Email Google Terdaftar</span>
+                  <span>Pengelolaan Personil, Username, Sandi &amp; PIN</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-amber-800 font-semibold">
                   <Check className="w-3.5 h-3.5 shrink-0 text-amber-600" />
@@ -1017,29 +1049,56 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    Kata Sandi (Opsional)
+                    Kata Sandi {editingUser ? '(Opsional)' : '(Default: 123456)'}
                   </label>
-                  <input
-                    type="password"
-                    placeholder="Sandi (opsional)"
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder={editingUser ? 'Kosongkan = tetap' : 'Default: 123456'}
+                      value={formData.password}
+                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                      className="w-full pl-3 pr-9 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                      title={showPassword ? 'Sembunyikan' : 'Tampilkan'}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Email (Opsional)
-                </label>
-                <input
-                  type="email"
-                  placeholder="petugas@scb.sch.id"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Email (Opsional)
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="petugas@scb.sch.id"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    PIN Cepat (Opsional)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={8}
+                    placeholder="Contoh: 1234"
+                    value={formData.pin}
+                    onChange={(e) => setFormData({ ...formData, pin: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1108,7 +1167,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                       </div>
                       <div className="flex items-center gap-1.5 text-emerald-800">
                         <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Login praktis dengan 1-klik akun Google</span>
+                        <span>Login praktis menggunakan Username/Email + Sandi atau PIN</span>
                       </div>
                       <div className="flex items-center gap-1.5 text-emerald-800">
                         <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
@@ -1166,11 +1225,11 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
               </div>
 
               <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950 flex items-start gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <Key className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-bold text-emerald-900">Autentikasi Google SSO</p>
+                  <p className="font-bold text-emerald-900">Autentikasi Akun Manual</p>
                   <p className="text-[11px] text-emerald-800 mt-0.5 leading-relaxed">
-                    Pengguna akan masuk langsung via akun Google dengan alamat email <strong>{formData.email || 'sesuai email di atas'}</strong>. Tidak memerlukan PIN atau password manual.
+                    Pengguna akan masuk menggunakan Username (<strong>@{formData.username || 'username'}</strong>) atau Email dengan Kata Sandi / PIN yang diatur di formulir ini.
                   </p>
                 </div>
               </div>

@@ -112,6 +112,12 @@ export function isCurrentAuthSuperAdmin(): boolean {
   return Boolean(email && email === SUPERADMIN_EMAIL && auth.currentUser?.emailVerified);
 }
 
+export function isQuotaExceededError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  const code = (err as { code?: string })?.code;
+  return code === 'resource-exhausted' || msg.includes('quota') || msg.includes('resource-exhausted');
+}
+
 /**
  * Strips any undefined fields before writing to Firestore,
  * preserving FieldValue sentinels (e.g. serverTimestamp) and Timestamps.
@@ -170,6 +176,10 @@ export function subscribeReports(
       const fallback = getReportsFromStorage();
       onReportsChanged(fallback);
       if (onError) onError(error);
+      if (isQuotaExceededError(error)) {
+        console.warn('Firestore quota exceeded on reports listener, using local storage cache.');
+        return;
+      }
       handleFirestoreError(error, OperationType.LIST, REPORTS_COLLECTION);
     }
   );
@@ -188,6 +198,8 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
   }
   saveReportsToStorage(current);
 
+  if (!auth.currentUser) return;
+
   const path = `${REPORTS_COLLECTION}/${report.id}`;
   try {
     const docRef = doc(db, REPORTS_COLLECTION, report.id);
@@ -204,6 +216,10 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while saving report, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.CREATE, path);
   }
 }
@@ -222,6 +238,8 @@ export async function updateReportInCloud(
     saveReportsToStorage(current);
   }
 
+  if (!auth.currentUser) return;
+
   const path = `${REPORTS_COLLECTION}/${id}`;
   try {
     const docRef = doc(db, REPORTS_COLLECTION, id);
@@ -231,6 +249,10 @@ export async function updateReportInCloud(
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while updating report, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
 }
@@ -243,11 +265,17 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
   const filtered = current.filter((r) => r.id !== id);
   saveReportsToStorage(filtered);
 
+  if (!auth.currentUser) return;
+
   const path = `${REPORTS_COLLECTION}/${id}`;
   try {
     const docRef = doc(db, REPORTS_COLLECTION, id);
     await deleteDoc(docRef);
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while deleting report, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.DELETE, path);
   }
 }
@@ -257,6 +285,8 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
  */
 export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Promise<void> {
   saveReportsToStorage(reports);
+
+  if (!auth.currentUser) return;
 
   try {
     const snapshot = await getDocs(collection(db, REPORTS_COLLECTION));
@@ -286,6 +316,10 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
       await batch.commit();
     }
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded during batch restore, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, REPORTS_COLLECTION);
   }
 }
@@ -484,6 +518,10 @@ export function subscribeUsers(
       const fallback = getUsersFromStorage();
       onUsersChanged(fallback);
       if (onError) onError(error);
+      if (isQuotaExceededError(error)) {
+        console.warn('Firestore quota exceeded on users listener, using local storage cache.');
+        return;
+      }
       handleFirestoreError(error, OperationType.LIST, USERS_COLLECTION);
     }
   );
@@ -507,6 +545,8 @@ export async function saveUserToCloud(user: User): Promise<void> {
   }
   saveUsersToStorage(current);
 
+  if (!auth.currentUser) return;
+
   const path = `${USERS_COLLECTION}/${normalizedUser.id}`;
   try {
     const docRef = doc(db, USERS_COLLECTION, normalizedUser.id);
@@ -515,6 +555,10 @@ export async function saveUserToCloud(user: User): Promise<void> {
       await syncStaffRoleToCloud(normalizedUser);
     }
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while saving user, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
@@ -528,6 +572,8 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
   const filtered = current.filter((u) => u.id !== id);
   saveUsersToStorage(filtered);
 
+  if (!auth.currentUser) return;
+
   const path = `${USERS_COLLECTION}/${id}`;
   try {
     await deleteDoc(doc(db, USERS_COLLECTION, id));
@@ -535,6 +581,10 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
       await deleteDoc(doc(db, STAFF_ROLES_COLLECTION, toEmailKey(targetUser.email)));
     }
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while deleting user, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.DELETE, path);
   }
 }
@@ -605,6 +655,10 @@ export function subscribeFormConfig(
         checklists: getMasterChecklists(),
         settings: getFormSettings(),
       });
+      if (isQuotaExceededError(err)) {
+        console.warn('Firestore quota exceeded on form config listener, using local storage cache.');
+        return;
+      }
       handleFirestoreError(err, OperationType.GET, path);
     }
   );
@@ -612,6 +666,7 @@ export function subscribeFormConfig(
 
 export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void> {
   saveMasterRooms(rooms);
+  if (!auth.currentUser) return;
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
@@ -624,12 +679,17 @@ export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void>
       })
     );
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while saving rooms, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
 
 export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[]): Promise<void> {
   saveMasterChecklists(checklists);
+  if (!auth.currentUser) return;
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
@@ -642,12 +702,17 @@ export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[])
       })
     );
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while saving checklists, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
 
 export async function saveFormSettingsToCloud(settings: FormSettings): Promise<void> {
   saveFormSettings(settings);
+  if (!auth.currentUser) return;
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
@@ -660,6 +725,10 @@ export async function saveFormSettingsToCloud(settings: FormSettings): Promise<v
       })
     );
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while saving form settings, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
@@ -706,6 +775,10 @@ export function subscribeRoomSchedules(
     },
     (err) => {
       onSchedulesChanged(getRoomSchedules());
+      if (isQuotaExceededError(err)) {
+        console.warn('Firestore quota exceeded on room schedules listener, using local storage cache.');
+        return;
+      }
       handleFirestoreError(err, OperationType.GET, path);
     }
   );
@@ -713,11 +786,16 @@ export function subscribeRoomSchedules(
 
 export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<void> {
   saveRoomSchedules(schedules);
+  if (!auth.currentUser) return;
   const path = `${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}`;
   try {
     const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
     await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) });
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while saving schedules, kept in local storage.');
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }

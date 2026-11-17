@@ -1070,7 +1070,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   onClick={() =>
                     onOpenLoginModal
-                      ? onOpenLoginModal('Masuk Akun Petugas Kebersihan / Pengelola SCB via Google', 'google')
+                      ? onOpenLoginModal('Masuk ke Akun Petugas Kebersihan atau Pengelola SCB')
                       : onAddNewReport()
                   }
                   className="text-emerald-700 hover:text-emerald-900 font-semibold inline-flex items-center gap-1 cursor-pointer hover:underline"

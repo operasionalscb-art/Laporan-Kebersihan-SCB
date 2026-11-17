@@ -11,9 +11,9 @@ import {
   CheckCircle2,
   Lock,
   Database,
-  Sliders
+  Sliders,
+  LogIn
 } from 'lucide-react';
-import { GoogleIcon } from './LoginModal';
 
 interface NavbarProps {
   currentUser: User | null;
@@ -119,7 +119,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <button
               onClick={onRequestInputReport}
-              title={!currentUser ? 'Khusus Petugas / Pengelola Terdaftar (Login Google)' : 'Buat Laporan Kebersihan Baru'}
+              title={!currentUser ? 'Khusus Petugas / Pengelola Terdaftar (Silakan Login)' : 'Buat Laporan Kebersihan Baru'}
               className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 xl:px-3.5 rounded-lg text-xs xl:text-[13px] whitespace-nowrap transition-all cursor-pointer shrink-0 ${
                 activeTab === 'input'
                   ? 'bg-emerald-600 text-white font-bold shadow-xs'
@@ -207,7 +207,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <div className="px-3 py-2.5 border-b border-slate-100">
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                          Akun Terhubung (Google SSO)
+                          Akun Aktif (Manual)
                         </span>
                         {currentUser.role === 'superadmin' ? (
                           <span className="inline-flex items-center text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
@@ -220,7 +220,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                         ) : null}
                       </div>
                       <p className="text-sm font-bold text-slate-800 mt-1">{currentUser.name}</p>
-                      <p className="text-xs text-slate-500 truncate font-mono">{currentUser.email}</p>
+                      <p className="text-xs text-slate-500 truncate font-mono">
+                        @{currentUser.username} · {currentUser.email}
+                      </p>
                     </div>
 
                     {isSuperAdmin && (
@@ -275,13 +277,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             ) : (
               <button
-                onClick={() => onOpenLoginModal('Masuk Akun Petugas Kebersihan / Pengelola SCB via Google')}
+                onClick={() => onOpenLoginModal('Masuk ke Akun Petugas Kebersihan atau Pengelola SCB')}
                 className="inline-flex items-center gap-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs sm:text-sm font-semibold rounded-xl shadow-xs transition-all cursor-pointer whitespace-nowrap"
               >
-                <span className="w-5 h-5 bg-white rounded-full flex items-center justify-center p-0.5 shrink-0 shadow-2xs">
-                  <GoogleIcon className="w-3.5 h-3.5" />
-                </span>
-                <span>Login Google</span>
+                <LogIn className="w-4 h-4 shrink-0" />
+                <span>Masuk / Login</span>
               </button>
             )}
           </div>

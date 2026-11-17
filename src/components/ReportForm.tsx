@@ -220,7 +220,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
     setErrorMsg('');
 
     if (!currentUser) {
-      setErrorMsg('Akses ditolak: Anda harus login via Google terlebih dahulu.');
+      setErrorMsg('Akses ditolak: Anda harus masuk ke akun terdaftar terlebih dahulu.');
       return;
     }
 

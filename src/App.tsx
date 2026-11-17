@@ -14,6 +14,7 @@ import {
 } from './types';
 import { 
   getUsers, 
+  saveUsers,
   addUser, 
   updateUser, 
   deleteUser, 
@@ -26,6 +27,7 @@ import {
   setCurrentUser, 
   clearCurrentUser
 } from './utils/storage';
+import { loadUsersFromIDB } from './utils/indexedDb';
 import {
   getMasterRooms,
   saveMasterRooms,
@@ -52,8 +54,7 @@ import {
   saveMasterChecklistsToCloud,
   saveFormSettingsToCloud,
   subscribeRoomSchedules,
-  saveRoomSchedulesToCloud,
-  fetchUserByEmailFromCloud
+  saveRoomSchedulesToCloud
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -65,9 +66,7 @@ import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
 import { 
   getGoogleAccessToken, 
-  initGoogleAuth,
-  googleSignOut,
-  consumeFirebaseRedirectResult
+  googleSignOut
 } from './services/googleAuth';
 import { 
   uploadReportPhotosToDrive, 
@@ -108,7 +107,7 @@ export default function App() {
   };
 
   const handleOpenLoginModal = (
-    reason = 'Silakan masuk pada akun Petugas Kebersihan atau Pengelola SCB via Google sesuai email terdaftar.'
+    reason = 'Silakan masuk menggunakan Username / Email dan Kata Sandi atau PIN akun terdaftar.'
   ) => {
     setLoginModalPrompt(reason);
     setIsLoginModalOpen(true);
@@ -123,7 +122,7 @@ export default function App() {
 
     if (!currentUser) {
       handleOpenLoginModal(
-        'Akses Dibatasi: Non-user / Tamu hanya bisa melihat Dashboard. Silakan masuk via Akun Google sesuai email terdaftar untuk mengisi laporan.'
+        'Akses Dibatasi: Non-user / Tamu hanya bisa melihat Dashboard. Silakan masuk dengan akun terdaftar untuk mengisi laporan.'
       );
       showToast('Non-user / Tamu hanya bisa melihat dashboard. Silakan login.', 'error');
       setActiveTab('dashboard');
@@ -140,21 +139,21 @@ export default function App() {
     }
     if (targetTab === 'form_mgmt') {
       if (!isSuperAdmin) {
-        handleOpenLoginModal('Pengelolaan Form & Jadwal hanya dapat diakses oleh Superadmin via akun Google (operasional.scb@gmail.com).');
+        handleOpenLoginModal('Pengelolaan Form & Jadwal hanya dapat diakses oleh akun Superadmin (operasional.scb).');
         setActiveTab('dashboard');
         return;
       }
     }
     if (targetTab === 'accounts') {
       if (!isSuperAdmin) {
-        handleOpenLoginModal('Pengelolaan akun hanya dapat diakses oleh Superadmin via akun Google (operasional.scb@gmail.com).');
+        handleOpenLoginModal('Pengelolaan akun hanya dapat diakses oleh akun Superadmin (operasional.scb).');
         setActiveTab('dashboard');
         return;
       }
     }
     if (targetTab === 'drive') {
       if (!isSuperAdmin) {
-        handleOpenLoginModal('Pusat Penyimpanan Data hanya dapat diakses oleh Super Admin via akun Google (operasional.scb@gmail.com).');
+        handleOpenLoginModal('Pusat Penyimpanan Data hanya dapat diakses oleh akun Superadmin (operasional.scb).');
         setActiveTab('dashboard');
         return;
       }
@@ -162,8 +161,10 @@ export default function App() {
     setActiveTab(targetTab);
   };
 
-  // Initial Real-time Subscriptions (Sync across devices & Vercel)
+  // Initial Real-time Subscriptions & Local/IndexedDB Hydration
   useEffect(() => {
+    const hasLocalUsers = Boolean(localStorage.getItem('scb_cleaning_users_v2'));
+
     // Current user session (local device)
     const loadedCurrentUser = getCurrentUser();
     setCurrentUserState(loadedCurrentUser);
@@ -176,45 +177,24 @@ export default function App() {
     setFormSettings(getFormSettings());
     setRoomSchedules(getRoomSchedules());
 
-    // 1. Subscribe to Live Firestore Reports
+    // Restore custom manual accounts from IndexedDB if localStorage was wiped
+    if (!hasLocalUsers) {
+      loadUsersFromIDB()
+        .then((idbUsers) => {
+          if (idbUsers && idbUsers.length > 0) {
+            saveUsers(idbUsers);
+            setUsers(idbUsers);
+          }
+        })
+        .catch(() => {});
+    }
+
+    // 1. Subscribe to Live Firestore Reports (auto-falls back to local cache on quota limit)
     const unsubscribeReports = subscribeReports((cloudReports) => {
       setReports(cloudReports);
     });
 
-    let isRestoringAuthUser = false;
-    const restoreAppUserByEmail = async (email: string, photoURL?: string | null) => {
-      if (isRestoringAuthUser || getCurrentUser()) return;
-      isRestoringAuthUser = true;
-      try {
-        const cleanEmail = email.trim().toLowerCase();
-        const localUsers = getUsers();
-        let matched = localUsers.find((u) => u.email && u.email.trim().toLowerCase() === cleanEmail);
-        if (!matched && cleanEmail === 'operasional.scb@gmail.com') {
-          matched = localUsers.find((u) => u.role === 'superadmin' && u.isActive !== false);
-        }
-        if (!matched) {
-          try {
-            const cloudUser = await fetchUserByEmailFromCloud(cleanEmail);
-            if (cloudUser) matched = cloudUser;
-          } catch {}
-        }
-        if (matched && matched.isActive !== false) {
-          const loggedUser: User = photoURL ? { ...matched, photoURL } : matched;
-          setCurrentUser(loggedUser);
-          setCurrentUserState(loggedUser);
-          showToast(`Selamat datang, ${loggedUser.name}!`);
-          if (loggedUser.role === 'petugas') {
-            setActiveTab('input');
-          }
-        } else if (matched && matched.isActive === false) {
-          showToast(`Akun "${cleanEmail}" berstatus nonaktif. Hubungi Superadmin.`, 'error');
-        }
-      } finally {
-        isRestoringAuthUser = false;
-      }
-    };
-
-    // 2. Subscribe to Live Firestore Users ONLY when Firebase user is authenticated (PII isolation)
+    // 2. Subscribe to Live Firestore Users ONLY if Firebase Auth session already exists
     let unsubscribeUsers: (() => void) | null = null;
     const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
       if (unsubscribeUsers) {
@@ -225,9 +205,6 @@ export default function App() {
         unsubscribeUsers = subscribeUsers((cloudUsers) => {
           setUsers(cloudUsers);
         });
-        if (fbUser.email && !getCurrentUser()) {
-          restoreAppUserByEmail(fbUser.email, fbUser.photoURL);
-        }
       }
     });
 
@@ -243,14 +220,6 @@ export default function App() {
       setRoomSchedules(schedules);
     });
 
-    // 5. Initialize Google Auth and resolve any pending redirect sign-in
-    const unsubscribeGoogle = initGoogleAuth();
-    consumeFirebaseRedirectResult().then((profile) => {
-      if (profile?.email && !getCurrentUser()) {
-        restoreAppUserByEmail(profile.email, profile.photoURL);
-      }
-    });
-
     return () => {
       unsubscribeReports();
       unsubscribeAuth();
@@ -259,9 +228,6 @@ export default function App() {
       }
       unsubscribeFormConfig();
       unsubscribeSchedules();
-      if (typeof unsubscribeGoogle === 'function') {
-        unsubscribeGoogle();
-      }
     };
   }, []);
 
@@ -458,7 +424,9 @@ export default function App() {
     clearCurrentUser();
     setCurrentUserState(null);
     setActiveTab('dashboard');
-    googleSignOut().catch(() => {});
+    if (auth.currentUser) {
+      googleSignOut().catch(() => {});
+    }
     setIsLoginModalOpen(false);
     showToast('Anda telah keluar. Sistem beralih ke Mode Tamu (Hanya Melihat Dashboard).', 'info');
   };
@@ -558,14 +526,14 @@ export default function App() {
               </div>
               <h3 className="font-bold text-slate-800 text-lg">Akses Khusus Petugas Terjadwal</h3>
               <p className="text-xs text-slate-600 mt-2 mb-6 leading-relaxed">
-                Non-user / Tamu hanya bisa melihat dashboard pemantauan. Untuk mengisi Formulir Laporan Kebersihan Kamar Mandi, silakan masuk ke akun Petugas Anda via Google terlebih dahulu.
+                Non-user / Tamu hanya bisa melihat dashboard pemantauan. Untuk mengisi Formulir Laporan Kebersihan Kamar Mandi, silakan masuk ke akun Petugas Anda terlebih dahulu.
               </p>
               <div className="flex flex-col gap-2.5">
                 <button
-                  onClick={() => handleOpenLoginModal('Silakan masuk ke akun Petugas Kebersihan via Google untuk mengisi formulir.')}
+                  onClick={() => handleOpenLoginModal('Silakan masuk ke akun Petugas Kebersihan untuk mengisi formulir.')}
                   className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs sm:text-sm shadow-sm transition-colors cursor-pointer"
                 >
-                  Masuk via Google (Akun Petugas)
+                  Masuk Akun Petugas
                 </button>
                 <button
                   onClick={() => setActiveTab('dashboard')}
@@ -602,7 +570,7 @@ export default function App() {
                 Halaman pengelolaan form dan jadwal hanya dapat diakses oleh akun superadmin (operasional.scb@gmail.com).
               </p>
               <button
-                onClick={() => handleOpenLoginModal('Masuk dengan akun Google operasional.scb@gmail.com.')}
+                onClick={() => handleOpenLoginModal('Masuk dengan akun Superadmin (operasional.scb).')}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
               >
                 Masuk Akun Superadmin
@@ -628,7 +596,7 @@ export default function App() {
                 Halaman pengelolaan akun hanya dapat diakses oleh akun pengelola superadmin (operasional.scb@gmail.com).
               </p>
               <button
-                onClick={() => handleOpenLoginModal('Masuk dengan email operasional.scb@gmail.com.')}
+                onClick={() => handleOpenLoginModal('Masuk dengan akun Superadmin (operasional.scb).')}
                 className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors"
               >
                 Masuk Akun Superadmin
