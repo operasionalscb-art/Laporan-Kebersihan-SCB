@@ -81,132 +81,129 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Main Navigation Bar */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
+        <div className="flex items-center justify-between gap-3 lg:gap-4 h-16">
           {/* Logo & Brand Title */}
-          <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('dashboard')}>
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-md shadow-emerald-700/20">
+          <div
+            className="flex items-center gap-2.5 cursor-pointer shrink-0 min-w-0"
+            onClick={() => setActiveTab('dashboard')}
+          >
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-md shadow-emerald-700/20 shrink-0">
               <Building2 className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <h1 className="font-bold text-slate-900 text-base sm:text-lg leading-tight tracking-tight">
+                <h1 className="font-bold text-slate-900 text-sm sm:text-base lg:text-lg leading-tight tracking-tight whitespace-nowrap">
                   SIM-BERSIH SCB
                 </h1>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded">
+                <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded shrink-0">
                   Harian
                 </span>
               </div>
-              <p className="text-xs text-slate-500 hidden sm:block">
+              <p className="text-[11px] text-slate-500 hidden xl:block truncate">
                 Laporan Kebersihan Kamar Mandi Petugas
               </p>
             </div>
           </div>
 
-          {/* Navigation Links */}
-          <nav className="hidden md:flex items-center space-x-1 lg:space-x-2">
+          {/* Desktop Navigation Links (Uniform Segmented Bar, Zero Overlap) */}
+          <nav
+            aria-label="Menu Utama"
+            className="hidden lg:flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 shrink-0"
+          >
             <button
               onClick={() => setActiveTab('dashboard')}
-              className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+              className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 xl:px-3.5 rounded-lg text-xs xl:text-[13px] whitespace-nowrap transition-all cursor-pointer shrink-0 ${
                 activeTab === 'dashboard'
-                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                  ? 'bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/80'
+                  : 'text-slate-600 font-medium hover:text-slate-900 hover:bg-white/60'
               }`}
             >
-              <ClipboardCheck className="w-4 h-4" />
-              <span>Dashboard Laporan</span>
+              <ClipboardCheck className="w-4 h-4 shrink-0 text-emerald-600" />
+              <span>Dashboard</span>
             </button>
 
             <button
               onClick={onRequestInputReport}
-              className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+              title={!currentUser ? 'Khusus Petugas / Pengelola Terdaftar (Login Google)' : 'Buat Laporan Kebersihan Baru'}
+              className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 xl:px-3.5 rounded-lg text-xs xl:text-[13px] whitespace-nowrap transition-all cursor-pointer shrink-0 ${
                 activeTab === 'input'
-                  ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-600/30 font-bold'
+                  ? 'bg-emerald-600 text-white font-bold shadow-xs'
                   : currentUser
-                  ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200'
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+                  ? 'text-emerald-800 font-semibold hover:bg-emerald-50'
+                  : 'text-slate-500 font-medium hover:text-slate-800 hover:bg-white/60'
               }`}
             >
-              {currentUser ? <PlusCircle className="w-4 h-4" /> : <Lock className="w-3.5 h-3.5 text-amber-600" />}
-              <span>Input Laporan Baru</span>
-              {!currentUser && (
-                <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.2 rounded font-bold">
-                  Kunci Petugas
-                </span>
+              {currentUser ? (
+                <PlusCircle className={`w-4 h-4 shrink-0 ${activeTab === 'input' ? 'text-white' : 'text-emerald-600'}`} />
+              ) : (
+                <Lock className="w-3.5 h-3.5 shrink-0 text-amber-600" />
               )}
+              <span>Input Laporan</span>
             </button>
 
             {isSuperAdmin && (
               <button
                 onClick={() => setActiveTab('form_mgmt')}
-                className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 xl:px-3.5 rounded-lg text-xs xl:text-[13px] whitespace-nowrap transition-all cursor-pointer shrink-0 ${
                   activeTab === 'form_mgmt'
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/80'
+                    : 'text-slate-600 font-medium hover:text-slate-900 hover:bg-white/60'
                 }`}
               >
-                <Sliders className="w-4 h-4 text-emerald-600" />
-                <span>Kelola Form & Jadwal</span>
-                <span className="ml-1 px-1.5 py-0.2 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded">
-                  Admin
-                </span>
+                <Sliders className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>Form &amp; Jadwal</span>
               </button>
             )}
 
             {isSuperAdmin && (
               <button
                 onClick={() => setActiveTab('accounts')}
-                className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 xl:px-3.5 rounded-lg text-xs xl:text-[13px] whitespace-nowrap transition-all cursor-pointer shrink-0 ${
                   activeTab === 'accounts'
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/80'
+                    : 'text-slate-600 font-medium hover:text-slate-900 hover:bg-white/60'
                 }`}
               >
-                <Users className="w-4 h-4" />
-                <span>Pengelolaan Akun</span>
-                <span className="ml-1 px-1.5 py-0.2 bg-amber-100 text-amber-800 text-[10px] font-bold rounded">
-                  Admin
-                </span>
+                <Users className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>Kelola Akun</span>
               </button>
             )}
 
             {isSuperAdmin && (
               <button
                 onClick={() => setActiveTab('drive')}
-                className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 xl:px-3.5 rounded-lg text-xs xl:text-[13px] whitespace-nowrap transition-all cursor-pointer shrink-0 ${
                   activeTab === 'drive'
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/80'
+                    : 'text-slate-600 font-medium hover:text-slate-900 hover:bg-white/60'
                 }`}
               >
-                <Database className="w-4 h-4" />
-                <span>Penyimpanan Data</span>
-                <span className="ml-1 px-1.5 py-0.2 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded">
-                  Admin
-                </span>
+                <Database className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>Penyimpanan</span>
               </button>
             )}
           </nav>
 
           {/* Right Actions: User Switcher / Profile */}
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center gap-2 shrink-0">
             {currentUser ? (
               <div className="relative">
                 <button
                   onClick={() => setShowSwitchMenu(!showSwitchMenu)}
-                  className="flex items-center space-x-2.5 p-1.5 sm:px-3 sm:py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-all text-left cursor-pointer"
+                  className="flex items-center gap-2 p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-all text-left cursor-pointer"
                 >
-                  <div className={`w-8 h-8 rounded-lg bg-gradient-to-tr ${currentUser.avatarColor || 'from-emerald-600 to-teal-700'} flex items-center justify-center text-white font-bold text-xs shadow-xs`}>
+                  <div className={`w-8 h-8 rounded-lg bg-gradient-to-tr ${currentUser.avatarColor || 'from-emerald-600 to-teal-700'} flex items-center justify-center text-white font-bold text-xs shadow-xs shrink-0`}>
                     {currentUser.name.charAt(0)}
                   </div>
-                  <div className="hidden sm:block text-left">
-                    <p className="text-xs font-bold text-slate-800 truncate max-w-[130px] leading-tight">
+                  <div className="hidden sm:block text-left min-w-0">
+                    <p className="text-xs font-bold text-slate-800 truncate max-w-[115px] xl:max-w-[140px] leading-tight">
                       {currentUser.name}
                     </p>
-                    <p className="text-[11px] text-slate-500 font-medium">
+                    <p className="text-[11px] text-slate-500 font-medium whitespace-nowrap">
                       {currentUser.role === 'superadmin' ? 'Superadmin' : currentUser.role === 'supervisor' ? 'Supervisor Sarpras' : 'Petugas CS'}
                     </p>
                   </div>
-                  <ChevronDown className="w-4 h-4 text-slate-400" />
+                  <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
                 </button>
 
                 {/* Dropdown Menu */}
@@ -284,7 +281,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             ) : (
               <button
                 onClick={() => onOpenLoginModal('Masuk Akun Petugas Kebersihan / Pengelola SCB via Google')}
-                className="inline-flex items-center space-x-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs sm:text-sm font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
+                className="inline-flex items-center gap-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs sm:text-sm font-semibold rounded-xl shadow-xs transition-all cursor-pointer whitespace-nowrap"
               >
                 <span className="w-5 h-5 bg-white rounded-full flex items-center justify-center p-0.5 shrink-0 shadow-2xs">
                   <GoogleIcon className="w-3.5 h-3.5" />
@@ -295,61 +292,79 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Mobile Sub-Navigation Bar */}
-        <div className="flex md:hidden items-center justify-around border-t border-slate-100 py-2">
+        {/* Mobile & Tablet Sub-Navigation Bar (Uniform Grid, Zero Overlap) */}
+        <div
+          className={`grid lg:hidden gap-1 border-t border-slate-100 py-1.5 ${
+            isSuperAdmin ? 'grid-cols-5' : 'grid-cols-2'
+          }`}
+        >
           <button
             onClick={() => setActiveTab('dashboard')}
-            className={`flex flex-col items-center py-1 px-2.5 text-xs font-medium rounded-lg ${
-              activeTab === 'dashboard' ? 'text-emerald-700 font-bold' : 'text-slate-600'
+            className={`flex flex-col items-center justify-center py-1.5 px-1 text-[11px] rounded-lg transition-colors min-w-0 ${
+              activeTab === 'dashboard'
+                ? 'bg-emerald-50 text-emerald-700 font-bold'
+                : 'text-slate-600 font-medium hover:bg-slate-50'
             }`}
           >
-            <ClipboardCheck className="w-5 h-5 mb-0.5" />
-            <span>Dashboard</span>
+            <ClipboardCheck className="w-4 h-4 mb-0.5 shrink-0" />
+            <span className="truncate w-full text-center">Dashboard</span>
           </button>
 
           <button
             onClick={onRequestInputReport}
-            className={`flex flex-col items-center py-1 px-2.5 text-xs font-medium rounded-lg ${
-              activeTab === 'input' ? 'text-emerald-700 font-bold' : 'text-slate-600'
+            className={`flex flex-col items-center justify-center py-1.5 px-1 text-[11px] rounded-lg transition-colors min-w-0 ${
+              activeTab === 'input'
+                ? 'bg-emerald-50 text-emerald-700 font-bold'
+                : 'text-slate-600 font-medium hover:bg-slate-50'
             }`}
           >
-            {currentUser ? <PlusCircle className="w-5 h-5 mb-0.5" /> : <Lock className="w-5 h-5 mb-0.5 text-amber-600" />}
-            <span>Input {currentUser ? 'Laporan' : '(Petugas)'}</span>
+            {currentUser ? (
+              <PlusCircle className="w-4 h-4 mb-0.5 shrink-0" />
+            ) : (
+              <Lock className="w-4 h-4 mb-0.5 text-amber-600 shrink-0" />
+            )}
+            <span className="truncate w-full text-center">Input</span>
           </button>
 
           {isSuperAdmin && (
             <button
               onClick={() => setActiveTab('form_mgmt')}
-              className={`flex flex-col items-center py-1 px-2.5 text-xs font-medium rounded-lg ${
-                activeTab === 'form_mgmt' ? 'text-emerald-700 font-bold' : 'text-slate-600'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 text-[11px] rounded-lg transition-colors min-w-0 ${
+                activeTab === 'form_mgmt'
+                  ? 'bg-emerald-50 text-emerald-700 font-bold'
+                  : 'text-slate-600 font-medium hover:bg-slate-50'
               }`}
             >
-              <Sliders className="w-5 h-5 mb-0.5" />
-              <span>Form & Jadwal</span>
+              <Sliders className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="truncate w-full text-center">Jadwal</span>
             </button>
           )}
 
           {isSuperAdmin && (
             <button
               onClick={() => setActiveTab('accounts')}
-              className={`flex flex-col items-center py-1 px-2.5 text-xs font-medium rounded-lg ${
-                activeTab === 'accounts' ? 'text-emerald-700 font-bold' : 'text-slate-600'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 text-[11px] rounded-lg transition-colors min-w-0 ${
+                activeTab === 'accounts'
+                  ? 'bg-emerald-50 text-emerald-700 font-bold'
+                  : 'text-slate-600 font-medium hover:bg-slate-50'
               }`}
             >
-              <Users className="w-5 h-5 mb-0.5" />
-              <span>Akun</span>
+              <Users className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="truncate w-full text-center">Akun</span>
             </button>
           )}
 
           {isSuperAdmin && (
             <button
               onClick={() => setActiveTab('drive')}
-              className={`flex flex-col items-center py-1 px-2.5 text-xs font-medium rounded-lg ${
-                activeTab === 'drive' ? 'text-emerald-700 font-bold' : 'text-slate-600'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 text-[11px] rounded-lg transition-colors min-w-0 ${
+                activeTab === 'drive'
+                  ? 'bg-emerald-50 text-emerald-700 font-bold'
+                  : 'text-slate-600 font-medium hover:bg-slate-50'
               }`}
             >
-              <Database className="w-5 h-5 mb-0.5" />
-              <span>Data</span>
+              <Database className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="truncate w-full text-center">Data</span>
             </button>
           )}
         </div>
