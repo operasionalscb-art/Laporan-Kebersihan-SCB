@@ -210,19 +210,19 @@ export const parseAuthError = (error: any): { title: string; message: string; co
     };
   }
 
-  if (code === 'auth/popup-closed-by-user' || rawMsg.includes('closed')) {
+  if (code === 'auth/popup-closed-by-user' || rawMsg.includes('closed') || rawMsg.includes('dibatalkan')) {
     return {
       code: 'auth/popup-closed-by-user',
       title: 'Login Dibatalkan',
-      message: 'Jendela login ditutup sebelum otentikasi Google Drive selesai.',
+      message: 'Jendela login ditutup sebelum proses autentikasi selesai.',
       isDomainError: false,
     };
   }
 
   return {
     code,
-    title: 'Autentikasi Google Drive',
-    message: rawMsg || 'Gagal menghubungkan Google Drive.',
+    title: 'Autentikasi Google',
+    message: rawMsg || 'Gagal menghubungkan akun Google.',
     isDomainError: false,
   };
 };
@@ -289,20 +289,51 @@ export const signInWithGIS = async (
     throw new Error('OAuth Client ID tidak ditemukan.');
   }
 
-  // Ensure GIS script is loaded
+  // Ensure GIS script is loaded reliably without hanging
   if (typeof (window as any).google?.accounts?.oauth2 === 'undefined') {
     await new Promise<void>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        clearInterval(pollId);
+        reject(new Error('Waktu memuat layanan Google Sign-In habis. Periksa koneksi internet Anda.'));
+      }, 10000);
+
+      const pollId = setInterval(() => {
+        if (typeof (window as any).google?.accounts?.oauth2 !== 'undefined') {
+          clearInterval(pollId);
+          clearTimeout(timeoutId);
+          resolve();
+        }
+      }, 100);
+
       const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
       if (existing) {
-        existing.addEventListener('load', () => resolve());
-        existing.addEventListener('error', () => reject(new Error('Gagal memuat script Google Identity Services')));
+        existing.addEventListener('load', () => {
+          if (typeof (window as any).google?.accounts?.oauth2 !== 'undefined') {
+            clearInterval(pollId);
+            clearTimeout(timeoutId);
+            resolve();
+          }
+        });
+        existing.addEventListener('error', () => {
+          clearInterval(pollId);
+          clearTimeout(timeoutId);
+          reject(new Error('Gagal memuat script Google Identity Services'));
+        });
       } else {
         const script = document.createElement('script');
         script.src = 'https://accounts.google.com/gsi/client';
         script.async = true;
         script.defer = true;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error('Gagal memuat script Google Identity Services'));
+        script.onload = () => {
+          clearInterval(pollId);
+          clearTimeout(timeoutId);
+          resolve();
+        };
+        script.onerror = () => {
+          clearInterval(pollId);
+          clearTimeout(timeoutId);
+          reject(new Error('Gagal memuat script Google Identity Services'));
+        };
         document.head.appendChild(script);
       }
     });
@@ -311,33 +342,60 @@ export const signInWithGIS = async (
   const activeScopes = scopeMode === 'drive' ? DRIVE_SCOPES : LOGIN_SCOPES;
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finishReject = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const finishResolve = (val: { profile: GoogleUserProfile; accessToken: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+
     try {
       const google = (window as any).google;
       const client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: activeScopes.join(' '),
         prompt: silent ? '' : 'select_account',
+        error_callback: (err: any) => {
+          const errType = err?.type || '';
+          if (errType === 'popup_closed') {
+            const e: any = new Error('Proses login Google dibatalkan.');
+            e.code = 'auth/popup-closed-by-user';
+            finishReject(e);
+          } else if (errType === 'popup_failed_to_open') {
+            const e: any = new Error('Jendela pop-up Google terblokir browser. Harap izinkan pop-up untuk situs ini.');
+            e.code = 'auth/popup-blocked';
+            finishReject(e);
+          } else {
+            finishReject(new Error(err?.message || 'Gagal membuka jendela login Google.'));
+          }
+        },
         callback: async (response: any) => {
           if (response.error) {
             if (response.error === 'immediate_failed') {
-              reject(new Error('Sesi Google memerlukan otorisasi manual. Silakan klik tombol Masuk dengan Akun Google.'));
+              finishReject(new Error('Sesi Google memerlukan otorisasi manual. Silakan klik tombol Masuk dengan Akun Google.'));
             } else if (response.error === 'access_denied') {
-              reject(new Error('Izin login Google ditolak oleh pengguna.'));
+              const e: any = new Error('Izin login Google ditolak oleh pengguna.');
+              e.code = 'auth/popup-closed-by-user';
+              finishReject(e);
             } else {
-              reject(new Error(response.error_description || response.error));
+              finishReject(new Error(response.error_description || response.error));
             }
             return;
           }
 
           if (!response.access_token) {
-            reject(new Error('Tidak ada access token yang diterima dari Google.'));
+            finishReject(new Error('Tidak ada access token yang diterima dari Google.'));
             return;
           }
 
           const accessToken = response.access_token;
           const expiresIn = response.expires_in ? parseInt(response.expires_in, 10) : 3500;
 
-          // Fetch basic user profile from Google UserInfo endpoint
           let profile: GoogleUserProfile = {
             email: emailHint || '',
             displayName: '',
@@ -358,7 +416,6 @@ export const signInWithGIS = async (
               };
             }
           } catch {
-            // Secondary userinfo fallback
             try {
               const v2Res = await fetch('https://www.googleapis.com/userinfo/v2/me', {
                 headers: { Authorization: `Bearer ${accessToken}` },
@@ -378,11 +435,11 @@ export const signInWithGIS = async (
           if (profile.email && scopeMode === 'drive') {
             saveGoogleAuth(accessToken, profile, expiresIn);
           }
-          resolve({ profile, accessToken });
+          finishResolve({ profile, accessToken });
         },
       });
 
-      const tokenRequestOptions: any = { 
+      const tokenRequestOptions: any = {
         prompt: silent ? '' : 'select_account',
       };
       if (emailHint && emailHint.trim()) {
@@ -390,8 +447,8 @@ export const signInWithGIS = async (
       }
 
       client.requestAccessToken(tokenRequestOptions);
-    } catch (err) {
-      reject(err);
+    } catch (err: any) {
+      finishReject(err instanceof Error ? err : new Error(String(err)));
     }
   });
 };
@@ -466,11 +523,43 @@ export const googleSignIn = async (
   }
 
   // 'auto' mode:
-  // For basic user login, GIS with ['openid', 'email', 'profile'] avoids both unauthorized-domain issues on custom domains AND sensitive-scope warnings.
-  // Fallback to Firebase Auth if GIS fails.
+  // For 'login' mode, prefer Firebase Auth first (uses verified firebaseapp.com handler cleanly with zero unverified-app warnings).
+  // Never open a second popup if the user intentionally closed/cancelled or blocked the popup.
+  if (scopeMode === 'login' && auth) {
+    try {
+      return await signInWithFirebase('login', emailHint);
+    } catch (fbErr: any) {
+      const code = fbErr?.code || '';
+      if (
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request' ||
+        code === 'auth/popup-blocked'
+      ) {
+        throw parseAuthError(fbErr);
+      }
+      console.warn('Firebase Auth unavailable on this domain, switching to GIS...', fbErr);
+      try {
+        return await signInWithGIS(false, emailHint, 'login');
+      } catch (gisErr: any) {
+        throw parseAuthError(gisErr);
+      }
+    }
+  }
+
   try {
     return await signInWithGIS(false, emailHint, scopeMode);
   } catch (gisErr: any) {
+    const code = gisErr?.code || '';
+    const msg = String(gisErr?.message || '').toLowerCase();
+    if (
+      code === 'auth/popup-closed-by-user' ||
+      code === 'auth/popup-blocked' ||
+      msg.includes('dibatalkan') ||
+      msg.includes('closed') ||
+      msg.includes('terblokir')
+    ) {
+      throw parseAuthError(gisErr);
+    }
     console.warn('GIS sign in attempt had error, falling back to Firebase...', gisErr);
     try {
       return await signInWithFirebase(scopeMode, emailHint);

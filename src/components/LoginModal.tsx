@@ -1,21 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
-import { 
-  Building2, 
-  ShieldCheck, 
-  UserCheck, 
-  X, 
-  AlertCircle, 
+import {
+  Building2,
+  ShieldCheck,
+  X,
+  AlertCircle,
   ArrowRight,
-  Mail,
   Loader2,
-  CheckCircle2,
-  Sparkles,
-  Info
+  Info,
 } from 'lucide-react';
 import { googleSignIn } from '../services/googleAuth';
 
-export const GoogleIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+export const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
   <svg className={className} viewBox="0 0 24 24">
     <path
       fill="#4285F4"
@@ -53,118 +49,110 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   promptReason,
 }) => {
   const [isGoogleLoading, setIsGoogleLoading] = useState<boolean>(false);
-  const [googleSuccessInfo, setGoogleSuccessInfo] = useState<{
-    email: string;
-    name: string;
-    role: string;
-  } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   useEffect(() => {
     if (isOpen) {
       setIsGoogleLoading(false);
-      setGoogleSuccessInfo(null);
       setErrorMessage('');
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const eligibleUsers = users.filter((u) => u.isActive !== false);
-
   const handleClose = () => {
     setErrorMessage('');
     setIsGoogleLoading(false);
-    setGoogleSuccessInfo(null);
     onClose();
   };
 
-  /**
-   * Helper: Matches authenticated Google email strictly to registered user accounts
-   */
-  const matchRegisteredUser = (email: string, userList: User[]): User | undefined => {
+  const matchRegisteredUser = (
+    email: string,
+    userList: User[]
+  ): { user?: User; isDisabled?: boolean } => {
     const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail) return undefined;
+    if (!cleanEmail) return {};
 
-    // 1. Direct match on user.email
-    const directMatch = userList.find(
-      (u) => u.email && u.email.trim().toLowerCase() === cleanEmail && u.isActive !== false
+    // 1. Direct email match
+    const anyEmailMatch = userList.find(
+      (u) => u.email && u.email.trim().toLowerCase() === cleanEmail
     );
-    if (directMatch) return directMatch;
+    if (anyEmailMatch) {
+      if (anyEmailMatch.isActive === false) return { isDisabled: true };
+      return { user: anyEmailMatch };
+    }
 
     // 2. Designated Superadmin email
     if (cleanEmail === 'operasional.scb@gmail.com') {
       const admin = userList.find((u) => u.role === 'superadmin' && u.isActive !== false);
-      if (admin) return admin;
+      if (admin) return { user: admin };
     }
 
-    // 3. Official SCB domain username match: ONLY if email domain is @scb.sch.id
+    // 3. Official @scb.sch.id username match
     if (cleanEmail.endsWith('@scb.sch.id')) {
       const prefix = cleanEmail.split('@')[0];
       const usernameMatch = userList.find(
-        (u) => u.username && u.username.trim().toLowerCase() === prefix && u.isActive !== false
+        (u) => u.username && u.username.trim().toLowerCase() === prefix
       );
-      if (usernameMatch) return usernameMatch;
+      if (usernameMatch) {
+        if (usernameMatch.isActive === false) return { isDisabled: true };
+        return { user: usernameMatch };
+      }
     }
 
-    return undefined;
+    return {};
   };
 
-  /**
-   * Main Google Login Handler:
-   * Prompts user with Google account chooser and strictly verifies against registered system users.
-   */
-  const handleGoogleLogin = async (hintEmail?: string) => {
+  const handleGoogleLogin = async () => {
     setIsGoogleLoading(true);
     setErrorMessage('');
-    setGoogleSuccessInfo(null);
 
     try {
-      const { profile } = await googleSignIn('auto', hintEmail, 'login');
+      const { profile } = await googleSignIn('auto', undefined, 'login');
       const googleEmail = (profile.email || '').trim().toLowerCase();
 
       if (!googleEmail) {
         setErrorMessage(
-          'Tidak dapat membaca alamat email dari akun Google. Pastikan Anda mengizinkan profil email saat login Google.'
+          'Email akun Google tidak terbaca. Pastikan Anda mengizinkan akses profil email saat login.'
         );
-        setIsGoogleLoading(false);
         return;
       }
 
-      // Check strictly against registered users
-      const matchedUser = matchRegisteredUser(googleEmail, users);
+      const { user: matchedUser, isDisabled } = matchRegisteredUser(googleEmail, users);
 
       if (matchedUser) {
-        setGoogleSuccessInfo({
-          email: googleEmail,
-          name: matchedUser.name,
-          role: matchedUser.role,
-        });
-
-        // Attach profile photo if available
-        if (profile.photoURL) {
-          matchedUser.photoURL = profile.photoURL;
-        }
-
-        setTimeout(() => {
-          onLoginSuccess(matchedUser);
-          handleClose();
-        }, 500);
-      } else {
-        // STRICT ACCESS DENIAL: Unauthorized guest or non-registered email
+        const loggedUser: User = profile.photoURL
+          ? { ...matchedUser, photoURL: profile.photoURL }
+          : matchedUser;
+        onLoginSuccess(loggedUser);
+        handleClose();
+      } else if (isDisabled) {
         setErrorMessage(
-          `Akses Ditolak: Akun Google "${googleEmail}" tidak terdaftar sebagai personil SIM-BERSIH SCB. Sistem hanya mengizinkan akun resmi yang didaftarkan Superadmin.`
+          `Akun "${googleEmail}" berstatus nonaktif. Silakan hubungi Superadmin untuk mengaktifkan kembali akses Anda.`
+        );
+      } else {
+        setErrorMessage(
+          `Akses ditolak: Akun Google "${googleEmail}" belum terdaftar sebagai personil SIM-BERSIH SCB. Hubungi Superadmin untuk mendaftarkan email Anda.`
         );
       }
     } catch (err: any) {
-      console.warn('Google login error:', err);
       const rawMsg = err?.message || String(err || '');
-      if (rawMsg.includes('closed') || rawMsg.includes('dibatalkan') || rawMsg.includes('cancel')) {
-        setErrorMessage('Proses login Google dibatalkan. Silakan coba kembali.');
-      } else if (rawMsg.includes('popup') || rawMsg.includes('terblokir') || rawMsg.includes('blocked')) {
-        setErrorMessage('Jendela pop-up Google terblokir browser. Harap izinkan pop-up di browser Anda.');
+      const code = err?.code || '';
+      if (
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request' ||
+        rawMsg.toLowerCase().includes('dibatalkan') ||
+        rawMsg.toLowerCase().includes('closed')
+      ) {
+        setErrorMessage('Proses login dibatalkan. Silakan klik tombol di bawah untuk mencoba lagi.');
+      } else if (
+        code === 'auth/popup-blocked' ||
+        rawMsg.toLowerCase().includes('terblokir') ||
+        rawMsg.toLowerCase().includes('popup')
+      ) {
+        setErrorMessage('Pop-up Google diblokir oleh browser. Mohon izinkan pop-up lalu coba kembali.');
       } else {
-        setErrorMessage(rawMsg || 'Gagal masuk via akun Google. Pastikan jaringan internet aktif.');
+        setErrorMessage(rawMsg || 'Gagal terhubung ke Google. Pastikan koneksi internet aktif.');
       }
     } finally {
       setIsGoogleLoading(false);
@@ -172,190 +160,83 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden relative">
         {/* Header */}
         <div className="bg-gradient-to-r from-emerald-800 to-teal-800 p-5 text-white relative">
           <button
             onClick={handleClose}
-            className="absolute top-4 right-4 p-1.5 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+            className="absolute top-4 right-4 p-1.5 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors cursor-pointer"
             title="Tutup"
           >
             <X className="w-5 h-5" />
           </button>
 
           <div className="flex items-center space-x-3">
-            <div className="w-11 h-11 rounded-xl bg-white/15 backdrop-blur-xs border border-white/20 flex items-center justify-center text-white shadow-inner">
+            <div className="w-11 h-11 rounded-xl bg-white/15 border border-white/20 flex items-center justify-center text-white shrink-0">
               <Building2 className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-base sm:text-lg leading-tight">SIM-BERSIH SCB</h3>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-emerald-400/20 text-emerald-200 border border-emerald-400/30 rounded-full">
-                  Google SSO
-                </span>
-              </div>
+              <h3 className="font-bold text-base sm:text-lg leading-tight">SIM-BERSIH SCB</h3>
               <p className="text-xs text-emerald-100/90 mt-0.5">
-                Sekolah Cendekia BAZNAS • Masuk Akun Petugas & Pengelola
+                Sekolah Cendekia BAZNAS · Login Petugas &amp; Pengelola
               </p>
             </div>
           </div>
         </div>
 
         {/* Content Body */}
-        <div className="p-5 sm:p-6 space-y-5">
+        <div className="p-5 sm:p-6 space-y-4">
           {promptReason && (
-            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
               <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <p className="font-semibold leading-relaxed">{promptReason}</p>
+              <p className="font-medium leading-relaxed">{promptReason}</p>
             </div>
           )}
 
           {errorMessage && (
-            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2.5 animate-in fade-in">
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
-              <div className="flex-1 text-[11px] leading-relaxed">
-                <p className="font-bold text-rose-800 text-xs mb-0.5">Otentikasi Akun Ditolak</p>
+              <div className="flex-1 leading-relaxed">
+                <p className="font-bold text-rose-900 mb-0.5">Login Tidak Dapat Dilanjutkan</p>
                 <p>{errorMessage}</p>
               </div>
             </div>
           )}
 
-          {googleSuccessInfo ? (
-            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-2 animate-in zoom-in-95">
-              <div className="w-12 h-12 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto">
-                <CheckCircle2 className="w-6 h-6" />
-              </div>
-              <h4 className="font-bold text-slate-800 text-sm">Autentikasi Berhasil!</h4>
-              <p className="text-xs text-slate-600">
-                Masuk sebagai <strong>{googleSuccessInfo.name}</strong> ({googleSuccessInfo.role.toUpperCase()})
-              </p>
-              <p className="text-[11px] text-emerald-700 font-mono">{googleSuccessInfo.email}</p>
-            </div>
-          ) : (
-            <>
-              {/* Official Google Login Hero Button */}
-              <div className="space-y-3">
-                <button
-                  type="button"
-                  onClick={() => handleGoogleLogin()}
-                  disabled={isGoogleLoading}
-                  className="w-full py-3.5 px-4 bg-white hover:bg-slate-50 border-2 border-slate-300 hover:border-emerald-500 rounded-xl font-bold text-slate-800 text-sm shadow-xs transition-all flex items-center justify-center gap-3 group relative cursor-pointer active:scale-[0.99] disabled:opacity-60"
-                >
-                  {isGoogleLoading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 text-emerald-600 animate-spin" />
-                      <span>Menghubungkan ke Google...</span>
-                    </>
-                  ) : (
-                    <>
-                      <GoogleIcon className="w-5 h-5 shrink-0" />
-                      <span className="text-slate-800 group-hover:text-emerald-900 font-semibold">
-                        Masuk dengan Akun Google
-                      </span>
-                      <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-600 group-hover:translate-x-1 transition-all ml-auto" />
-                    </>
-                  )}
-                </button>
+          {/* Google SSO Action */}
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              disabled={isGoogleLoading}
+              className="w-full py-3.5 px-4 bg-white hover:bg-slate-50 border border-slate-300 hover:border-emerald-500 rounded-xl font-semibold text-slate-800 text-sm shadow-2xs transition-all flex items-center justify-center gap-3 group cursor-pointer active:scale-[0.99] disabled:opacity-60"
+            >
+              {isGoogleLoading ? (
+                <>
+                  <Loader2 className="w-5 h-5 text-emerald-600 animate-spin" />
+                  <span>Memverifikasi akun Google...</span>
+                </>
+              ) : (
+                <>
+                  <GoogleIcon className="w-5 h-5 shrink-0" />
+                  <span className="group-hover:text-emerald-900">Lanjutkan dengan Google</span>
+                  <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all ml-auto" />
+                </>
+              )}
+            </button>
 
-                <p className="text-[11px] text-slate-500 text-center leading-relaxed">
-                  Sistem menggunakan <strong>Google Single Sign-On (SSO)</strong>. Pastikan akun Google yang Anda pilih menggunakan email resmi yang telah didaftarkan oleh Superadmin.
-                </p>
-              </div>
+            <p className="text-xs text-slate-500 text-center leading-relaxed">
+              Masuk menggunakan email Google Anda yang sudah didaftarkan oleh pengelola SCB.
+            </p>
+          </div>
 
-              {/* Registered Accounts Directory (Quick Select) */}
-              <div className="pt-2 border-t border-slate-100">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                    <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
-                    Daftar Akun Resmi yang Terdaftar:
-                  </span>
-                  <span className="text-[10px] text-slate-400">
-                    {eligibleUsers.length} Personel
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-500 mb-2">
-                  Klik akun di bawah untuk membuka verifikasi Google SSO dengan email tersebut:
-                </p>
-
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {eligibleUsers.map((user) => {
-                    const isSuper = user.role === 'superadmin';
-                    const isSupervisor = user.role === 'supervisor';
-
-                    return (
-                      <button
-                        key={user.id}
-                        type="button"
-                        onClick={() => handleGoogleLogin(user.email)}
-                        disabled={isGoogleLoading}
-                        className="w-full text-left p-2.5 rounded-xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/50 transition-all flex items-center justify-between gap-2.5 group cursor-pointer shadow-2xs hover:shadow-xs disabled:opacity-60"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div
-                            className={`w-8 h-8 rounded-lg bg-gradient-to-tr ${
-                              user.avatarColor || 'from-emerald-600 to-teal-700'
-                            } text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-2xs`}
-                          >
-                            {user.name.charAt(0)}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <p className="text-xs font-bold text-slate-800 truncate group-hover:text-emerald-900">
-                                {user.name}
-                              </p>
-                              <span
-                                className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase tracking-wider shrink-0 ${
-                                  isSuper
-                                    ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                                    : isSupervisor
-                                    ? 'bg-blue-100 text-blue-800 border border-blue-200'
-                                    : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                }`}
-                              >
-                                {isSuper ? 'Admin' : isSupervisor ? 'SPV' : 'Petugas'}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-slate-500 truncate flex items-center gap-1 mt-0.5">
-                              <Mail className="w-2.5 h-2.5 text-slate-400 shrink-0" />
-                              <span className="font-mono text-[10px]">{user.email}</span>
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-[10px] font-bold group-hover:bg-emerald-600 group-hover:text-white transition-all">
-                          <GoogleIcon className="w-3 h-3" />
-                          <span>Login</span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Security & Support Note */}
-          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-500 space-y-1.5">
-            <div className="flex items-start gap-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              <span className="leading-relaxed">
-                Keamanan terpusat SCB: Login SSO hanya membaca <strong>Email &amp; Profil Dasar</strong> (tanpa akses file Google Drive).
-              </span>
-            </div>
-            <details className="pl-6 group">
-              <summary className="text-[10px] font-semibold text-amber-700 hover:text-amber-800 cursor-pointer list-none flex items-center gap-1">
-                <span>Muncul pesan "Google belum memverifikasi aplikasi ini"? Klik di sini</span>
-              </summary>
-              <div className="mt-1.5 p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[10px] leading-relaxed space-y-1">
-                <p>
-                  1. Di jendela popup Google, klik teks <strong>&ldquo;Lanjutan&rdquo;</strong> di pojok kiri bawah, lalu klik <strong>&ldquo;Buka ... (tidak aman)&rdquo;</strong> untuk melanjutkan login.
-                </p>
-                <p>
-                  2. Agar peringatan ini hilang permanen untuk semua petugas, admin Google Cloud dapat membuka <em>APIs &amp; Services &rarr; OAuth consent screen</em> &rarr; klik <strong>Publish App</strong> (scope dasar email/profil tidak butuh verifikasi berbayar).
-                </p>
-              </div>
-            </details>
+          {/* Security Note */}
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-500 flex items-start gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+            <span className="leading-relaxed">
+              Autentikasi aman melalui Google SSO — hanya membaca email dan profil dasar akun Anda.
+            </span>
           </div>
         </div>
       </div>
