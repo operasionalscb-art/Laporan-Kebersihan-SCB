@@ -10,6 +10,7 @@ import {
   Info,
   ExternalLink,
   RefreshCw,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   googleSignIn,
@@ -18,6 +19,8 @@ import {
   renderGoogleFedCMButton,
   signInWithRedirectFirebase,
   isEmbeddedIframe,
+  getExistingFirebaseProfile,
+  getDiagnosticInfo,
 } from '../services/googleAuth';
 import { fetchUserByEmailFromCloud } from '../services/firestoreSync';
 
@@ -61,12 +64,16 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [isGoogleLoading, setIsGoogleLoading] = useState<boolean>(false);
   const [isRedirectLoading, setIsRedirectLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [errorCode, setErrorCode] = useState<string>('');
   const [isPopupBlocked, setIsPopupBlocked] = useState<boolean>(false);
+  const [isDomainError, setIsDomainError] = useState<boolean>(false);
   const [fedcmReady, setFedcmReady] = useState<boolean>(false);
+  const [activeGoogleSession, setActiveGoogleSession] = useState<GoogleUserProfile | null>(null);
 
   const fedcmContainerRef = useRef<HTMLDivElement | null>(null);
   const inIframe = isEmbeddedIframe();
   const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
+  const diag = getDiagnosticInfo();
 
   const matchRegisteredUser = useCallback(
     (email: string, userList: User[]): { user?: User; isDisabled?: boolean } => {
@@ -107,9 +114,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
   const handleClose = useCallback(() => {
     setErrorMessage('');
+    setErrorCode('');
     setIsGoogleLoading(false);
     setIsRedirectLoading(false);
     setIsPopupBlocked(false);
+    setIsDomainError(false);
     onClose();
   }, [onClose]);
 
@@ -161,27 +170,37 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     [users, matchRegisteredUser, onLoginSuccess, handleClose]
   );
 
+  // Keep ref to latest completeProfileLogin so useEffect ONLY runs when isOpen flips
+  const completeProfileLoginRef = useRef(completeProfileLogin);
+  useEffect(() => {
+    completeProfileLoginRef.current = completeProfileLogin;
+  }, [completeProfileLogin]);
+
   useEffect(() => {
     if (!isOpen) return;
 
     setIsGoogleLoading(false);
     setIsRedirectLoading(false);
     setErrorMessage('');
+    setErrorCode('');
     setIsPopupBlocked(false);
+    setIsDomainError(false);
     setFedcmReady(false);
+    setActiveGoogleSession(getExistingFirebaseProfile());
 
     let cancelled = false;
     ensureGISScriptLoaded()
       .then(async () => {
         if (cancelled || !fedcmContainerRef.current) return;
-        await renderGoogleFedCMButton(
+        const rendered = await renderGoogleFedCMButton(
           fedcmContainerRef.current,
           async (profile) => {
             if (cancelled) return;
             setIsGoogleLoading(true);
             setErrorMessage('');
+            setErrorCode('');
             try {
-              await completeProfileLogin(profile);
+              await completeProfileLoginRef.current(profile);
             } finally {
               if (!cancelled) setIsGoogleLoading(false);
             }
@@ -191,7 +210,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             setErrorMessage(err?.message || 'Gagal autentikasi via tombol Google.');
           }
         );
-        if (!cancelled) setFedcmReady(true);
+        if (!cancelled) {
+          setFedcmReady(rendered);
+        }
       })
       .catch(() => {
         if (!cancelled) setFedcmReady(false);
@@ -200,40 +221,88 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, completeProfileLogin]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const handleAuthException = (err: any) => {
+    const rawMsg = err?.message || String(err || '');
+    const code = err?.code || '';
+    setErrorCode(code);
+
+    if (code === 'auth/unauthorized-domain' || err?.isDomainError) {
+      setIsDomainError(true);
+      setIsPopupBlocked(false);
+      setErrorMessage(
+        `Domain "${diag.currentOrigin || diag.currentHostname}" belum terdaftar di Authorized Domains Firebase Console.`
+      );
+      return;
+    }
+
+    if (
+      code === 'auth/popup-closed-by-user' ||
+      code === 'auth/cancelled-popup-request' ||
+      rawMsg.toLowerCase().includes('dibatalkan')
+    ) {
+      setIsPopupBlocked(false);
+      setErrorMessage('Proses login dibatalkan. Silakan klik tombol di bawah untuk mencoba lagi.');
+      return;
+    }
+
+    if (
+      code === 'auth/popup-blocked' ||
+      rawMsg.toLowerCase().includes('terblokir') ||
+      rawMsg.toLowerCase().includes('diblokir')
+    ) {
+      setIsPopupBlocked(true);
+      setErrorMessage(
+        'Pop-up Google diblokir oleh browser Anda. Gunakan salah satu opsi masuk tanpa pop-up di bawah ini atau izinkan pop-up pada address bar browser.'
+      );
+      return;
+    }
+
+    setErrorMessage(rawMsg || 'Gagal terhubung ke Google. Pastikan koneksi internet aktif.');
+  };
 
   const handleGoogleLogin = async () => {
     setIsGoogleLoading(true);
     setErrorMessage('');
+    setErrorCode('');
     setIsPopupBlocked(false);
+    setIsDomainError(false);
 
     try {
       const { profile } = await googleSignIn('auto', undefined, 'login');
       await completeProfileLogin(profile);
     } catch (err: any) {
-      const rawMsg = err?.message || String(err || '');
-      const code = err?.code || '';
-      if (
-        code === 'auth/popup-closed-by-user' ||
-        code === 'auth/cancelled-popup-request' ||
-        rawMsg.toLowerCase().includes('dibatalkan') ||
-        rawMsg.toLowerCase().includes('closed')
-      ) {
-        setErrorMessage('Proses login dibatalkan. Silakan klik tombol di bawah untuk mencoba lagi.');
-      } else if (
-        code === 'auth/popup-blocked' ||
-        rawMsg.toLowerCase().includes('terblokir') ||
-        rawMsg.toLowerCase().includes('popup')
-      ) {
-        setIsPopupBlocked(true);
-        setErrorMessage(
-          'Pop-up Google diblokir oleh browser Anda. Gunakan salah satu opsi masuk tanpa pop-up di bawah ini atau izinkan pop-up pada address bar browser.'
-        );
-      } else {
-        setErrorMessage(rawMsg || 'Gagal terhubung ke Google. Pastikan koneksi internet aktif.');
-      }
+      handleAuthException(err);
+    } finally {
+      setIsGoogleLoading(false);
+    }
+  };
+
+  const handleDirectGISLogin = async () => {
+    setIsGoogleLoading(true);
+    setErrorMessage('');
+    setErrorCode('');
+    setIsPopupBlocked(false);
+
+    try {
+      const { profile } = await googleSignIn('gis', undefined, 'login');
+      await completeProfileLogin(profile);
+    } catch (err: any) {
+      handleAuthException(err);
+    } finally {
+      setIsGoogleLoading(false);
+    }
+  };
+
+  const handleContinueExistingSession = async () => {
+    if (!activeGoogleSession) return;
+    setIsGoogleLoading(true);
+    setErrorMessage('');
+    try {
+      await completeProfileLogin(activeGoogleSession);
     } finally {
       setIsGoogleLoading(false);
     }
@@ -242,11 +311,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const handleRedirectLogin = async () => {
     setIsRedirectLoading(true);
     setErrorMessage('');
+    setErrorCode('');
     try {
       await signInWithRedirectFirebase('login');
     } catch (err: any) {
       setIsRedirectLoading(false);
-      setErrorMessage(err?.message || 'Gagal mengalihkan ke halaman login Google.');
+      handleAuthException(err);
     }
   };
 
@@ -285,17 +355,68 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </div>
           )}
 
+          {/* Active Firebase session shortcut (no popup required) */}
+          {activeGoogleSession?.email && (
+            <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-bold text-emerald-900">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Sesi Google Aktif Terdeteksi</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleContinueExistingSession}
+                disabled={isGoogleLoading}
+                className="w-full py-2.5 px-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer disabled:opacity-60"
+              >
+                <span className="truncate">Masuk sebagai {activeGoogleSession.email}</span>
+                <ArrowRight className="w-4 h-4 shrink-0" />
+              </button>
+            </div>
+          )}
+
           {errorMessage && (
             <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs space-y-2.5">
               <div className="flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
                 <div className="flex-1 leading-relaxed">
                   <p className="font-bold text-rose-900 mb-0.5">
-                    {isPopupBlocked ? 'Pop-up Login Diblokir Browser' : 'Login Tidak Dapat Dilanjutkan'}
+                    {isPopupBlocked
+                      ? 'Pop-up Login Diblokir Browser'
+                      : isDomainError
+                      ? 'Domain Belum Terdaftar di Firebase'
+                      : 'Login Tidak Dapat Dilanjutkan'}
                   </p>
                   <p>{errorMessage}</p>
+                  {errorCode && (
+                    <p className="text-[10px] text-rose-600/80 font-mono mt-1">
+                      Kode: {errorCode}
+                    </p>
+                  )}
                 </div>
               </div>
+
+              {isDomainError && (
+                <div className="pt-2 border-t border-rose-200/80 flex flex-col sm:flex-row gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDirectGISLogin}
+                    disabled={isGoogleLoading}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-lg font-semibold text-[11px] transition-colors cursor-pointer"
+                  >
+                    <GoogleIcon className="w-3.5 h-3.5 bg-white rounded-full p-0.5" />
+                    <span>Masuk via Google Direct</span>
+                  </button>
+                  <a
+                    href={diag.firebaseConsoleSettingsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-rose-300 hover:bg-rose-100/60 text-rose-900 rounded-lg font-semibold text-[11px] transition-colors"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    <span>Buka Settings Firebase</span>
+                  </a>
+                </div>
+              )}
 
               {isPopupBlocked && (
                 <div className="pt-2 border-t border-rose-200/80 space-y-2">
@@ -303,11 +424,19 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                     Solusi cepat untuk Admin &amp; Pengelola:
                   </p>
                   <ul className="text-[11px] text-rose-800 space-y-1 list-disc pl-4 leading-relaxed">
+                    {inIframe ? (
+                      <li>
+                        Anda sedang membuka preview di dalam bingkai (iframe). Klik{' '}
+                        <strong>Buka di Tab Baru</strong> di bawah agar login Google tidak terblokir.
+                      </li>
+                    ) : (
+                      <li>
+                        Gunakan tombol <strong>Masuk via Pengalihan Halaman</strong> di bawah (tanpa pop-up sama sekali).
+                      </li>
+                    )}
                     <li>
-                      Klik tombol resmi <strong>Sign in with Google</strong> di bawah (mendukung login langsung tanpa jendela pop-up), atau
-                    </li>
-                    <li>
-                      Klik ikon <strong>Pop-up Diblokir</strong> di ujung kanan address bar browser lalu pilih <strong>Selalu izinkan pop-up</strong>.
+                      Atau klik ikon <strong>Pop-up Diblokir</strong> di ujung kanan address bar browser lalu pilih{' '}
+                      <strong>Selalu izinkan pop-up</strong>.
                     </li>
                   </ul>
 
@@ -375,33 +504,47 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               )}
             </button>
 
-            {/* Official FedCM / Embedded Google Button (works even when window.open popups are blocked) */}
-            <div className={fedcmReady ? 'space-y-2' : 'hidden'}>
-              <div className="relative flex items-center py-0.5">
-                <div className="grow border-t border-slate-200" />
-                <span className="shrink mx-3 text-[10px] font-medium uppercase tracking-wider text-slate-400">
-                  atau tanpa pop-up
-                </span>
-                <div className="grow border-t border-slate-200" />
-              </div>
+            {/* Official FedCM / Embedded Google Button container (rendered visibly off-layout only when ready) */}
+            <div className={fedcmReady ? 'space-y-2' : 'h-0 overflow-hidden opacity-0 pointer-events-none'}>
+              {fedcmReady && (
+                <div className="relative flex items-center py-0.5">
+                  <div className="grow border-t border-slate-200" />
+                  <span className="shrink mx-3 text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                    atau tanpa pop-up
+                  </span>
+                  <div className="grow border-t border-slate-200" />
+                </div>
+              )}
               <div
                 ref={fedcmContainerRef}
                 className="flex justify-center min-h-[42px] overflow-hidden"
               />
             </div>
 
-            {!inIframe && !isPopupBlocked && (
-              <div className="text-center">
-                <button
-                  type="button"
-                  onClick={handleRedirectLogin}
-                  disabled={isGoogleLoading || isRedirectLoading}
-                  className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline underline-offset-2 cursor-pointer disabled:opacity-50"
-                >
-                  {isRedirectLoading
-                    ? 'Mengalihkan ke Google...'
-                    : 'Pop-up terblokir? Masuk via pengalihan halaman'}
-                </button>
+            {!isPopupBlocked && (
+              <div className="flex flex-col items-center gap-1.5 pt-0.5">
+                {inIframe ? (
+                  <a
+                    href={currentUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline underline-offset-2"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    <span>Pop-up terblokir di preview? Buka di tab baru untuk login</span>
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleRedirectLogin}
+                    disabled={isGoogleLoading || isRedirectLoading}
+                    className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline underline-offset-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {isRedirectLoading
+                      ? 'Mengalihkan ke Google...'
+                      : 'Pop-up terblokir? Masuk via pengalihan halaman'}
+                  </button>
+                )}
               </div>
             )}
 

@@ -188,7 +188,8 @@ export const parseAuthError = (error: any): { title: string; message: string; co
   if (
     code === 'auth/popup-closed-by-user' ||
     code === 'auth/cancelled-popup-request' ||
-    rawMsg.toLowerCase().includes('closed') ||
+    rawMsg.toLowerCase().includes('closed-by-user') ||
+    rawMsg.toLowerCase().includes('cancelled-popup') ||
     rawMsg.toLowerCase().includes('dibatalkan')
   ) {
     return {
@@ -199,11 +200,18 @@ export const parseAuthError = (error: any): { title: string; message: string; co
     };
   }
 
-  if (code === 'auth/popup-blocked' || rawMsg.toLowerCase().includes('popup')) {
+  if (
+    code === 'auth/popup-blocked' ||
+    rawMsg.toLowerCase().includes('popup-blocked') ||
+    rawMsg.toLowerCase().includes('popup_failed_to_open') ||
+    rawMsg.toLowerCase().includes('unable to open popup') ||
+    rawMsg.toLowerCase().includes('diblokir') ||
+    rawMsg.toLowerCase().includes('terblokir')
+  ) {
     return {
       code: 'auth/popup-blocked',
       title: 'Jendela Pop-up Terblokir',
-      message: 'Browser Anda memblokir jendela login Google. Gunakan tombol Google di bawah ini atau izinkan pop-up di bilah URL browser.',
+      message: 'Browser Anda memblokir jendela login Google. Gunakan alternatif masuk di bawah atau izinkan pop-up pada bilah URL browser.',
       isDomainError: false,
     };
   }
@@ -352,25 +360,47 @@ export const signInWithRedirectFirebase = async (
 };
 
 /**
- * Resolves any pending Firebase Auth redirect login result on page load
+ * Returns existing signed-in Firebase Auth profile if already authenticated in this browser
  */
-export const consumeFirebaseRedirectResult = async (): Promise<GoogleUserProfile | null> => {
-  if (!auth) return null;
-  try {
-    const result = await getRedirectResult(auth);
-    if (!result?.user?.email) return null;
-    const profile: GoogleUserProfile = {
-      email: result.user.email,
-      displayName: result.user.displayName || result.user.email,
-      photoURL: result.user.photoURL || undefined,
-      authMethod: 'firebase',
-    };
-    currentProfile = profile;
-    return profile;
-  } catch (err) {
-    console.warn('Redirect sign-in check note:', err);
-    return null;
-  }
+export const getExistingFirebaseProfile = (): GoogleUserProfile | null => {
+  const user = auth?.currentUser;
+  if (!user?.email) return null;
+  return {
+    email: user.email,
+    displayName: user.displayName || user.email,
+    photoURL: user.photoURL || undefined,
+    authMethod: 'firebase',
+  };
+};
+
+let redirectResultPromise: Promise<GoogleUserProfile | null> | null = null;
+
+/**
+ * Resolves any pending Firebase Auth redirect login result on page load (StrictMode safe)
+ */
+export const consumeFirebaseRedirectResult = (): Promise<GoogleUserProfile | null> => {
+  if (!auth) return Promise.resolve(null);
+  if (redirectResultPromise) return redirectResultPromise;
+
+  redirectResultPromise = (async () => {
+    try {
+      const result = await getRedirectResult(auth);
+      if (!result?.user?.email) return null;
+      const profile: GoogleUserProfile = {
+        email: result.user.email,
+        displayName: result.user.displayName || result.user.email,
+        photoURL: result.user.photoURL || undefined,
+        authMethod: 'firebase',
+      };
+      currentProfile = profile;
+      return profile;
+    } catch (err) {
+      console.warn('Redirect sign-in check note:', err);
+      return null;
+    }
+  })();
+
+  return redirectResultPromise;
 };
 
 /**
@@ -381,13 +411,13 @@ export const renderGoogleFedCMButton = async (
   container: HTMLElement,
   onSuccess: (profile: GoogleUserProfile) => void,
   onError: (err: Error) => void
-): Promise<void> => {
+): Promise<boolean> => {
   const clientId = getActiveOAuthClientId();
-  if (!clientId) return;
+  if (!clientId) return false;
 
   await ensureGISScriptLoaded();
   const googleId = (window as any).google?.accounts?.id;
-  if (!googleId) return;
+  if (!googleId) return false;
 
   googleId.initialize({
     client_id: clientId,
@@ -426,6 +456,10 @@ export const renderGoogleFedCMButton = async (
     width: targetWidth,
     locale: 'id',
   });
+
+  // Verify Google rendered an iframe inside the container
+  await new Promise((r) => setTimeout(r, 250));
+  return Boolean(container.querySelector('iframe, div[role="button"]'));
 };
 
 /**
@@ -631,26 +665,13 @@ export const googleSignIn = async (
   }
 
   // 'auto' mode:
-  // For 'login' mode, prefer Firebase Auth first (uses verified firebaseapp.com handler cleanly with zero unverified-app warnings).
-  // Never open a second popup if the user intentionally closed/cancelled or blocked the popup.
+  // For 'login' mode, use Firebase Auth directly on click so browser user activation is preserved
+  // and exact error codes (e.g. popup-blocked, unauthorized-domain) are never masked by a delayed second popup.
   if (scopeMode === 'login' && auth) {
     try {
       return await signInWithFirebase('login', emailHint);
     } catch (fbErr: any) {
-      const code = fbErr?.code || '';
-      if (
-        code === 'auth/popup-closed-by-user' ||
-        code === 'auth/cancelled-popup-request' ||
-        code === 'auth/popup-blocked'
-      ) {
-        throw parseAuthError(fbErr);
-      }
-      console.warn('Firebase Auth unavailable on this domain, switching to GIS...', fbErr);
-      try {
-        return await signInWithGIS(false, emailHint, 'login');
-      } catch (gisErr: any) {
-        throw parseAuthError(gisErr);
-      }
+      throw parseAuthError(fbErr);
     }
   }
 
