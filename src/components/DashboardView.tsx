@@ -870,12 +870,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       filteredForRooms = reports.filter((r) => r.tanggal.startsWith(selectedMonth));
     }
 
-    // 2. All distinct areas
-    const allKnownAreas = Array.from(new Set([...INITIAL_AREAS, ...reports.map((r) => r.area)]));
+    // 2. Official active rooms from Master Ruangan (fallback to INITIAL_AREAS), excluding test/dummy entries
+    const isTestAreaName = (name?: string) =>
+      /^(test|tes|testing|coba|dummy|sample|other)$/i.test((name || '').trim());
+
+    const activeMasterAreas =
+      masterRooms && masterRooms.length > 0
+        ? masterRooms
+            .filter((r) => r.isActive !== false && r.name && !isTestAreaName(r.name))
+            .map((r) => r.name.trim())
+        : [];
+
+    const allKnownAreas = Array.from(
+      new Set(activeMasterAreas.length > 0 ? activeMasterAreas : INITIAL_AREAS)
+    );
 
     const roomStats = allKnownAreas.map((areaName) => {
-      const areaReps = filteredForRooms.filter((r) => r.area === areaName);
-      const allTimeAreaReps = reports.filter((r) => r.area === areaName);
+      const normalizedTarget = areaName.trim().toUpperCase();
+      const areaReps = filteredForRooms.filter(
+        (r) => (r.area || '').trim().toUpperCase() === normalizedTarget
+      );
+      const allTimeAreaReps = reports.filter(
+        (r) => (r.area || '').trim().toUpperCase() === normalizedTarget
+      );
       
       const total = areaReps.length;
       const cleanCount = areaReps.filter((r) => r.kondisiAkhir === 'Bersih').length;
@@ -950,7 +967,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         (r) => r.kondisiAkhir !== 'Bersih' && !isReportFollowedUp(r, reports)
       );
 
-      const isCleanedToday = reports.some((r) => r.area === areaName && r.tanggal === todayStr);
+      const isCleanedToday = reports.some(
+        (r) => (r.area || '').trim().toUpperCase() === normalizedTarget && r.tanggal === todayStr
+      );
 
       return {
         areaName,
@@ -1011,7 +1030,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       overallCleanRate,
       totalReportsFiltered: totalAll,
     };
-  }, [reports, roomTimeRange, selectedMonth, todayStr, roomSortBy]);
+  }, [reports, masterRooms, roomTimeRange, selectedMonth, todayStr, roomSortBy]);
 
   const selectedRoomStats = useMemo(() => {
     return (
