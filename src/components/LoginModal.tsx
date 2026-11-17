@@ -10,6 +10,7 @@ import {
   Info,
 } from 'lucide-react';
 import { googleSignIn } from '../services/googleAuth';
+import { fetchUserByEmailFromCloud } from '../services/firestoreSync';
 
 export const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
   <svg className={className} viewBox="0 0 24 24">
@@ -118,7 +119,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         return;
       }
 
-      const { user: matchedUser, isDisabled } = matchRegisteredUser(googleEmail, users);
+      let { user: matchedUser, isDisabled } = matchRegisteredUser(googleEmail, users);
+
+      // Fallback: check Firestore for freshly provisioned account matching this verified email
+      if (!matchedUser && !isDisabled) {
+        try {
+          const cloudUser = await fetchUserByEmailFromCloud(googleEmail);
+          if (cloudUser) {
+            if (cloudUser.isActive === false) {
+              isDisabled = true;
+            } else {
+              matchedUser = cloudUser;
+            }
+          }
+        } catch {
+          // Structured error already logged by handleFirestoreError if lookup failed
+        }
+      }
 
       if (matchedUser) {
         const loggedUser: User = profile.photoURL

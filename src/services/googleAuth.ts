@@ -1,13 +1,13 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  onAuthStateChanged, 
-  signOut as firebaseSignOut, 
-  User as FirebaseUser 
+import {
+  signInWithPopup,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signOut as firebaseSignOut,
+  User as FirebaseUser,
 } from 'firebase/auth';
-import rawConfig from '../../firebase-applet-config.json';
+import { auth as firebaseAuth, firebaseConfig } from './firebase';
+
+export { firebaseConfig };
 
 export interface GoogleUserProfile {
   email: string;
@@ -39,16 +39,6 @@ const STORAGE_PROFILE_KEY = 'scb_gdrive_profile';
 const STORAGE_EXPIRY_KEY = 'scb_gdrive_token_expiry';
 export const STORAGE_KEEP_CONNECTED_KEY = 'scb_gdrive_keep_connected';
 
-export const firebaseConfig = {
-  apiKey: (rawConfig as any)?.apiKey || '',
-  authDomain: (rawConfig as any)?.authDomain || '',
-  projectId: (rawConfig as any)?.projectId || 'gen-lang-client-0457083120',
-  storageBucket: (rawConfig as any)?.storageBucket || '',
-  messagingSenderId: (rawConfig as any)?.messagingSenderId || '',
-  appId: (rawConfig as any)?.appId || '',
-  oAuthClientId: (rawConfig as any)?.oAuthClientId || '794504611984-mdpandmt1r8vl85anr79ct8m66ml5941.apps.googleusercontent.com',
-};
-
 export function getActiveOAuthClientId(): string {
   try {
     const custom = localStorage.getItem('scb_custom_oauth_client_id');
@@ -67,16 +57,7 @@ export function setActiveOAuthClientId(clientId: string): void {
   } catch {}
 }
 
-// Initialize Firebase App safely
-let authInstance: ReturnType<typeof getAuth> | null = null;
-try {
-  const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-  authInstance = getAuth(app);
-} catch (e) {
-  console.error('Failed to initialize Firebase Auth:', e);
-}
-
-export const auth = authInstance;
+export const auth = firebaseAuth;
 
 const loginProvider = new GoogleAuthProvider();
 loginProvider.setCustomParameters({ prompt: 'select_account' });

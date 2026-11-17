@@ -36,9 +36,12 @@ import {
   getRoomSchedules,
   saveRoomSchedules
 } from './utils/formStorage';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from './services/firebase';
 import {
   subscribeReports,
   saveReportToCloud,
+  updateReportInCloud,
   deleteReportFromCloud,
   batchRestoreReportsToCloud,
   subscribeUsers,
@@ -176,9 +179,18 @@ export default function App() {
       setReports(cloudReports);
     });
 
-    // 2. Subscribe to Live Firestore Users
-    const unsubscribeUsers = subscribeUsers((cloudUsers) => {
-      setUsers(cloudUsers);
+    // 2. Subscribe to Live Firestore Users ONLY when Firebase user is authenticated (PII isolation)
+    let unsubscribeUsers: (() => void) | null = null;
+    const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
+      if (unsubscribeUsers) {
+        unsubscribeUsers();
+        unsubscribeUsers = null;
+      }
+      if (fbUser) {
+        unsubscribeUsers = subscribeUsers((cloudUsers) => {
+          setUsers(cloudUsers);
+        });
+      }
     });
 
     // 3. Subscribe to Live Form Configuration (Rooms, Checklists, Form Settings)
@@ -198,7 +210,10 @@ export default function App() {
 
     return () => {
       unsubscribeReports();
-      unsubscribeUsers();
+      unsubscribeAuth();
+      if (unsubscribeUsers) {
+        unsubscribeUsers();
+      }
       unsubscribeFormConfig();
       unsubscribeSchedules();
       if (typeof unsubscribeGoogle === 'function') {
@@ -209,8 +224,12 @@ export default function App() {
 
   // Handlers for Reports
   const handleAddNewReport = async (newReportData: Omit<CleaningReport, 'id' | 'timestamp'>) => {
+    const reportWithAuthor = auth.currentUser?.uid
+      ? { ...newReportData, authorUid: auth.currentUser.uid }
+      : newReportData;
+
     // 1. Save locally first for instant feedback
-    const saved = addReport(newReportData);
+    const saved = addReport(reportWithAuthor);
     setReports(getReports());
     showToast(`Laporan ${saved.area} berhasil disimpan!`);
 
@@ -218,24 +237,21 @@ export default function App() {
     try {
       await saveReportToCloud(saved);
     } catch (e) {
-      console.warn('Saved locally, background cloud sync retry in progress:', e);
+      console.warn('Saved locally, cloud sync failed:', e);
     }
 
     // 3. Automatic Google Drive Photo Upload & Backup
     const token = await getGoogleAccessToken();
     if (token) {
       (async () => {
-        let currentReport = saved;
-
         // Auto-upload documentation photos to Google Drive folder
         if (isAutoPhotosUploadEnabled() && saved.fotoBukti && saved.fotoBukti.length > 0) {
           try {
             const { updatedPhotos, uploadedCount } = await uploadReportPhotosToDrive(saved);
             if (uploadedCount > 0) {
-              currentReport = { ...saved, fotoBukti: updatedPhotos };
               updateReport(saved.id, { fotoBukti: updatedPhotos });
               setReports(getReports());
-              await saveReportToCloud(currentReport);
+              await updateReportInCloud(saved.id, { fotoBukti: updatedPhotos });
               showToast(`📸 ${uploadedCount} foto bukti otomatis diunggah ke Google Drive!`, 'success');
             }
           } catch (photoErr) {
@@ -267,9 +283,9 @@ export default function App() {
 
     if (updated) {
       try {
-        await saveReportToCloud(updated);
+        await updateReportInCloud(id, updates);
       } catch (e) {
-        console.warn('Updated locally, background cloud sync error:', e);
+        console.warn('Updated locally, cloud sync failed:', e);
       }
 
       if (isAutoBackupEnabled()) {
@@ -586,12 +602,16 @@ export default function App() {
                 onRestoreReports={(restoredReports) => {
                   saveReports(restoredReports);
                   setReports(restoredReports);
-                  batchRestoreReportsToCloud(restoredReports);
+                  batchRestoreReportsToCloud(restoredReports).catch(() => {
+                    showToast('Data dipulihkan lokal, sinkronisasi cloud gagal.', 'error');
+                  });
                 }}
                 onResetData={() => {
                   saveReports([]);
                   setReports([]);
-                  batchRestoreReportsToCloud([]);
+                  batchRestoreReportsToCloud([]).catch(() => {
+                    showToast('Data lokal direset, sinkronisasi cloud gagal.', 'error');
+                  });
                 }}
               />
             </div>

@@ -45,6 +45,7 @@ export interface CleaningReport {
   catatanSupervisor?: string;
   diverifikasiOleh?: string;
   diverifikasiPada?: string;
+  authorUid?: string;
 }
 
 export interface AreaStatusSummary {

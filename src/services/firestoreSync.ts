@@ -1,22 +1,27 @@
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  deleteDoc, 
-  onSnapshot, 
-  getDocs, 
+import {
+  collection,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  getDocs,
   query,
-  writeBatch
+  where,
+  writeBatch,
+  serverTimestamp,
+  FieldValue,
+  Timestamp,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { auth, db } from './firebase';
 import { CleaningReport, User, MasterRoom, MasterChecklist, FormSettings, RoomSchedule } from '../types';
-import { 
-  INITIAL_REPORTS, 
-  INITIAL_USERS, 
-  saveReports as saveReportsToStorage, 
+import {
+  INITIAL_USERS,
+  saveReports as saveReportsToStorage,
   getReports as getReportsFromStorage,
   saveUsers as saveUsersToStorage,
-  getUsers as getUsersFromStorage
+  getUsers as getUsersFromStorage,
 } from '../utils/storage';
 import {
   getMasterRooms,
@@ -30,23 +35,92 @@ import {
   DEFAULT_MASTER_ROOMS,
   DEFAULT_MASTER_CHECKLISTS,
   DEFAULT_FORM_SETTINGS,
-  DEFAULT_ROOM_SCHEDULES
+  DEFAULT_ROOM_SCHEDULES,
 } from '../utils/formStorage';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null
+): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 const REPORTS_COLLECTION = 'reports';
 const USERS_COLLECTION = 'users';
 const FORM_CONFIGS_COLLECTION = 'form_configs';
 const ROOM_SCHEDULES_COLLECTION = 'room_schedules';
+const STAFF_ROLES_COLLECTION = 'staff_roles';
+const ADMINS_COLLECTION = 'admins';
 
-let isReportsSeeded = false;
+const SUPERADMIN_EMAIL = 'operasional.scb@gmail.com';
+const FORM_CONFIG_DOC_ID = 'config_form_configs';
+const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
+
 let isUsersSeeded = false;
+
+export function toEmailKey(email: string): string {
+  return email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+}
+
+export function isCurrentAuthSuperAdmin(): boolean {
+  const email = auth.currentUser?.email?.trim().toLowerCase();
+  return Boolean(email && email === SUPERADMIN_EMAIL && auth.currentUser?.emailVerified);
+}
 
 /**
  * Strips any undefined fields before writing to Firestore,
- * preventing 'Unsupported field value: undefined' errors.
+ * preserving FieldValue sentinels (e.g. serverTimestamp) and Timestamps.
  */
 export function sanitizeForFirestore<T>(data: T): T {
   if (data === null || data === undefined) {
+    return data;
+  }
+  if (data instanceof FieldValue || data instanceof Timestamp) {
     return data;
   }
   if (Array.isArray(data)) {
@@ -66,7 +140,6 @@ export function sanitizeForFirestore<T>(data: T): T {
 
 /**
  * Subscribes to real-time reports from Firestore.
- * Automatically synchronizes across all devices (mobile, laptop, Vercel).
  */
 export function subscribeReports(
   onReportsChanged: (reports: CleaningReport[]) => void,
@@ -77,43 +150,35 @@ export function subscribeReports(
 
   return onSnapshot(
     q,
-    async (snapshot) => {
-      if (snapshot.empty && !isReportsSeeded) {
-        isReportsSeeded = true;
-        return;
-      }
-
+    (snapshot) => {
       const reportsList: CleaningReport[] = [];
       snapshot.forEach((docSnap) => {
         if (['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(docSnap.id)) {
-          // Delete legacy demo reports from Firestore
-          deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id)).catch(() => {});
+          if (isCurrentAuthSuperAdmin()) {
+            deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id)).catch(() => {});
+          }
         } else {
           reportsList.push(docSnap.data() as CleaningReport);
         }
       });
 
-      // Sort by timestamp descending (newest first)
       reportsList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
-      // Update local storage backup
       saveReportsToStorage(reportsList);
       onReportsChanged(reportsList);
     },
     (error) => {
-      console.warn('Firestore reports subscription error, fallback to local storage:', error);
       const fallback = getReportsFromStorage();
       onReportsChanged(fallback);
       if (onError) onError(error);
+      handleFirestoreError(error, OperationType.LIST, REPORTS_COLLECTION);
     }
   );
 }
 
 /**
- * Add or update report in Firestore and local storage
+ * Create a new cleaning report in Firestore and local storage
  */
 export async function saveReportToCloud(report: CleaningReport): Promise<void> {
-  // Update local storage immediately for snappy UI
   const current = getReportsFromStorage();
   const existingIdx = current.findIndex((r) => r.id === report.id);
   if (existingIdx >= 0) {
@@ -123,13 +188,50 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
   }
   saveReportsToStorage(current);
 
-  // Sync to Firestore
+  const path = `${REPORTS_COLLECTION}/${report.id}`;
   try {
     const docRef = doc(db, REPORTS_COLLECTION, report.id);
-    await setDoc(docRef, sanitizeForFirestore(report), { merge: true });
+    const sanitized = sanitizeForFirestore({
+      ...report,
+      checklist: Array.isArray(report.checklist) ? report.checklist : [],
+      keteranganTambahan: report.keteranganTambahan ?? '',
+      fotoBukti: Array.isArray(report.fotoBukti) ? report.fotoBukti : [],
+      authorUid: report.authorUid || auth.currentUser?.uid || undefined,
+    });
+    await setDoc(docRef, {
+      ...sanitized,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
-    console.error('Failed to sync report to Firestore cloud:', err);
-    throw err;
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+/**
+ * Update specific fields on an existing cleaning report in Firestore and local storage
+ */
+export async function updateReportInCloud(
+  id: string,
+  updates: Partial<CleaningReport>
+): Promise<void> {
+  const current = getReportsFromStorage();
+  const idx = current.findIndex((r) => r.id === id);
+  if (idx >= 0) {
+    current[idx] = { ...current[idx], ...updates };
+    saveReportsToStorage(current);
+  }
+
+  const path = `${REPORTS_COLLECTION}/${id}`;
+  try {
+    const docRef = doc(db, REPORTS_COLLECTION, id);
+    const sanitizedUpdates = sanitizeForFirestore(updates);
+    await updateDoc(docRef, {
+      ...sanitizedUpdates,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -141,23 +243,22 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
   const filtered = current.filter((r) => r.id !== id);
   saveReportsToStorage(filtered);
 
+  const path = `${REPORTS_COLLECTION}/${id}`;
   try {
     const docRef = doc(db, REPORTS_COLLECTION, id);
     await deleteDoc(docRef);
   } catch (err) {
-    console.error('Failed to delete report from Firestore:', err);
-    throw err;
+    handleFirestoreError(err, OperationType.DELETE, path);
   }
 }
 
 /**
- * Batch replace reports in cloud (for restore from JSON backup)
+ * Batch replace reports in cloud (for Superadmin restore from JSON backup)
  */
 export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Promise<void> {
   saveReportsToStorage(reports);
 
   try {
-    // 1. Get existing docs to clean up
     const snapshot = await getDocs(collection(db, REPORTS_COLLECTION));
     const deleteBatch = writeBatch(db);
     snapshot.forEach((d) => {
@@ -165,46 +266,188 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
     });
     await deleteBatch.commit();
 
-    // 2. Add restored docs in batches of 400
     const chunkSize = 400;
     for (let i = 0; i < reports.length; i += chunkSize) {
       const chunk = reports.slice(i, i + chunkSize);
       const batch = writeBatch(db);
       for (const rep of chunk) {
-        batch.set(doc(db, REPORTS_COLLECTION, rep.id), sanitizeForFirestore(rep));
+        const sanitized = sanitizeForFirestore({
+          ...rep,
+          checklist: Array.isArray(rep.checklist) ? rep.checklist : [],
+          keteranganTambahan: rep.keteranganTambahan ?? '',
+          fotoBukti: Array.isArray(rep.fotoBukti) ? rep.fotoBukti : [],
+        });
+        batch.set(doc(db, REPORTS_COLLECTION, rep.id), {
+          ...sanitized,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
       }
       await batch.commit();
     }
   } catch (err) {
-    console.error('Failed to batch restore to cloud:', err);
+    handleFirestoreError(err, OperationType.WRITE, REPORTS_COLLECTION);
   }
 }
 
 /**
- * Subscribes to real-time users list from Firestore.
+ * Syncs authoritative staff role document (only callable by Superadmin)
+ */
+async function syncStaffRoleToCloud(user: User): Promise<void> {
+  if (!user.email) return;
+  const emailId = toEmailKey(user.email);
+  const path = `${STAFF_ROLES_COLLECTION}/${emailId}`;
+  try {
+    await setDoc(doc(db, STAFF_ROLES_COLLECTION, emailId), {
+      email: user.email.trim().toLowerCase(),
+      role: user.role,
+      isActive: user.isActive !== false,
+      userId: user.id,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Ensures the signed-in Superadmin UID is recorded in /admins/{uid}
+ * and migrates legacy config docs from /users/config_* if present.
+ */
+let hasCheckedLegacyMigration = false;
+
+export async function migrateLegacyConfigsIfNeeded(): Promise<void> {
+  if (hasCheckedLegacyMigration || !isCurrentAuthSuperAdmin()) return;
+  hasCheckedLegacyMigration = true;
+
+  try {
+    const newFormRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
+    const newFormSnap = await getDoc(newFormRef);
+    if (!newFormSnap.exists()) {
+      const legacyFormSnap = await getDoc(doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID));
+      if (legacyFormSnap.exists()) {
+        const legacyData = legacyFormSnap.data();
+        await setDoc(
+          newFormRef,
+          sanitizeForFirestore({
+            rooms: Array.isArray(legacyData?.rooms) ? legacyData.rooms : DEFAULT_MASTER_ROOMS,
+            checklists: Array.isArray(legacyData?.checklists)
+              ? legacyData.checklists
+              : DEFAULT_MASTER_CHECKLISTS,
+            settings: legacyData?.settings || DEFAULT_FORM_SETTINGS,
+          })
+        );
+      }
+    }
+
+    const newSchedRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
+    const newSchedSnap = await getDoc(newSchedRef);
+    if (!newSchedSnap.exists()) {
+      const legacySchedSnap = await getDoc(doc(db, USERS_COLLECTION, ROOM_SCHEDULE_DOC_ID));
+      if (legacySchedSnap.exists()) {
+        const legacyData = legacySchedSnap.data();
+        if (Array.isArray(legacyData?.schedules)) {
+          await setDoc(
+            newSchedRef,
+            sanitizeForFirestore({ schedules: legacyData.schedules })
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Legacy config migration check note:', err);
+  }
+}
+
+export async function ensureSuperAdminRecord(): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !isCurrentAuthSuperAdmin()) return;
+  const path = `${ADMINS_COLLECTION}/${currentUser.uid}`;
+  try {
+    await setDoc(
+      doc(db, ADMINS_COLLECTION, currentUser.uid),
+      {
+        uid: currentUser.uid,
+        email: (currentUser.email || SUPERADMIN_EMAIL).toLowerCase(),
+        role: 'superadmin',
+        createdAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await migrateLegacyConfigsIfNeeded();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Fetches a single user's own record from Firestore by email after Firebase sign-in
+ */
+export async function fetchUserByEmailFromCloud(email: string): Promise<User | null> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!auth.currentUser || !cleanEmail) return null;
+
+  const path = `${USERS_COLLECTION}?email=${cleanEmail}`;
+  try {
+    const q = query(collection(db, USERS_COLLECTION), where('email', '==', cleanEmail));
+    const snap = await getDocs(q);
+    if (snap.empty) return null;
+    return snap.docs[0].data() as User;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+  }
+}
+
+/**
+ * Subscribes to users list in Firestore when authenticated.
+ * Superadmin receives full directory & auto-seeds empty DB; non-admins only listen to their own profile.
  */
 export function subscribeUsers(
   onUsersChanged: (users: User[]) => void,
   onError?: (err: Error) => void
 ): () => void {
-  const usersRef = collection(db, USERS_COLLECTION);
-  const q = query(usersRef);
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.email) {
+    return () => {};
+  }
+
+  const isAdmin = isCurrentAuthSuperAdmin();
+  const usersQuery = isAdmin
+    ? query(collection(db, USERS_COLLECTION))
+    : query(collection(db, USERS_COLLECTION), where('email', '==', fbUser.email.trim().toLowerCase()));
 
   return onSnapshot(
-    q,
+    usersQuery,
     async (snapshot) => {
-      if (snapshot.empty && !isUsersSeeded) {
+      if (isAdmin) {
+        await ensureSuperAdminRecord().catch(() => {});
+      }
+
+      if (snapshot.empty && isAdmin && !isUsersSeeded) {
         isUsersSeeded = true;
         const localUsers = getUsersFromStorage();
         const initialToSeed = localUsers && localUsers.length > 0 ? localUsers : INITIAL_USERS;
         try {
           const batch = writeBatch(db);
           for (const u of initialToSeed) {
-            batch.set(doc(db, USERS_COLLECTION, u.id), sanitizeForFirestore(u));
+            const cleanUser = sanitizeForFirestore({
+              ...u,
+              email: (u.email || `${u.username}@scb.sch.id`).trim().toLowerCase(),
+            });
+            batch.set(doc(db, USERS_COLLECTION, u.id), cleanUser);
+            if (cleanUser.email) {
+              batch.set(doc(db, STAFF_ROLES_COLLECTION, toEmailKey(cleanUser.email)), {
+                email: cleanUser.email,
+                role: cleanUser.role,
+                isActive: cleanUser.isActive !== false,
+                userId: cleanUser.id,
+                updatedAt: serverTimestamp(),
+              });
+            }
           }
           await batch.commit();
-        } catch (e) {
-          console.warn('Could not auto-seed users to Firestore:', e);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, USERS_COLLECTION);
         }
         return;
       }
@@ -217,67 +460,88 @@ export function subscribeUsers(
         usersList.push(docSnap.data() as User);
       });
 
-      // Maintain sensible sorting: superadmin first, then supervisor, then petugas
-      usersList.sort((a, b) => {
-        const order: Record<string, number> = { superadmin: 1, supervisor: 2, petugas: 3 };
-        return (order[a.role] || 9) - (order[b.role] || 9);
-      });
-
-      saveUsersToStorage(usersList);
-      onUsersChanged(usersList);
+      if (isAdmin && usersList.length > 0) {
+        usersList.sort((a, b) => {
+          const order: Record<string, number> = { superadmin: 1, supervisor: 2, petugas: 3 };
+          return (order[a.role] || 9) - (order[b.role] || 9);
+        });
+        saveUsersToStorage(usersList);
+        onUsersChanged(usersList);
+        // Backfill staff_roles directory quietly on admin session
+        Promise.all(usersList.map((u) => syncStaffRoleToCloud(u))).catch(() => {});
+      } else if (usersList.length > 0) {
+        // Merge own synced user profile into existing roster without overwriting non-PII list
+        const existingLocal = getUsersFromStorage();
+        const selfDoc = usersList[0];
+        const merged = existingLocal.some((u) => u.id === selfDoc.id)
+          ? existingLocal.map((u) => (u.id === selfDoc.id ? selfDoc : u))
+          : [...existingLocal, selfDoc];
+        saveUsersToStorage(merged);
+        onUsersChanged(merged);
+      }
     },
     (error) => {
-      console.warn('Firestore users subscription error, fallback to local storage:', error);
       const fallback = getUsersFromStorage();
       onUsersChanged(fallback);
       if (onError) onError(error);
+      handleFirestoreError(error, OperationType.LIST, USERS_COLLECTION);
     }
   );
 }
 
 /**
- * Save user to Firestore
+ * Save user to Firestore and sync staff_roles
  */
 export async function saveUserToCloud(user: User): Promise<void> {
   const current = getUsersFromStorage();
-  const existingIdx = current.findIndex((u) => u.id === user.id);
+  const normalizedUser: User = {
+    ...user,
+    email: (user.email || `${user.username}@scb.sch.id`).trim().toLowerCase(),
+  };
+
+  const existingIdx = current.findIndex((u) => u.id === normalizedUser.id);
   if (existingIdx >= 0) {
-    current[existingIdx] = user;
+    current[existingIdx] = normalizedUser;
   } else {
-    current.push(user);
+    current.push(normalizedUser);
   }
   saveUsersToStorage(current);
 
+  const path = `${USERS_COLLECTION}/${normalizedUser.id}`;
   try {
-    const docRef = doc(db, USERS_COLLECTION, user.id);
-    await setDoc(docRef, sanitizeForFirestore(user), { merge: true });
+    const docRef = doc(db, USERS_COLLECTION, normalizedUser.id);
+    await setDoc(docRef, sanitizeForFirestore(normalizedUser), { merge: true });
+    if (isCurrentAuthSuperAdmin()) {
+      await syncStaffRoleToCloud(normalizedUser);
+    }
   } catch (err) {
-    console.error('Failed to save user to Firestore:', err);
+    handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
 
 /**
- * Delete user from Firestore
+ * Delete user from Firestore and staff_roles
  */
 export async function deleteUserFromCloud(id: string): Promise<void> {
   const current = getUsersFromStorage();
+  const targetUser = current.find((u) => u.id === id);
   const filtered = current.filter((u) => u.id !== id);
   saveUsersToStorage(filtered);
 
+  const path = `${USERS_COLLECTION}/${id}`;
   try {
-    const docRef = doc(db, USERS_COLLECTION, id);
-    await deleteDoc(docRef);
+    await deleteDoc(doc(db, USERS_COLLECTION, id));
+    if (targetUser?.email && isCurrentAuthSuperAdmin()) {
+      await deleteDoc(doc(db, STAFF_ROLES_COLLECTION, toEmailKey(targetUser.email)));
+    }
   } catch (err) {
-    console.error('Failed to delete user from Firestore:', err);
+    handleFirestoreError(err, OperationType.DELETE, path);
   }
 }
 
 // ==========================================
 // FORM CONFIGURATION CLOUD SYNCHRONIZATION
 // ==========================================
-
-const FORM_CONFIG_DOC_ID = 'config_form_configs';
-const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
 
 export function subscribeFormConfig(
   onConfigChanged: (config: {
@@ -286,29 +550,47 @@ export function subscribeFormConfig(
     settings: FormSettings;
   }) => void
 ): () => void {
-  const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
+  const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
+  const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
 
   return onSnapshot(
     docRef,
     async (snapshot) => {
       if (!snapshot.exists()) {
-        const defaultData = {
-          rooms: DEFAULT_MASTER_ROOMS,
-          checklists: DEFAULT_MASTER_CHECKLISTS,
-          settings: DEFAULT_FORM_SETTINGS,
+        let seedData = {
+          rooms: getMasterRooms() || DEFAULT_MASTER_ROOMS,
+          checklists: getMasterChecklists() || DEFAULT_MASTER_CHECKLISTS,
+          settings: getFormSettings() || DEFAULT_FORM_SETTINGS,
         };
-        try {
-          await setDoc(docRef, sanitizeForFirestore(defaultData));
-        } catch (e) {
-          console.warn('Initial form config seed note:', e);
+        if (isCurrentAuthSuperAdmin()) {
+          try {
+            const legacySnap = await getDoc(doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID));
+            if (legacySnap.exists()) {
+              const legacy = legacySnap.data();
+              seedData = {
+                rooms: Array.isArray(legacy?.rooms) ? legacy.rooms : seedData.rooms,
+                checklists: Array.isArray(legacy?.checklists)
+                  ? legacy.checklists
+                  : seedData.checklists,
+                settings: legacy?.settings || seedData.settings,
+              };
+            }
+            await setDoc(docRef, sanitizeForFirestore(seedData));
+          } catch (err) {
+            handleFirestoreError(err, OperationType.CREATE, path);
+          }
         }
-        onConfigChanged(defaultData);
+        onConfigChanged(seedData);
         return;
       }
 
       const data = snapshot.data();
-      const rooms: MasterRoom[] = data?.rooms && Array.isArray(data.rooms) ? data.rooms : DEFAULT_MASTER_ROOMS;
-      const checklists: MasterChecklist[] = data?.checklists && Array.isArray(data.checklists) ? data.checklists : DEFAULT_MASTER_CHECKLISTS;
+      const rooms: MasterRoom[] =
+        data?.rooms && Array.isArray(data.rooms) ? data.rooms : DEFAULT_MASTER_ROOMS;
+      const checklists: MasterChecklist[] =
+        data?.checklists && Array.isArray(data.checklists)
+          ? data.checklists
+          : DEFAULT_MASTER_CHECKLISTS;
       const settings: FormSettings = data?.settings ? data.settings : DEFAULT_FORM_SETTINGS;
 
       saveMasterRooms(rooms);
@@ -318,43 +600,67 @@ export function subscribeFormConfig(
       onConfigChanged({ rooms, checklists, settings });
     },
     (err) => {
-      console.warn('Form config snapshot error, using local storage fallback:', err);
       onConfigChanged({
         rooms: getMasterRooms(),
         checklists: getMasterChecklists(),
         settings: getFormSettings(),
       });
+      handleFirestoreError(err, OperationType.GET, path);
     }
   );
 }
 
 export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void> {
   saveMasterRooms(rooms);
+  const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
-    const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
-    await setDoc(docRef, { rooms: sanitizeForFirestore(rooms) }, { merge: true });
+    const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
+    await setDoc(
+      docRef,
+      sanitizeForFirestore({
+        rooms,
+        checklists: getMasterChecklists(),
+        settings: getFormSettings(),
+      })
+    );
   } catch (err) {
-    console.error('Failed to sync master rooms to cloud:', err);
+    handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
 
 export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[]): Promise<void> {
   saveMasterChecklists(checklists);
+  const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
-    const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
-    await setDoc(docRef, { checklists: sanitizeForFirestore(checklists) }, { merge: true });
+    const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
+    await setDoc(
+      docRef,
+      sanitizeForFirestore({
+        rooms: getMasterRooms(),
+        checklists,
+        settings: getFormSettings(),
+      })
+    );
   } catch (err) {
-    console.error('Failed to sync master checklists to cloud:', err);
+    handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
 
 export async function saveFormSettingsToCloud(settings: FormSettings): Promise<void> {
   saveFormSettings(settings);
+  const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
-    const docRef = doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID);
-    await setDoc(docRef, { settings: sanitizeForFirestore(settings) }, { merge: true });
+    const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
+    await setDoc(
+      docRef,
+      sanitizeForFirestore({
+        rooms: getMasterRooms(),
+        checklists: getMasterChecklists(),
+        settings,
+      })
+    );
   } catch (err) {
-    console.error('Failed to sync form settings to cloud:', err);
+    handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
 
@@ -365,18 +671,26 @@ export async function saveFormSettingsToCloud(settings: FormSettings): Promise<v
 export function subscribeRoomSchedules(
   onSchedulesChanged: (schedules: RoomSchedule[]) => void
 ): () => void {
-  const docRef = doc(db, USERS_COLLECTION, ROOM_SCHEDULE_DOC_ID);
+  const path = `${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}`;
+  const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
 
   return onSnapshot(
     docRef,
     async (snapshot) => {
       if (!snapshot.exists()) {
         const localSchedules = getRoomSchedules();
-        const initialToSeed = localSchedules && localSchedules.length > 0 ? localSchedules : DEFAULT_ROOM_SCHEDULES;
-        try {
-          await setDoc(docRef, { schedules: sanitizeForFirestore(initialToSeed) });
-        } catch (e) {
-          console.warn('Initial schedule seed note:', e);
+        let initialToSeed =
+          localSchedules && localSchedules.length > 0 ? localSchedules : DEFAULT_ROOM_SCHEDULES;
+        if (isCurrentAuthSuperAdmin()) {
+          try {
+            const legacySnap = await getDoc(doc(db, USERS_COLLECTION, ROOM_SCHEDULE_DOC_ID));
+            if (legacySnap.exists() && Array.isArray(legacySnap.data()?.schedules)) {
+              initialToSeed = legacySnap.data().schedules;
+            }
+            await setDoc(docRef, { schedules: sanitizeForFirestore(initialToSeed) });
+          } catch (err) {
+            handleFirestoreError(err, OperationType.CREATE, path);
+          }
         }
         saveRoomSchedules(initialToSeed);
         onSchedulesChanged(initialToSeed);
@@ -391,19 +705,19 @@ export function subscribeRoomSchedules(
       onSchedulesChanged(schedules);
     },
     (err) => {
-      console.warn('Room schedules snapshot error, fallback to local:', err);
       onSchedulesChanged(getRoomSchedules());
+      handleFirestoreError(err, OperationType.GET, path);
     }
   );
 }
 
 export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<void> {
   saveRoomSchedules(schedules);
+  const path = `${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}`;
   try {
-    const docRef = doc(db, USERS_COLLECTION, ROOM_SCHEDULE_DOC_ID);
-    await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) }, { merge: true });
+    const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
+    await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) });
   } catch (err) {
-    console.error('Failed to sync room schedules to cloud:', err);
+    handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
-

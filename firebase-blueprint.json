@@ -5,30 +5,114 @@
       "description": "Daily cleaning service inspection report submitted by officers at SCB",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "tanggal": { "type": "string" },
-        "waktu": { "type": "string" },
-        "timestamp": { "type": "number" },
-        "petugasId": { "type": "string" },
-        "namaPetugas": { "type": "string" },
-        "area": { "type": "string" },
-        "isAreaOther": { "type": "boolean" },
-        "areaCustom": { "type": "string" },
-        "checklist": { "type": "array" },
-        "checklistCustom": { "type": "string" },
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the report document",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "tanggal": {
+          "type": "string",
+          "description": "Report date in YYYY-MM-DD format",
+          "minLength": 8,
+          "maxLength": 20
+        },
+        "waktu": {
+          "type": "string",
+          "description": "Report time in HH:mm format",
+          "minLength": 4,
+          "maxLength": 20
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Unix epoch timestamp in milliseconds"
+        },
+        "petugasId": {
+          "type": "string",
+          "description": "Identifier of the officer who submitted the report",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "namaPetugas": {
+          "type": "string",
+          "description": "Display name of the officer",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "area": {
+          "type": "string",
+          "description": "Cleaned room or facility area name",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "isAreaOther": {
+          "type": "boolean",
+          "description": "Whether a custom area name was entered"
+        },
+        "areaCustom": {
+          "type": "string",
+          "description": "Custom area name when isAreaOther is true",
+          "maxLength": 150
+        },
+        "checklist": {
+          "type": "array",
+          "description": "List of completed sanitation checklist labels"
+        },
+        "checklistCustom": {
+          "type": "string",
+          "description": "Optional custom checklist note",
+          "maxLength": 500
+        },
         "kondisiAkhir": {
           "type": "string",
-          "enum": ["Bersih", "Perlu Pengecekan Ulang", "Ada Kerusakan"]
+          "enum": ["Bersih", "Perlu Pengecekan Ulang", "Ada Kerusakan"],
+          "description": "Final condition assessment of the area"
         },
-        "keteranganTambahan": { "type": "string" },
-        "fotoBukti": { "type": "array" },
+        "keteranganTambahan": {
+          "type": "string",
+          "description": "Additional inspection notes or issue details",
+          "maxLength": 2000
+        },
+        "fotoBukti": {
+          "type": "array",
+          "description": "Array of compressed image data URLs or Google Drive links (max 10 items)"
+        },
         "statusVerifikasi": {
           "type": "string",
-          "enum": ["Menunggu", "Disetujui", "Perlu Perbaikan"]
+          "enum": ["Menunggu", "Disetujui", "Perlu Perbaikan"],
+          "description": "Supervisor verification workflow status"
         },
-        "catatanSupervisor": { "type": "string" },
-        "diverifikasiOleh": { "type": "string" },
-        "diverifikasiPada": { "type": "string" }
+        "catatanSupervisor": {
+          "type": "string",
+          "description": "Supervisor feedback or corrective instruction",
+          "maxLength": 2000
+        },
+        "diverifikasiOleh": {
+          "type": "string",
+          "description": "Name and role of the verifying supervisor",
+          "maxLength": 150
+        },
+        "diverifikasiPada": {
+          "type": "string",
+          "description": "Human-readable verification timestamp",
+          "maxLength": 80
+        },
+        "authorUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the authenticated creator",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-modified timestamp"
+        }
       },
       "required": [
         "id",
@@ -38,66 +122,187 @@
         "petugasId",
         "namaPetugas",
         "area",
+        "isAreaOther",
+        "checklist",
         "kondisiAkhir",
+        "keteranganTambahan",
+        "fotoBukti",
         "statusVerifikasi"
       ]
     },
     "User": {
       "title": "User",
-      "description": "User profile for staff and supervisors in SCB",
+      "description": "Registered staff, supervisor, and superadmin account profiles containing PII",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "email": { "type": "string" },
-        "username": { "type": "string" },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "password": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "pin": {
+          "type": "string",
+          "maxLength": 20
+        },
         "role": {
           "type": "string",
           "enum": ["superadmin", "supervisor", "petugas"]
         },
-        "pin": { "type": "string" },
-        "phone": { "type": "string" },
-        "isActive": { "type": "boolean" },
-        "createdAt": { "type": "string" },
-        "avatarColor": { "type": "string" }
+        "phone": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "avatarColor": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 1024
+        }
       },
-      "required": ["id", "name", "username", "role", "pin", "isActive"]
+      "required": ["id", "name", "email", "username", "role", "isActive", "createdAt"]
     },
     "FormConfig": {
       "title": "FormConfig",
-      "description": "Master rooms, checklists, and form settings configuration",
+      "description": "Master rooms, sanitation checklist items, and form behavior settings",
       "type": "object",
       "properties": {
-        "rooms": { "type": "array" },
-        "checklists": { "type": "array" },
-        "settings": { "type": "object" }
-      }
+        "rooms": {
+          "type": "array",
+          "description": "Configured facility areas for cleaning reports"
+        },
+        "checklists": {
+          "type": "array",
+          "description": "Standard sanitation checklist definitions"
+        },
+        "settings": {
+          "type": "object",
+          "description": "Global form validation and SOP settings"
+        }
+      },
+      "required": ["rooms", "checklists", "settings"]
     },
     "RoomScheduleDoc": {
       "title": "RoomScheduleDoc",
-      "description": "Active officer room schedules document",
+      "description": "Active officer-to-room assignment schedule configuration",
       "type": "object",
       "properties": {
-        "schedules": { "type": "array" }
-      }
+        "schedules": {
+          "type": "array",
+          "description": "List of room assignments per officer and active weekdays"
+        }
+      },
+      "required": ["schedules"]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Trusted superadmin authorization records keyed by Firebase Auth UID",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "role": {
+          "type": "string",
+          "enum": ["superadmin"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "StaffRole": {
+      "title": "StaffRole",
+      "description": "Authoritative active staff role lookup keyed by sanitized lowercase email",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "role": {
+          "type": "string",
+          "enum": ["superadmin", "supervisor", "petugas"]
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "role", "isActive"]
     }
   },
   "firestore": {
     "/reports/{reportId}": {
       "schema": "Report",
-      "description": "Collection of all cleaning service reports"
+      "description": "Collection of all cleaning service inspection reports"
     },
     "/users/{userId}": {
       "schema": "User",
-      "description": "Registered officers and administrators"
+      "description": "Registered officers, supervisors, and administrators (PII protected)"
     },
     "/form_configs/{configId}": {
       "schema": "FormConfig",
-      "description": "Master form configurations"
+      "description": "Master form configurations (rooms, checklists, settings)"
     },
     "/room_schedules/{scheduleId}": {
       "schema": "RoomScheduleDoc",
       "description": "Officer room assignment schedules"
+    },
+    "/staff_roles/{emailId}": {
+      "schema": "StaffRole",
+      "description": "Trusted active staff role mapping keyed by sanitized email"
+    },
+    "/admins/{adminId}": {
+      "schema": "AdminRole",
+      "description": "Authoritative admin UID registry for privileged operations"
     }
   }
 }

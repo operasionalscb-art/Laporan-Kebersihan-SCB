@@ -1,34 +1,316 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Reports collection - readable by all (dashboard and visitors) and writable for logging reports
-    match /reports/{reportId} {
-      allow read: if true;
-      allow create: if request.resource.data.id != null;
-      allow update: if true;
-      allow delete: if true;
-    }
-    
-    // Users collection - accessible for officer directory and management
-    match /users/{userId} {
-      allow read: if true;
-      allow write: if true;
-    }
 
-    // Form configurations (master rooms, master checklists, form settings)
-    match /form_configs/{configId} {
-      allow read: if true;
-      allow write: if true;
-    }
-
-    // Room Officer Schedules
-    match /room_schedules/{scheduleId} {
-      allow read: if true;
-      allow write: if true;
-    }
-
+    // 1. Global Safety Net: Default-deny catch-all
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Helpers
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn()
+        && request.auth.token.email is string
+        && request.auth.token.email_verified == true;
+    }
+
+    function emailKey() {
+      return request.auth.token.email.lower().replace('[^a-z0-9]', '_');
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedEmail() && request.auth.token.email.lower() == 'operasional.scb@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin()
+        || (isVerifiedEmail() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)))
+        || (isVerifiedEmail()
+            && exists(/databases/$(database)/documents/staff_roles/$(emailKey()))
+            && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true
+            && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.role == 'superadmin');
+    }
+
+    function isSupervisor() {
+      return isVerifiedEmail()
+        && exists(/databases/$(database)/documents/staff_roles/$(emailKey()))
+        && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true
+        && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.role in ['supervisor', 'superadmin'];
+    }
+
+    function isActiveStaff() {
+      return isBootstrappedAdmin()
+        || (isVerifiedEmail()
+            && exists(/databases/$(database)/documents/staff_roles/$(emailKey()))
+            && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true);
+    }
+
+    // =========================================================================
+    // Validation Blueprints
+    // =========================================================================
+    function isValidReport(data) {
+      return data.keys().hasAll([
+          'id', 'tanggal', 'waktu', 'timestamp', 'petugasId', 'namaPetugas',
+          'area', 'isAreaOther', 'checklist', 'kondisiAkhir',
+          'keteranganTambahan', 'fotoBukti', 'statusVerifikasi'
+        ])
+        && data.keys().hasOnly([
+          'id', 'tanggal', 'waktu', 'timestamp', 'petugasId', 'namaPetugas',
+          'area', 'isAreaOther', 'areaCustom', 'checklist', 'checklistCustom',
+          'kondisiAkhir', 'keteranganTambahan', 'fotoBukti', 'statusVerifikasi',
+          'catatanSupervisor', 'diverifikasiOleh', 'diverifikasiPada',
+          'authorUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.tanggal is string && data.tanggal.size() >= 8 && data.tanggal.size() <= 20
+        && data.waktu is string && data.waktu.size() >= 4 && data.waktu.size() <= 20
+        && data.timestamp is number && data.timestamp > 0
+        && data.petugasId is string && data.petugasId.size() >= 1 && data.petugasId.size() <= 128
+        && data.namaPetugas is string && data.namaPetugas.size() >= 1 && data.namaPetugas.size() <= 120
+        && data.area is string && data.area.size() >= 1 && data.area.size() <= 150
+        && data.isAreaOther is bool
+        && (!('areaCustom' in data) || (data.areaCustom is string && data.areaCustom.size() <= 150))
+        && data.checklist is list && data.checklist.size() <= 50
+        && (data.checklist.size() == 0 || data.checklist[0] is string)
+        && (!('checklistCustom' in data) || (data.checklistCustom is string && data.checklistCustom.size() <= 500))
+        && data.kondisiAkhir is string && data.kondisiAkhir in ['Bersih', 'Perlu Pengecekan Ulang', 'Ada Kerusakan']
+        && data.keteranganTambahan is string && data.keteranganTambahan.size() <= 2000
+        && data.fotoBukti is list && data.fotoBukti.size() <= 10
+        && (data.fotoBukti.size() == 0 || data.fotoBukti[0] is string)
+        && data.statusVerifikasi is string && data.statusVerifikasi in ['Menunggu', 'Disetujui', 'Perlu Perbaikan']
+        && (!('catatanSupervisor' in data) || (data.catatanSupervisor is string && data.catatanSupervisor.size() <= 2000))
+        && (!('diverifikasiOleh' in data) || (data.diverifikasiOleh is string && data.diverifikasiOleh.size() <= 150))
+        && (!('diverifikasiPada' in data) || (data.diverifikasiPada is string && data.diverifikasiPada.size() <= 80))
+        && (!('authorUid' in data) || (data.authorUid is string && data.authorUid.size() <= 128));
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'username', 'role', 'isActive', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'name', 'email', 'username', 'password', 'pin',
+          'role', 'phone', 'isActive', 'createdAt', 'avatarColor', 'photoURL'
+        ])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.username is string && data.username.size() >= 1 && data.username.size() <= 80
+        && data.role is string && data.role in ['superadmin', 'supervisor', 'petugas']
+        && data.isActive is bool
+        && data.createdAt is string && data.createdAt.size() >= 4 && data.createdAt.size() <= 40
+        && (!('password' in data) || (data.password is string && data.password.size() <= 128))
+        && (!('pin' in data) || (data.pin is string && data.pin.size() <= 20))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
+        && (!('avatarColor' in data) || (data.avatarColor is string && data.avatarColor.size() <= 100))
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1024));
+    }
+
+    function isValidFormConfig(data) {
+      return data.keys().hasAll(['rooms', 'checklists', 'settings'])
+        && data.keys().hasOnly(['rooms', 'checklists', 'settings'])
+        && data.rooms is list && data.rooms.size() <= 100
+        && (data.rooms.size() == 0 || data.rooms[0] is map)
+        && data.checklists is list && data.checklists.size() <= 100
+        && (data.checklists.size() == 0 || data.checklists[0] is map)
+        && data.settings is map
+        && (!('guidelinesText' in data.settings) || (data.settings.guidelinesText is string && data.settings.guidelinesText.size() <= 2000))
+        && (!('operatingHours' in data.settings) || (data.settings.operatingHours is string && data.settings.operatingHours.size() <= 100));
+    }
+
+    function isValidRoomScheduleDoc(data) {
+      return data.keys().hasAll(['schedules'])
+        && data.keys().hasOnly(['schedules'])
+        && data.schedules is list && data.schedules.size() <= 200
+        && (data.schedules.size() == 0 || data.schedules[0] is map);
+    }
+
+    function isValidStaffRole(data) {
+      return data.keys().hasAll(['email', 'role', 'isActive'])
+        && data.keys().hasOnly(['email', 'role', 'isActive', 'userId', 'updatedAt'])
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.role is string && data.role in ['superadmin', 'supervisor', 'petugas']
+        && data.isActive is bool
+        && (!('userId' in data) || (data.userId is string && data.userId.size() <= 128));
+    }
+
+    function isValidAdminRole(data) {
+      return data.keys().hasAll(['uid', 'email', 'role'])
+        && data.keys().hasOnly(['uid', 'email', 'role', 'createdAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.role is string && data.role == 'superadmin';
+    }
+
+    // =========================================================================
+    // Collections
+    // =========================================================================
+
+    // Public cleaning monitoring reports (no PII):
+    // Mode Tamu & staff can view dashboard reports; only verified active staff can create/update.
+    match /reports/{reportId} {
+      allow get: if isValidId(reportId);
+      allow list: if resource.data.timestamp is number;
+
+      allow create: if isValidId(reportId)
+        && isValidReport(incoming())
+        && incoming().id == reportId
+        && (
+          isAdmin()
+          || (
+            isActiveStaff()
+            && incoming().statusVerifikasi == 'Menunggu'
+            && 'authorUid' in incoming()
+            && incoming().authorUid == request.auth.uid
+          )
+        );
+
+      allow update: if isVerifiedEmail()
+        && isValidId(reportId)
+        && isValidReport(incoming())
+        && incoming().id == existing().id
+        && incoming().timestamp == existing().timestamp
+        && (!('authorUid' in existing()) || incoming().authorUid == existing().authorUid)
+        && (
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'tanggal', 'waktu', 'petugasId', 'namaPetugas', 'area', 'isAreaOther',
+              'areaCustom', 'checklist', 'checklistCustom', 'kondisiAkhir',
+              'keteranganTambahan', 'fotoBukti', 'statusVerifikasi',
+              'catatanSupervisor', 'diverifikasiOleh', 'diverifikasiPada', 'updatedAt'
+            ]))
+          || (
+            existing().statusVerifikasi != 'Disetujui'
+            && (
+              // Action 1: Supervisor / Admin verifies or reviews report
+              (isSupervisor()
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'statusVerifikasi', 'catatanSupervisor', 'diverifikasiOleh', 'diverifikasiPada', 'updatedAt'
+                ]))
+              ||
+              // Action 2: Officer uploads Drive photo links for their own pending/revision report
+              (isActiveStaff()
+                && ('authorUid' in existing() && existing().authorUid == request.auth.uid)
+                && incoming().statusVerifikasi == existing().statusVerifikasi
+                && incoming().diff(existing()).affectedKeys().hasOnly(['fotoBukti', 'updatedAt']))
+            )
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(reportId);
+    }
+
+    // Users collection (contains PII: email, phone, pin, password)
+    // Strictly isolated to owner (by verified email) or Superadmin.
+    match /users/{userId} {
+      allow get: if isVerifiedEmail()
+        && isValidId(userId)
+        && (isAdmin() || existing().email.lower() == request.auth.token.email.lower());
+
+      allow list: if isVerifiedEmail()
+        && (isBootstrappedAdmin() || resource.data.email.lower() == request.auth.token.email.lower());
+
+      allow create: if isAdmin()
+        && isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().id == userId;
+
+      allow update: if isVerifiedEmail()
+        && isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && (
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'email', 'username', 'password', 'pin', 'role', 'phone', 'isActive', 'avatarColor', 'photoURL'
+            ]))
+          || (existing().email.lower() == request.auth.token.email.lower()
+              && incoming().role == existing().role
+              && incoming().isActive == existing().isActive
+              && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'avatarColor', 'photoURL']))
+        );
+
+      allow delete: if isAdmin() && isValidId(userId) && userId != 'user-admin-1';
+    }
+
+    // Master form configuration (no PII)
+    match /form_configs/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if resource.data.rooms is list;
+      allow create: if isAdmin()
+        && isValidId(configId)
+        && isValidFormConfig(incoming());
+      allow update: if isAdmin()
+        && isValidId(configId)
+        && isValidFormConfig(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['rooms', 'checklists', 'settings']);
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    // Officer room assignment schedules (display names only, no PII)
+    match /room_schedules/{scheduleId} {
+      allow get: if isValidId(scheduleId);
+      allow list: if resource.data.schedules is list;
+      allow create: if isAdmin()
+        && isValidId(scheduleId)
+        && isValidRoomScheduleDoc(incoming());
+      allow update: if isAdmin()
+        && isValidId(scheduleId)
+        && isValidRoomScheduleDoc(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['schedules']);
+      allow delete: if isAdmin() && isValidId(scheduleId);
+    }
+
+    // Trusted staff role directory keyed by sanitized email (written ONLY by Superadmin)
+    match /staff_roles/{emailId} {
+      allow get: if isVerifiedEmail()
+        && isValidId(emailId)
+        && (isAdmin() || emailId == emailKey());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(emailId)
+        && isValidStaffRole(incoming());
+      allow update: if isAdmin()
+        && isValidId(emailId)
+        && isValidStaffRole(incoming())
+        && incoming().email == existing().email
+        && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'isActive', 'userId', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(emailId);
+    }
+
+    // Authoritative Admin UIDs
+    match /admins/{adminId} {
+      allow get: if isVerifiedEmail()
+        && isValidId(adminId)
+        && (isAdmin() || request.auth.uid == adminId);
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(adminId)
+        && isValidAdminRole(incoming())
+        && incoming().uid == adminId;
+      allow update: if isAdmin()
+        && isValidId(adminId)
+        && isValidAdminRole(incoming())
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'role']);
+      allow delete: if isBootstrappedAdmin() && isValidId(adminId);
     }
   }
 }
