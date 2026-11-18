@@ -18,6 +18,7 @@ import { auth, db } from './firebase';
 import { CleaningReport, User, MasterRoom, MasterChecklist, FormSettings, RoomSchedule } from '../types';
 import {
   INITIAL_USERS,
+  canonicalizeUsersToOfficial,
   saveReports as saveReportsToStorage,
   getReports as getReportsFromStorage,
   saveUsers as saveUsersToStorage,
@@ -32,6 +33,7 @@ import {
   saveFormSettings,
   getRoomSchedules,
   saveRoomSchedules,
+  sanitizeSchedulesToOfficial,
   DEFAULT_MASTER_ROOMS,
   DEFAULT_MASTER_CHECKLISTS,
   DEFAULT_FORM_SETTINGS,
@@ -103,6 +105,15 @@ const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
 
 const UNSYNCED_REPORT_IDS_KEY = 'scb_unsynced_report_ids_v1';
 const UNSYNCED_USER_IDS_KEY = 'scb_unsynced_user_ids_v1';
+const UNSYNCED_FORM_CONFIG_KEY = 'scb_unsynced_form_config_v1';
+const UNSYNCED_SCHEDULES_KEY = 'scb_unsynced_schedules_v1';
+const CLOUD_CANONICAL_USERS_KEY = 'scb_cloud_canonical_users_v2';
+const CLOUD_CANONICAL_SCHEDULES_KEY = 'scb_cloud_canonical_schedules_v2';
+
+export interface CloudSaveResult {
+  status: 'synced' | 'local_unauthenticated' | 'local_quota' | 'local_error';
+  message?: string;
+}
 
 let isUsersSeeded = false;
 let lastBootstrappedAdminUid: string | null = null;
@@ -149,6 +160,26 @@ export function clearUnsyncedTrackers(): void {
   try {
     localStorage.removeItem(UNSYNCED_REPORT_IDS_KEY);
     localStorage.removeItem(UNSYNCED_USER_IDS_KEY);
+    localStorage.removeItem(UNSYNCED_FORM_CONFIG_KEY);
+    localStorage.removeItem(UNSYNCED_SCHEDULES_KEY);
+  } catch {}
+}
+
+function hasUnsyncedFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function setUnsyncedFlag(key: string, pending: boolean): void {
+  try {
+    if (pending) {
+      localStorage.setItem(key, 'true');
+    } else {
+      localStorage.removeItem(key);
+    }
   } catch {}
 }
 
@@ -604,6 +635,36 @@ export function subscribeUsers(
       });
 
       if (isAdmin && usersList.length > 0) {
+        if (localStorage.getItem(CLOUD_CANONICAL_USERS_KEY) !== 'true') {
+          const officialById = new Map(INITIAL_USERS.map((u) => [u.id, u]));
+          const needsCanonicalReset =
+            usersList.length !== INITIAL_USERS.length ||
+            usersList.some((u) => {
+              const off = officialById.get(u.id);
+              if (!off) return true;
+              return (
+                (u.email || '').trim().toLowerCase() !== off.email.trim().toLowerCase() ||
+                u.role !== off.role ||
+                u.name !== off.name ||
+                (u.username || '').trim().toLowerCase() !== off.username.trim().toLowerCase()
+              );
+            }) ||
+            INITIAL_USERS.some((off) => !usersList.some((u) => u.id === off.id));
+
+          localStorage.setItem(CLOUD_CANONICAL_USERS_KEY, 'true');
+          if (needsCanonicalReset) {
+            const canonical = canonicalizeUsersToOfficial(usersList);
+            saveUsersToStorage(canonical);
+            onUsersChanged(canonical);
+            syncAllUsersToCloud(canonical).catch((err) => {
+              if (!isQuotaExceededError(err)) {
+                console.warn('Canonical cloud user cleanup note:', err);
+              }
+            });
+            return;
+          }
+        }
+
         const localUsers = getUsersFromStorage();
         const unsyncedUserIds = getUnsyncedIdSet(UNSYNCED_USER_IDS_KEY);
         const cloudUserIds = new Set(usersList.map((u) => u.id));
@@ -636,8 +697,15 @@ export function subscribeUsers(
         // Merge own synced user profile into existing roster without overwriting non-PII list
         const existingLocal = getUsersFromStorage();
         const selfDoc = usersList[0];
-        const merged = existingLocal.some((u) => u.id === selfDoc.id)
-          ? existingLocal.map((u) => (u.id === selfDoc.id ? selfDoc : u))
+        const selfEmailLower = (selfDoc.email || '').trim().toLowerCase();
+        const merged = existingLocal.some(
+          (u) => u.id === selfDoc.id || (selfEmailLower && (u.email || '').trim().toLowerCase() === selfEmailLower)
+        )
+          ? existingLocal.map((u) =>
+              u.id === selfDoc.id || (selfEmailLower && (u.email || '').trim().toLowerCase() === selfEmailLower)
+                ? selfDoc
+                : u
+            )
           : [...existingLocal, selfDoc];
         saveUsersToStorage(merged);
         onUsersChanged(merged);
@@ -741,6 +809,27 @@ export function subscribeFormConfig(
   return onSnapshot(
     docRef,
     async (snapshot) => {
+      if (hasUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY)) {
+        const localConfig = {
+          rooms: getMasterRooms() || DEFAULT_MASTER_ROOMS,
+          checklists: getMasterChecklists() || DEFAULT_MASTER_CHECKLISTS,
+          settings: getFormSettings() || DEFAULT_FORM_SETTINGS,
+        };
+        onConfigChanged(localConfig);
+
+        if (isCurrentAuthSuperAdmin()) {
+          try {
+            await setDoc(docRef, sanitizeForFirestore(localConfig));
+            setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, false);
+          } catch (err) {
+            if (!isQuotaExceededError(err)) {
+              console.warn('Pending form config sync note:', err);
+            }
+          }
+        }
+        return;
+      }
+
       if (!snapshot.exists()) {
         let seedData = {
           rooms: getMasterRooms() || DEFAULT_MASTER_ROOMS,
@@ -762,7 +851,9 @@ export function subscribeFormConfig(
             }
             await setDoc(docRef, sanitizeForFirestore(seedData));
           } catch (err) {
-            handleFirestoreError(err, OperationType.CREATE, path);
+            if (!isQuotaExceededError(err)) {
+              console.warn('Initial form config seed note:', err);
+            }
           }
         }
         onConfigChanged(seedData);
@@ -799,73 +890,67 @@ export function subscribeFormConfig(
   );
 }
 
-export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void> {
+async function writeFormConfigPayloadToCloud(payload: {
+  rooms: MasterRoom[];
+  checklists: MasterChecklist[];
+  settings: FormSettings;
+}): Promise<CloudSaveResult> {
+  setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, true);
+
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !isCurrentAuthSuperAdmin()) {
+    return {
+      status: 'local_unauthenticated',
+      message: 'Sesi Cloud Superadmin belum terhubung. Perubahan disimpan lokal dan akan disinkronkan saat login Cloud.',
+    };
+  }
+
+  try {
+    const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
+    await setDoc(docRef, sanitizeForFirestore(payload));
+    setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, false);
+    return { status: 'synced' };
+  } catch (err: any) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while saving form config, kept in local storage.');
+      return {
+        status: 'local_quota',
+        message: 'Kuota harian Firestore penuh. Perubahan aman tersimpan lokal dan tidak akan tertimpa.',
+      };
+    }
+    const msg = err instanceof Error ? err.message : String(err || '');
+    console.error(`Firestore Error on ${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}:`, msg);
+    return {
+      status: 'local_error',
+      message: `Perubahan tersimpan lokal, gagal kirim ke Cloud (${msg}).`,
+    };
+  }
+}
+
+export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<CloudSaveResult> {
   saveMasterRooms(rooms);
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
-  const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
-  try {
-    const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
-    await setDoc(
-      docRef,
-      sanitizeForFirestore({
-        rooms,
-        checklists: getMasterChecklists(),
-        settings: getFormSettings(),
-      })
-    );
-  } catch (err) {
-    if (isQuotaExceededError(err)) {
-      console.warn('Firestore quota exceeded while saving rooms, kept in local storage.');
-      return;
-    }
-    handleFirestoreError(err, OperationType.WRITE, path);
-  }
+  return writeFormConfigPayloadToCloud({
+    rooms,
+    checklists: getMasterChecklists(),
+    settings: getFormSettings(),
+  });
 }
 
-export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[]): Promise<void> {
+export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[]): Promise<CloudSaveResult> {
   saveMasterChecklists(checklists);
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
-  const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
-  try {
-    const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
-    await setDoc(
-      docRef,
-      sanitizeForFirestore({
-        rooms: getMasterRooms(),
-        checklists,
-        settings: getFormSettings(),
-      })
-    );
-  } catch (err) {
-    if (isQuotaExceededError(err)) {
-      console.warn('Firestore quota exceeded while saving checklists, kept in local storage.');
-      return;
-    }
-    handleFirestoreError(err, OperationType.WRITE, path);
-  }
+  return writeFormConfigPayloadToCloud({
+    rooms: getMasterRooms(),
+    checklists,
+    settings: getFormSettings(),
+  });
 }
 
-export async function saveFormSettingsToCloud(settings: FormSettings): Promise<void> {
+export async function saveFormSettingsToCloud(settings: FormSettings): Promise<CloudSaveResult> {
   saveFormSettings(settings);
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
-  const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
-  try {
-    const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
-    await setDoc(
-      docRef,
-      sanitizeForFirestore({
-        rooms: getMasterRooms(),
-        checklists: getMasterChecklists(),
-        settings,
-      })
-    );
-  } catch (err) {
-    if (isQuotaExceededError(err)) {
-      console.warn('Firestore quota exceeded while saving form settings, kept in local storage.');
-      return;
-    }
-    handleFirestoreError(err, OperationType.WRITE, path);
-  }
+  return writeFormConfigPayloadToCloud({
+    rooms: getMasterRooms(),
+    checklists: getMasterChecklists(),
+    settings,
+  });
 }
 
 // ==========================================
@@ -881,6 +966,23 @@ export function subscribeRoomSchedules(
   return onSnapshot(
     docRef,
     async (snapshot) => {
+      if (hasUnsyncedFlag(UNSYNCED_SCHEDULES_KEY)) {
+        const localSchedules = getRoomSchedules();
+        onSchedulesChanged(localSchedules);
+
+        if (isCurrentAuthSuperAdmin()) {
+          try {
+            await setDoc(docRef, { schedules: sanitizeForFirestore(localSchedules) });
+            setUnsyncedFlag(UNSYNCED_SCHEDULES_KEY, false);
+          } catch (err) {
+            if (!isQuotaExceededError(err)) {
+              console.warn('Pending schedules sync note:', err);
+            }
+          }
+        }
+        return;
+      }
+
       if (!snapshot.exists()) {
         const localSchedules = getRoomSchedules();
         let initialToSeed =
@@ -891,10 +993,15 @@ export function subscribeRoomSchedules(
             if (legacySnap.exists() && Array.isArray(legacySnap.data()?.schedules)) {
               initialToSeed = legacySnap.data().schedules;
             }
+            initialToSeed = sanitizeSchedulesToOfficial(initialToSeed);
             await setDoc(docRef, { schedules: sanitizeForFirestore(initialToSeed) });
           } catch (err) {
-            handleFirestoreError(err, OperationType.CREATE, path);
+            if (!isQuotaExceededError(err)) {
+              console.warn('Initial schedules seed note:', err);
+            }
           }
+        } else {
+          initialToSeed = sanitizeSchedulesToOfficial(initialToSeed);
         }
         saveRoomSchedules(initialToSeed);
         onSchedulesChanged(initialToSeed);
@@ -902,8 +1009,20 @@ export function subscribeRoomSchedules(
       }
 
       const data = snapshot.data();
-      const schedules: RoomSchedule[] =
+      const rawSchedules: RoomSchedule[] =
         data?.schedules && Array.isArray(data.schedules) ? data.schedules : getRoomSchedules();
+
+      let schedules = rawSchedules;
+      if (localStorage.getItem(CLOUD_CANONICAL_SCHEDULES_KEY) !== 'true') {
+        const cleaned = sanitizeSchedulesToOfficial(rawSchedules);
+        localStorage.setItem(CLOUD_CANONICAL_SCHEDULES_KEY, 'true');
+        if (JSON.stringify(cleaned) !== JSON.stringify(rawSchedules)) {
+          schedules = cleaned;
+          if (isCurrentAuthSuperAdmin()) {
+            saveRoomSchedulesToCloud(cleaned).catch(() => {});
+          }
+        }
+      }
 
       saveRoomSchedules(schedules);
       onSchedulesChanged(schedules);
@@ -919,20 +1038,68 @@ export function subscribeRoomSchedules(
   );
 }
 
-export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<void> {
+export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<CloudSaveResult> {
   saveRoomSchedules(schedules);
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
-  const path = `${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}`;
+  setUnsyncedFlag(UNSYNCED_SCHEDULES_KEY, true);
+
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !isCurrentAuthSuperAdmin()) {
+    return {
+      status: 'local_unauthenticated',
+      message: 'Sesi Cloud Superadmin belum terhubung. Jadwal disimpan lokal dan akan disinkronkan saat login Cloud.',
+    };
+  }
+
   try {
     const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
     await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) });
-  } catch (err) {
+    setUnsyncedFlag(UNSYNCED_SCHEDULES_KEY, false);
+    return { status: 'synced' };
+  } catch (err: any) {
     if (isQuotaExceededError(err)) {
       console.warn('Firestore quota exceeded while saving schedules, kept in local storage.');
-      return;
+      return {
+        status: 'local_quota',
+        message: 'Kuota harian Firestore penuh. Perubahan jadwal aman tersimpan lokal dan tidak akan tertimpa.',
+      };
     }
-    handleFirestoreError(err, OperationType.WRITE, path);
+    const msg = err instanceof Error ? err.message : String(err || '');
+    console.error(`Firestore Error on ${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}:`, msg);
+    return {
+      status: 'local_error',
+      message: `Jadwal tersimpan lokal, gagal kirim ke Cloud (${msg}).`,
+    };
   }
+}
+
+/**
+ * Syncs any locally edited form configs or schedules up to Firestore when Superadmin connects.
+ */
+export async function syncPendingLocalChangesToCloud(): Promise<{
+  syncedConfig: boolean;
+  syncedSchedules: boolean;
+}> {
+  let syncedConfig = false;
+  let syncedSchedules = false;
+
+  if (!auth.currentUser || !isCurrentAuthSuperAdmin()) {
+    return { syncedConfig, syncedSchedules };
+  }
+
+  if (hasUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY)) {
+    const res = await writeFormConfigPayloadToCloud({
+      rooms: getMasterRooms(),
+      checklists: getMasterChecklists(),
+      settings: getFormSettings(),
+    });
+    syncedConfig = res.status === 'synced';
+  }
+
+  if (hasUnsyncedFlag(UNSYNCED_SCHEDULES_KEY)) {
+    const res = await saveRoomSchedulesToCloud(getRoomSchedules());
+    syncedSchedules = res.status === 'synced';
+  }
+
+  return { syncedConfig, syncedSchedules };
 }
 
 /**
@@ -945,12 +1112,25 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
   try {
     await ensureSuperAdminRecord();
     const existingSnap = await getDocs(collection(db, USERS_COLLECTION));
+    const existingRolesSnap = await getDocs(collection(db, STAFF_ROLES_COLLECTION));
     const desiredIds = new Set(users.map((u) => u.id));
+    const desiredEmailKeys = new Set(
+      users
+        .map((u) => (u.email || `${u.username}@scb.sch.id`).trim().toLowerCase())
+        .filter(Boolean)
+        .map((email) => toEmailKey(email))
+    );
     const batch = writeBatch(db);
 
     existingSnap.forEach((docSnap) => {
       if (!docSnap.id.startsWith('config_') && !docSnap.id.startsWith('sys_') && !desiredIds.has(docSnap.id)) {
         batch.delete(docSnap.ref);
+      }
+    });
+
+    existingRolesSnap.forEach((roleSnap) => {
+      if (!desiredEmailKeys.has(roleSnap.id)) {
+        batch.delete(roleSnap.ref);
       }
     });
 
@@ -1008,6 +1188,7 @@ export async function syncAllAppDataToCloud(payload: {
           settings: payload.formSettings || getFormSettings(),
         })
       );
+      setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, false);
     } catch (err) {
       if (!isQuotaExceededError(err)) {
         handleFirestoreError(

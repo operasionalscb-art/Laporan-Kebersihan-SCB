@@ -292,20 +292,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   }, [reports]);
 
-  // Dynamic officer options for dropdowns
+  // Dynamic officer options for dropdowns (strictly active Petugas Kebersihan accounts)
   const availableOfficerNames = useMemo(() => {
     const set = new Set<string>();
     (officers || []).forEach((o) => {
-      if (o.isActive !== false && o.name) set.add(o.name);
+      if (o.isActive !== false && o.role === 'petugas' && o.name) set.add(o.name);
     });
     (allUsers || []).forEach((u) => {
       if (u.isActive !== false && u.role === 'petugas' && u.name) set.add(u.name);
     });
-    reports.forEach((r) => {
-      if (r.namaPetugas) set.add(r.namaPetugas);
-    });
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [officers, allUsers, reports]);
+  }, [officers, allUsers]);
 
   // Filtered reports logic
   const filteredReports = useMemo(() => {
@@ -429,33 +426,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return { pagi, siang, sore };
   }, [todayReports]);
 
-  // Field Officer Daily Summary (dynamic from active officers + today's reports)
+  // Field Officer Daily Summary (strictly active Petugas Kebersihan accounts)
   const officerStats = useMemo(() => {
-    const map = new Map<string, { total: number; clean: number; issues: number; lastTime: string }>();
+    const activeRoster = (officers || []).filter(
+      (o) => o.isActive !== false && o.role === 'petugas' && o.name
+    );
 
-    const activeRoster = (officers || []).filter((o) => o.isActive !== false && o.name);
-    activeRoster.forEach((o) => {
-      map.set(o.name, { total: 0, clean: 0, issues: 0, lastTime: '-' });
-    });
+    return activeRoster
+      .map((officer) => {
+        const cleanOfficerName = officer.name.trim().toLowerCase();
+        const matchingReports = todayReports.filter(
+          (r) =>
+            (r.petugasId && r.petugasId === officer.id) ||
+            (r.namaPetugas && r.namaPetugas.trim().toLowerCase() === cleanOfficerName)
+        );
+        let clean = 0;
+        let issues = 0;
+        let lastTime = '-';
 
-    todayReports.forEach((r) => {
-      const name = r.namaPetugas;
-      const cur = map.get(name) || { total: 0, clean: 0, issues: 0, lastTime: '-' };
-      cur.total += 1;
-      if (r.kondisiAkhir === 'Bersih') cur.clean += 1;
-      else cur.issues += 1;
-      if (cur.lastTime === '-' || r.waktu > cur.lastTime) {
-        cur.lastTime = r.waktu;
-      }
-      map.set(name, cur);
-    });
+        matchingReports.forEach((r) => {
+          if (r.kondisiAkhir === 'Bersih') clean += 1;
+          else issues += 1;
+          if (lastTime === '-' || r.waktu > lastTime) {
+            lastTime = r.waktu;
+          }
+        });
 
-    return Array.from(map.entries())
-      .map(([name, data]) => ({
-        name,
-        ...data,
-        cleanRate: data.total > 0 ? Math.round((data.clean / data.total) * 100) : 0,
-      }))
+        const total = matchingReports.length;
+        return {
+          id: officer.id,
+          name: officer.name,
+          total,
+          clean,
+          issues,
+          lastTime,
+          cleanRate: total > 0 ? Math.round((clean / total) * 100) : 0,
+        };
+      })
       .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
   }, [todayReports, officers]);
 
@@ -553,10 +560,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       const assignedOfficer = (allUsers || officers || []).find(
         (u) =>
-          (schedule?.officerId && u.id === schedule.officerId) ||
-          (schedule?.officerName && u.name.trim().toLowerCase() === schedule.officerName.trim().toLowerCase())
+          u.role === 'petugas' &&
+          u.isActive !== false &&
+          ((schedule?.officerId && u.id === schedule.officerId) ||
+            (schedule?.officerName && u.name.trim().toLowerCase() === schedule.officerName.trim().toLowerCase()))
       );
-      const scheduledOfficerName = assignedOfficer?.name || schedule?.officerName || 'Semua Petugas';
+      const scheduledOfficerName = assignedOfficer?.name || 'Semua Petugas';
 
       return {
         areaName,
@@ -1570,11 +1579,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <div className="divide-y divide-slate-100">
                 {officerStats.length === 0 ? (
-                  <p className="text-xs text-slate-400 py-4 text-center">Belum ada data petugas aktif.</p>
+                  <p className="text-xs text-slate-400 py-4 text-center">Belum ada petugas kebersihan aktif.</p>
                 ) : (
                   officerStats.map((officer) => (
                     <button
-                      key={officer.name}
+                      key={officer.id || officer.name}
                       type="button"
                       onClick={() => {
                         const next = selectedOfficer === officer.name ? 'all' : officer.name;

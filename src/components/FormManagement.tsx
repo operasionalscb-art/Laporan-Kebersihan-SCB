@@ -41,6 +41,8 @@ interface FormManagementProps {
   officers: User[];
   allUsers: User[];
   currentUser: User | null;
+  isCloudSynced?: boolean;
+  onOpenLoginModal?: (reason?: string) => void;
   onSaveRooms: (rooms: MasterRoom[]) => void;
   onSaveChecklists: (checklists: MasterChecklist[]) => void;
   onSaveFormSettings: (settings: FormSettings) => void;
@@ -55,7 +57,8 @@ export const FormManagement: React.FC<FormManagementProps> = ({
   schedules,
   officers,
   allUsers,
-  currentUser,
+  isCloudSynced = false,
+  onOpenLoginModal,
   onSaveRooms,
   onSaveChecklists,
   onSaveFormSettings,
@@ -153,9 +156,10 @@ export const FormManagement: React.FC<FormManagementProps> = ({
       onSaveRooms(updatedRooms);
 
       // Also update roomName in schedules if renamed
-      if (editingRoom.name !== cleanName) {
+      if (editingRoom.name.trim().toUpperCase() !== cleanName) {
+        const prevUpper = editingRoom.name.trim().toUpperCase();
         const updatedSchedules = schedules.map((s) =>
-          s.roomName === editingRoom.name ? { ...s, roomName: cleanName } : s
+          (s.roomName || '').trim().toUpperCase() === prevUpper ? { ...s, roomName: cleanName } : s
         );
         onSaveSchedules(updatedSchedules);
       }
@@ -163,7 +167,7 @@ export const FormManagement: React.FC<FormManagementProps> = ({
       onShowToast(`Ruangan "${cleanName}" berhasil diperbarui!`, 'success');
     } else {
       // Check duplicate
-      if (rooms.some((r) => r.name.toUpperCase() === cleanName)) {
+      if (rooms.some((r) => r.name.trim().toUpperCase() === cleanName)) {
         onShowToast(`Ruangan "${cleanName}" sudah terdaftar.`, 'error');
         return;
       }
@@ -180,11 +184,14 @@ export const FormManagement: React.FC<FormManagementProps> = ({
       };
       onSaveRooms([...rooms, newRoom]);
 
-      // Automatically create a default schedule entry for this new room with first available officer
-      if (officers.length > 0) {
+      // Automatically create a default schedule entry if not already present
+      const hasExistingSchedule = schedules.some(
+        (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanName
+      );
+      if (officers.length > 0 && !hasExistingSchedule) {
         const defaultOfficer = officers[rooms.length % officers.length];
         const newSchedule: RoomSchedule = {
-          id: `sch-${Date.now()}`,
+          id: `sch-${newRoom.id}`,
           roomId: newRoom.id,
           roomName: cleanName,
           officerId: defaultOfficer.id,
@@ -204,9 +211,12 @@ export const FormManagement: React.FC<FormManagementProps> = ({
   };
 
   const handleDeleteRoom = (roomId: string, roomName: string) => {
+    const cleanTarget = roomName.trim().toUpperCase();
     const updatedRooms = rooms.filter((r) => r.id !== roomId);
     onSaveRooms(updatedRooms);
-    const updatedSchedules = schedules.filter((s) => s.roomName !== roomName);
+    const updatedSchedules = schedules.filter(
+      (s) => !s.roomName || s.roomName.trim().toUpperCase() !== cleanTarget
+    );
     onSaveSchedules(updatedSchedules);
     onShowToast(`Ruangan "${roomName}" telah dihapus.`, 'info');
   };
@@ -340,9 +350,9 @@ export const FormManagement: React.FC<FormManagementProps> = ({
     const existing = schedules.find(
       (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
     );
-    if (!existing) return;
+    const currentDays =
+      existing && Array.isArray(existing.daysOfWeek) ? existing.daysOfWeek : [1, 2, 3, 4, 5, 6];
 
-    const currentDays = Array.isArray(existing.daysOfWeek) ? existing.daysOfWeek : [1, 2, 3, 4, 5, 6];
     let newDays: number[];
     if (currentDays.includes(dayNumber)) {
       newDays = currentDays.filter((d) => d !== dayNumber);
@@ -354,12 +364,28 @@ export const FormManagement: React.FC<FormManagementProps> = ({
       newDays = [...currentDays, dayNumber].sort();
     }
 
-    const updated = schedules.map((s) =>
-      s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
-        ? { ...s, daysOfWeek: newDays, updatedAt: getTodayDateString() }
-        : s
-    );
-    onSaveSchedules(updated);
+    if (!existing) {
+      const matchedRoom = rooms.find((r) => r.name.trim().toUpperCase() === cleanRoomName);
+      const newSch: RoomSchedule = {
+        id: `sch-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        roomId: matchedRoom?.id,
+        roomName: roomName.trim(),
+        officerId: '',
+        officerName: '',
+        daysOfWeek: newDays,
+        shift: 'Harian',
+        isActive: true,
+        updatedAt: getTodayDateString(),
+      };
+      onSaveSchedules([...schedules, newSch]);
+    } else {
+      const updated = schedules.map((s) =>
+        s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+          ? { ...s, daysOfWeek: newDays, updatedAt: getTodayDateString() }
+          : s
+      );
+      onSaveSchedules(updated);
+    }
     onShowToast(`Jadwal hari untuk ${roomName} diperbarui.`, 'success');
   };
 
@@ -426,6 +452,31 @@ export const FormManagement: React.FC<FormManagementProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Cloud Session Warning Banner if in Local Mode */}
+      {!isCloudSynced && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <p className="leading-relaxed">
+              <strong>Mode Lokal Aktif:</strong> Perubahan Master Ruangan dan Jadwal tetap tersimpan aman di perangkat ini, namun belum terkirim ke server Cloud agar muncul di perangkat lain.
+            </p>
+          </div>
+          {onOpenLoginModal && (
+            <button
+              type="button"
+              onClick={() =>
+                onOpenLoginModal(
+                  'Masuk menggunakan Email & Kata Sandi Superadmin (operasional.scb@gmail.com) untuk menyinkronkan perubahan ke Cloud.'
+                )
+              }
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs shrink-0 cursor-pointer transition-colors"
+            >
+              Hubungkan Cloud Superadmin
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Navigation Sub-Tabs */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
@@ -704,7 +755,9 @@ export const FormManagement: React.FC<FormManagementProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
             {rooms.map((room) => {
-              const schedule = schedules.find((s) => s.roomName === room.name);
+              const schedule = schedules.find(
+                (s) => (s.roomName || '').trim().toUpperCase() === (room.name || '').trim().toUpperCase()
+              );
 
               return (
                 <div

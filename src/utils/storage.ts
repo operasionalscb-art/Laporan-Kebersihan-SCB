@@ -34,6 +34,7 @@ if (typeof window !== 'undefined') {
 }
 
 const STORAGE_OFFICIAL_USERS_SYNC_KEY = 'scb_official_users_sync_v1';
+const STORAGE_CANONICAL_USERS_SYNC_KEY = 'scb_canonical_users_reset_v2';
 
 export const INITIAL_USERS: User[] = [
   {
@@ -133,58 +134,73 @@ export function getCurrentTimeString(): string {
 
 export const INITIAL_REPORTS: CleaningReport[] = [];
 
+/**
+ * Normalizes a user list strictly to the 5 canonical SCB accounts while preserving
+ * any customized credentials/phone/active state on those 5 accounts.
+ */
+export function canonicalizeUsersToOfficial(existing: User[]): User[] {
+  const byId = new Map<string, User>();
+  const byEmail = new Map<string, User>();
+  const byUsername = new Map<string, User>();
+
+  for (const u of existing || []) {
+    if (!u) continue;
+    if (u.id) byId.set(u.id, u);
+    if (u.email) byEmail.set(u.email.trim().toLowerCase(), u);
+    if (u.username) byUsername.set(u.username.trim().toLowerCase(), u);
+  }
+
+  return INITIAL_USERS.map((official) => {
+    const matched =
+      byId.get(official.id) ||
+      byEmail.get(official.email.trim().toLowerCase()) ||
+      byUsername.get(official.username.trim().toLowerCase());
+
+    if (!matched) return { ...official };
+
+    return {
+      ...official,
+      password: matched.password || official.password,
+      pin: matched.pin || official.pin,
+      phone: matched.phone ?? official.phone,
+      isActive: matched.isActive !== undefined ? matched.isActive : official.isActive,
+      avatarColor: matched.avatarColor || official.avatarColor,
+      photoURL: matched.photoURL || official.photoURL,
+    };
+  });
+}
+
 function syncOfficialUsersOnce(existing: User[]): User[] {
   try {
-    if (localStorage.getItem(STORAGE_OFFICIAL_USERS_SYNC_KEY) === 'true') {
+    if (localStorage.getItem(STORAGE_CANONICAL_USERS_SYNC_KEY) === 'true') {
       return existing;
     }
 
-    const legacyDummyEmails = new Set(['supervisor@scb.sch.id', 'kodir@scb.sch.id']);
-    const cleaned = existing.filter(
-      (u) => !legacyDummyEmails.has((u.email || '').trim().toLowerCase())
-    );
+    const canonical = canonicalizeUsersToOfficial(existing);
+    saveUsers(canonical);
 
-    const officialByUsername = new Map(
-      INITIAL_USERS.map((u) => [u.username.trim().toLowerCase(), u])
-    );
-
-    const merged: User[] = cleaned.map((u) => {
-      const key = (u.username || '').trim().toLowerCase();
-      const official = officialByUsername.get(key);
-      if (!official) return u;
-      return {
-        ...official,
-        ...u,
-        name: official.name,
-        email: official.email,
-        role: official.role,
-        createdAt: official.createdAt,
-        password: u.password || official.password,
-        pin: u.pin || official.pin,
-        avatarColor: u.avatarColor || official.avatarColor,
-      };
-    });
-
-    for (const official of INITIAL_USERS) {
-      const key = official.username.trim().toLowerCase();
-      const exists = merged.some((u) => (u.username || '').trim().toLowerCase() === key);
-      if (!exists) {
-        merged.push(official);
+    // Ensure any stale current user session not in the canonical 5 accounts is cleared/aligned
+    try {
+      const rawCurrent = localStorage.getItem(STORAGE_CURRENT_USER_KEY);
+      if (rawCurrent && rawCurrent !== 'null' && rawCurrent !== 'undefined') {
+        const parsedCurrent = JSON.parse(rawCurrent) as User;
+        const matchedCanonical = canonical.find(
+          (u) =>
+            u.id === parsedCurrent?.id ||
+            u.email.toLowerCase() === (parsedCurrent?.email || '').trim().toLowerCase() ||
+            u.username.toLowerCase() === (parsedCurrent?.username || '').trim().toLowerCase()
+        );
+        if (matchedCanonical) {
+          localStorage.setItem(STORAGE_CURRENT_USER_KEY, JSON.stringify(matchedCanonical));
+        } else {
+          localStorage.removeItem(STORAGE_CURRENT_USER_KEY);
+        }
       }
-    }
+    } catch {}
 
-    const orderMap = new Map(
-      INITIAL_USERS.map((u, idx) => [u.username.trim().toLowerCase(), idx])
-    );
-    merged.sort((a, b) => {
-      const idxA = orderMap.get((a.username || '').trim().toLowerCase()) ?? 999;
-      const idxB = orderMap.get((b.username || '').trim().toLowerCase()) ?? 999;
-      return idxA - idxB;
-    });
-
-    saveUsers(merged);
     localStorage.setItem(STORAGE_OFFICIAL_USERS_SYNC_KEY, 'true');
-    return merged;
+    localStorage.setItem(STORAGE_CANONICAL_USERS_SYNC_KEY, 'true');
+    return canonical;
   } catch {
     return existing;
   }
@@ -197,12 +213,14 @@ export function getUsers(): User[] {
     if (!raw) {
       saveUsers(INITIAL_USERS);
       localStorage.setItem(STORAGE_OFFICIAL_USERS_SYNC_KEY, 'true');
+      localStorage.setItem(STORAGE_CANONICAL_USERS_SYNC_KEY, 'true');
       return INITIAL_USERS;
     }
     const parsed: User[] = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) {
       saveUsers(INITIAL_USERS);
       localStorage.setItem(STORAGE_OFFICIAL_USERS_SYNC_KEY, 'true');
+      localStorage.setItem(STORAGE_CANONICAL_USERS_SYNC_KEY, 'true');
       return INITIAL_USERS;
     }
 

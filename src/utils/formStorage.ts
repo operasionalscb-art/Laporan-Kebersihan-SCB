@@ -359,18 +359,52 @@ export function saveFormSettings(settings: FormSettings): void {
 // ROOM SCHEDULES & ACCESS CONTROL
 // ========================
 
+const STORAGE_CANONICAL_SCHEDULES_KEY = 'scb_canonical_schedules_reset_v2';
+
+export function sanitizeSchedulesToOfficial(schedules: RoomSchedule[]): RoomSchedule[] {
+  const validOfficerIds = new Set(['user-officer-1', 'user-officer-3']);
+  const validOfficerNames = new Set(['iday m yusuf', 'wahyudin']);
+
+  return (schedules || []).map((sch) => {
+    const nameLower = (sch.officerName || '').trim().toLowerCase();
+    const isValid = validOfficerIds.has(sch.officerId) || validOfficerNames.has(nameLower);
+    if (isValid) return sch;
+
+    const cleanRoom = (sch.roomName || '').trim().toUpperCase();
+    const fallback =
+      DEFAULT_ROOM_SCHEDULES.find((d) => d.roomName.trim().toUpperCase() === cleanRoom) ||
+      DEFAULT_ROOM_SCHEDULES[0];
+
+    return {
+      ...sch,
+      officerId: fallback.officerId,
+      officerName: fallback.officerName,
+    };
+  });
+}
+
 export function getRoomSchedules(): RoomSchedule[] {
   try {
     const raw = localStorage.getItem(STORAGE_ROOM_SCHEDULES_KEY);
     if (!raw) {
       localStorage.setItem(STORAGE_ROOM_SCHEDULES_KEY, JSON.stringify(DEFAULT_ROOM_SCHEDULES));
+      localStorage.setItem(STORAGE_CANONICAL_SCHEDULES_KEY, 'true');
       return DEFAULT_ROOM_SCHEDULES;
     }
     const parsed: RoomSchedule[] = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) {
       localStorage.setItem(STORAGE_ROOM_SCHEDULES_KEY, JSON.stringify(DEFAULT_ROOM_SCHEDULES));
+      localStorage.setItem(STORAGE_CANONICAL_SCHEDULES_KEY, 'true');
       return DEFAULT_ROOM_SCHEDULES;
     }
+
+    if (localStorage.getItem(STORAGE_CANONICAL_SCHEDULES_KEY) !== 'true') {
+      const cleaned = sanitizeSchedulesToOfficial(parsed);
+      localStorage.setItem(STORAGE_ROOM_SCHEDULES_KEY, JSON.stringify(cleaned));
+      localStorage.setItem(STORAGE_CANONICAL_SCHEDULES_KEY, 'true');
+      return cleaned;
+    }
+
     return parsed;
   } catch (e) {
     return DEFAULT_ROOM_SCHEDULES;

@@ -14,6 +14,7 @@ import {
 } from './types';
 import { 
   INITIAL_USERS,
+  canonicalizeUsersToOfficial,
   getUsers, 
   saveUsers,
   addUser, 
@@ -59,7 +60,8 @@ import {
   resetCloudSyncSessionFlags,
   clearUnsyncedTrackers,
   syncAllUsersToCloud,
-  syncAllAppDataToCloud
+  syncAllAppDataToCloud,
+  syncPendingLocalChangesToCloud,
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -71,7 +73,6 @@ import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
 import { FullBackupPayload } from './components/StorageBackupManager';
 import { 
-  googleSignIn,
   parseAuthError,
   getGoogleAccessToken, 
   googleSignOut
@@ -187,14 +188,23 @@ export default function App() {
 
     // Initial local cache load for instant render
     if (hasLocalUsers) {
-      setUsers(getUsers());
+      const canonicalUsers = getUsers();
+      setUsers(canonicalUsers);
+      if (loadedCurrentUser && !canonicalUsers.some((u) => u.id === loadedCurrentUser.id)) {
+        clearCurrentUser();
+        setCurrentUserState(null);
+      }
     } else {
       setUsers(INITIAL_USERS);
       loadUsersFromIDB()
         .then((idbUsers) => {
           if (idbUsers && idbUsers.length > 0) {
-            localStorage.removeItem('scb_official_users_sync_v1');
-            saveUsers(idbUsers);
+            const normalized =
+              localStorage.getItem('scb_canonical_users_reset_v2') === 'true'
+                ? idbUsers
+                : canonicalizeUsersToOfficial(idbUsers);
+            saveUsers(normalized);
+            localStorage.setItem('scb_canonical_users_reset_v2', 'true');
           }
           setUsers(getUsers());
         })
@@ -240,6 +250,15 @@ export default function App() {
         unsubscribeUsers = subscribeUsers((cloudUsers) => {
           setUsers(cloudUsers);
         });
+        if (fbUser.email.trim().toLowerCase() === 'operasional.scb@gmail.com') {
+          syncPendingLocalChangesToCloud()
+            .then(({ syncedConfig, syncedSchedules }) => {
+              if (syncedConfig || syncedSchedules) {
+                showToast('Perubahan lokal Master Form & Jadwal berhasil disinkronkan ke Cloud.', 'success');
+              }
+            })
+            .catch(() => {});
+        }
       } else {
         resetCloudSyncSessionFlags();
       }
@@ -299,7 +318,12 @@ export default function App() {
   useEffect(() => {
     if (!currentUser || users.length === 0) return;
     const latest = users.find((u) => u.id === currentUser.id);
-    if (!latest) return;
+    if (!latest) {
+      clearCurrentUser();
+      setCurrentUserState(null);
+      setActiveTab('dashboard');
+      return;
+    }
     if (latest.isActive === false) {
       clearCurrentUser();
       setCurrentUserState(null);
@@ -420,40 +444,44 @@ export default function App() {
   const handleSaveRooms = async (updatedRooms: MasterRoom[]) => {
     setMasterRooms(updatedRooms);
     saveMasterRooms(updatedRooms);
-    try {
-      await saveMasterRoomsToCloud(updatedRooms);
-    } catch (e) {
-      console.warn('Rooms saved locally, cloud sync error:', e);
+    const res = await saveMasterRoomsToCloud(updatedRooms);
+    if (res.status === 'local_error' || res.status === 'local_quota') {
+      showToast(res.message || 'Tersimpan lokal, sinkronisasi Cloud tertunda.', 'error');
+    } else if (res.status === 'local_unauthenticated') {
+      showToast('Data ruangan tersimpan di perangkat ini. Masuk Cloud Superadmin agar sinkron ke semua perangkat.', 'info');
     }
   };
 
   const handleSaveChecklists = async (updatedChecklists: MasterChecklist[]) => {
     setMasterChecklists(updatedChecklists);
     saveMasterChecklists(updatedChecklists);
-    try {
-      await saveMasterChecklistsToCloud(updatedChecklists);
-    } catch (e) {
-      console.warn('Checklists saved locally, cloud sync error:', e);
+    const res = await saveMasterChecklistsToCloud(updatedChecklists);
+    if (res.status === 'local_error' || res.status === 'local_quota') {
+      showToast(res.message || 'Tersimpan lokal, sinkronisasi Cloud tertunda.', 'error');
+    } else if (res.status === 'local_unauthenticated') {
+      showToast('Data checklist tersimpan di perangkat ini. Masuk Cloud Superadmin agar sinkron ke semua perangkat.', 'info');
     }
   };
 
   const handleSaveFormSettings = async (updatedSettings: FormSettings) => {
     setFormSettings(updatedSettings);
     saveFormSettings(updatedSettings);
-    try {
-      await saveFormSettingsToCloud(updatedSettings);
-    } catch (e) {
-      console.warn('Settings saved locally, cloud sync error:', e);
+    const res = await saveFormSettingsToCloud(updatedSettings);
+    if (res.status === 'local_error' || res.status === 'local_quota') {
+      showToast(res.message || 'Tersimpan lokal, sinkronisasi Cloud tertunda.', 'error');
+    } else if (res.status === 'local_unauthenticated') {
+      showToast('Pengaturan form tersimpan di perangkat ini. Masuk Cloud Superadmin agar sinkron ke semua perangkat.', 'info');
     }
   };
 
   const handleSaveSchedules = async (updatedSchedules: RoomSchedule[]) => {
     setRoomSchedules(updatedSchedules);
     saveRoomSchedules(updatedSchedules);
-    try {
-      await saveRoomSchedulesToCloud(updatedSchedules);
-    } catch (e) {
-      console.warn('Schedules saved locally, cloud sync error:', e);
+    const res = await saveRoomSchedulesToCloud(updatedSchedules);
+    if (res.status === 'local_error' || res.status === 'local_quota') {
+      showToast(res.message || 'Jadwal tersimpan lokal, sinkronisasi Cloud tertunda.', 'error');
+    } else if (res.status === 'local_unauthenticated') {
+      showToast('Jadwal ruangan tersimpan di perangkat ini. Masuk Cloud Superadmin agar sinkron ke semua perangkat.', 'info');
     }
   };
 
@@ -549,36 +577,35 @@ export default function App() {
   };
 
   const handleConnectCloudSync = async () => {
-    const localUsersSnapshot = getUsers();
-    const localRoomsSnapshot = getMasterRooms();
-    const localChecklistsSnapshot = getMasterChecklists();
-    const localSettingsSnapshot = getFormSettings();
-    const localSchedulesSnapshot = getRoomSchedules();
-    const localReportsSnapshot = getReports();
+    if (!auth.currentUser || !auth.currentUser.emailVerified) {
+      handleOpenLoginModal(
+        'Masuk menggunakan Email & Kata Sandi Superadmin (operasional.scb@gmail.com) untuk mengaktifkan sinkronisasi Cloud.'
+      );
+      return;
+    }
+
+    const email = auth.currentUser.email?.trim().toLowerCase() || '';
+    if (email !== 'operasional.scb@gmail.com') {
+      showToast(
+        `Terhubung ke Cloud (${email}). Gunakan operasional.scb@gmail.com agar hak tulis Superadmin aktif.`,
+        'info'
+      );
+      return;
+    }
 
     try {
-      const res = await googleSignIn('firebase', 'operasional.scb@gmail.com', 'login');
-      const email = res?.profile?.email?.trim().toLowerCase() || '';
-      setCloudUserEmail(email || auth.currentUser?.email || null);
-      if (email === 'operasional.scb@gmail.com') {
-        await syncAllAppDataToCloud({
-          users: localUsersSnapshot,
-          masterRooms: localRoomsSnapshot,
-          masterChecklists: localChecklistsSnapshot,
-          formSettings: localSettingsSnapshot,
-          roomSchedules: localSchedulesSnapshot,
-          reports: localReportsSnapshot,
-        });
-        showToast('Sinkronisasi Cloud Firestore aktif! Seluruh data petugas & laporan disinkronkan.', 'success');
-      } else {
-        showToast(
-          `Terhubung ke Cloud (${email}). Gunakan operasional.scb@gmail.com agar hak tulis Superadmin aktif.`,
-          'info'
-        );
-      }
+      await syncAllAppDataToCloud({
+        users: getUsers(),
+        masterRooms: getMasterRooms(),
+        masterChecklists: getMasterChecklists(),
+        formSettings: getFormSettings(),
+        roomSchedules: getRoomSchedules(),
+        reports: getReports(),
+      });
+      showToast('Sinkronisasi Cloud Firestore aktif! Seluruh data petugas, ruangan, jadwal & laporan disinkronkan.', 'success');
     } catch (err: any) {
       const parsed = parseAuthError(err);
-      showToast(parsed.message || 'Gagal menghubungkan sesi Cloud Admin.', 'error');
+      showToast(parsed.message || 'Gagal menyinkronkan data Cloud Admin.', 'error');
     }
   };
 
@@ -694,7 +721,7 @@ export default function App() {
     showToast('Anda telah keluar. Sistem beralih ke Mode Tamu (Hanya Melihat Dashboard).', 'info');
   };
 
-  const officers = users.filter((u) => u.role === 'petugas');
+  const officers = users.filter((u) => u.role === 'petugas' && u.isActive !== false);
   const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
 
   return (
@@ -821,6 +848,8 @@ export default function App() {
               officers={officers}
               allUsers={users}
               currentUser={currentUser}
+              isCloudSynced={Boolean(cloudUserEmail)}
+              onOpenLoginModal={handleOpenLoginModal}
               onSaveRooms={handleSaveRooms}
               onSaveChecklists={handleSaveChecklists}
               onSaveFormSettings={handleSaveFormSettings}
