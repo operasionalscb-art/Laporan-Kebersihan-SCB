@@ -227,7 +227,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <div className="px-3 py-2.5 border-b border-slate-100">
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                          Akun Aktif (Manual)
+                          {isCloudSynced ? 'Akun Aktif (Cloud)' : 'Akun Aktif (Lokal)'}
                         </span>
                         {currentUser.role === 'superadmin' ? (
                           <span className="inline-flex items-center text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">

@@ -81,6 +81,11 @@ import {
   isAutoBackupEnabled, 
   isAutoPhotosUploadEnabled 
 } from './services/googleDriveService';
+import {
+  provisionStaffFirebaseAuthAccount,
+  sendPasswordResetForIdentifier,
+  parseFirebaseEmailAuthError,
+} from './services/firebaseAuth';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 
 export default function App() {
@@ -105,7 +110,9 @@ export default function App() {
 
   const [loginModalPrompt, setLoginModalPrompt] = useState<string>('');
   const [preselectedArea, setPreselectedArea] = useState<string | null>(null);
-  const [cloudUserEmail, setCloudUserEmail] = useState<string | null>(() => auth.currentUser?.email || null);
+  const [cloudUserEmail, setCloudUserEmail] = useState<string | null>(() =>
+    auth.currentUser?.email && auth.currentUser?.emailVerified ? auth.currentUser.email : null
+  );
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ message, type });
@@ -115,7 +122,7 @@ export default function App() {
   };
 
   const handleOpenLoginModal = (
-    reason = 'Silakan masuk menggunakan Username / Email dan Kata Sandi atau PIN akun terdaftar.'
+    reason = 'Silakan masuk menggunakan Email / Username dan Kata Sandi akun terdaftar.'
   ) => {
     setLoginModalPrompt(reason);
     setIsLoginModalOpen(true);
@@ -205,15 +212,16 @@ export default function App() {
       setReports(cloudReports);
     });
 
-    // 2. Subscribe to Live Firestore Users ONLY if Firebase Auth session already exists
+    // 2. Subscribe to Live Firestore Users ONLY when Firebase Auth email is verified
     let unsubscribeUsers: (() => void) | null = null;
     const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
-      setCloudUserEmail(fbUser?.email || null);
+      const verifiedEmail = fbUser?.email && fbUser.emailVerified ? fbUser.email : null;
+      setCloudUserEmail(verifiedEmail);
       if (unsubscribeUsers) {
         unsubscribeUsers();
         unsubscribeUsers = null;
       }
-      if (fbUser) {
+      if (fbUser && fbUser.email && fbUser.emailVerified) {
         unsubscribeUsers = subscribeUsers((cloudUsers) => {
           setUsers(cloudUsers);
         });
@@ -438,12 +446,48 @@ export default function App() {
   const handleAddUser = async (userData: Omit<User, 'id' | 'createdAt'>) => {
     const created = addUser(userData);
     setUsers((prev) => [...prev.filter((u) => u.id !== created.id), created]);
-    showToast(`Petugas ${created.name} berhasil ditambahkan!`);
 
+    let cloudSaved = false;
     try {
       await saveUserToCloud(created);
+      cloudSaved = true;
     } catch (e) {
       console.warn('Saved user locally, cloud sync error:', e);
+    }
+
+    const authProvision = await provisionStaffFirebaseAuthAccount(
+      created.email,
+      created.password || '123456'
+    );
+
+    if (authProvision.status === 'created') {
+      showToast(
+        `Petugas ${created.name} ditambahkan${cloudSaved ? ' & disinkronkan' : ''}! ${authProvision.message}`,
+        'success'
+      );
+    } else if (authProvision.status === 'already_exists') {
+      showToast(
+        `Petugas ${created.name} disimpan${cloudSaved ? ' & disinkronkan ke Cloud' : ''}.`,
+        'success'
+      );
+    } else {
+      showToast(
+        `Petugas ${created.name} tersimpan, catatan login Cloud: ${authProvision.message}`,
+        'info'
+      );
+    }
+  };
+
+  const handleSendPasswordReset = async (email: string) => {
+    try {
+      const sentTo = await sendPasswordResetForIdentifier(email, users);
+      showToast(
+        `Link atur / reset kata sandi dikirim ke ${sentTo}. Minta personel memeriksa kotak masuk/spam email.`,
+        'success'
+      );
+    } catch (err: any) {
+      const parsed = parseFirebaseEmailAuthError(err);
+      showToast(parsed.message || 'Gagal mengirim email reset kata sandi.', 'error');
     }
   };
 
@@ -799,6 +843,7 @@ export default function App() {
               onDisconnectCloudSync={handleDisconnectCloudSync}
               onSyncUsersNow={handleSyncUsersNow}
               onImportUsers={handleImportUsers}
+              onSendPasswordReset={handleSendPasswordReset}
               onShowToast={showToast}
             />
           ) : (

@@ -34,6 +34,7 @@ import {
   Download,
   Upload,
   Loader2,
+  KeyRound,
 } from 'lucide-react';
 
 export interface RolePermissionFeature {
@@ -271,6 +272,7 @@ interface AccountManagementProps {
   onDisconnectCloudSync?: () => Promise<void>;
   onSyncUsersNow?: () => Promise<void>;
   onImportUsers?: (users: User[]) => void;
+  onSendPasswordReset?: (email: string) => Promise<void>;
   onShowToast?: (message: string, type?: 'success' | 'info' | 'error') => void;
 }
 
@@ -286,6 +288,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   onDisconnectCloudSync,
   onSyncUsersNow,
   onImportUsers,
+  onSendPasswordReset,
   onShowToast,
 }) => {
   const [searchUser, setSearchUser] = useState('');
@@ -350,10 +353,22 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
     e.preventDefault();
     const cleanName = formData.name.trim();
     const cleanUsername = formData.username.trim().toLowerCase();
-    const cleanEmail = (formData.email.trim() || `${cleanUsername}@scb.sch.id`).toLowerCase();
+    const cleanEmail = formData.email.trim().toLowerCase();
+    const effectivePassword =
+      formData.password.trim() || (editingUser ? editingUser.password || '123456' : '123456');
 
     if (!cleanName || !cleanUsername) {
-      setFormError('Nama Lengkap dan Username wajib diisi');
+      setFormError('Nama Lengkap dan Username wajib diisi.');
+      return;
+    }
+
+    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      setFormError('Alamat Email aktif wajib diisi dengan format valid (contoh: nama@gmail.com) agar bisa verifikasi & sinkron antar perangkat.');
+      return;
+    }
+
+    if (effectivePassword.length < 6) {
+      setFormError('Kata sandi minimal 6 karakter agar valid untuk sistem login Cloud.');
       return;
     }
 
@@ -380,7 +395,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         name: cleanName.toUpperCase(),
         email: cleanEmail,
         username: cleanUsername,
-        password: formData.password.trim() || editingUser.password || '123456',
+        password: effectivePassword,
         pin: formData.pin.trim() || undefined,
         role: formData.role,
         phone: formData.phone.trim(),
@@ -392,7 +407,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         name: cleanName.toUpperCase(),
         email: cleanEmail,
         username: cleanUsername,
-        password: formData.password.trim() || '123456',
+        password: effectivePassword,
         pin: formData.pin.trim() || undefined,
         role: formData.role,
         phone: formData.phone.trim(),
@@ -574,10 +589,10 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
               <Key className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
               <div className="space-y-1">
                 <p className="font-bold text-emerald-950">
-                  Otentikasi Akun Manual: Username / Email &amp; Kata Sandi atau PIN
+                  Login Cloud Email &amp; Kata Sandi (Tanpa Pop-up Google)
                 </p>
                 <p className="text-emerald-800 leading-relaxed">
-                  Semua personel masuk langsung menggunakan <strong>Username atau Email</strong> beserta <strong>Kata Sandi / PIN</strong> tanpa pop-up Google. Pastikan kredensial masing-masing personel diatur dengan benar.
+                  Personel login memakai <strong>Email &amp; Kata Sandi</strong> (min. 6 karakter). Saat akun baru ditambahkan, akun login Cloud dibuat otomatis dan link verifikasi 1 kali dikirim ke email petugas.
                 </p>
               </div>
             </div>
@@ -599,8 +614,8 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-bold">
                       {isCloudSynced
-                        ? 'Sinkronisasi Cloud Firestore Aktif'
-                        : 'Penyimpanan Lokal Browser (Belum Sinkron Antar Perangkat)'}
+                        ? 'Sinkronisasi Cloud Firestore Aktif Otomatis'
+                        : 'Sesi Cloud Belum Terhubung (Mode Lokal)'}
                     </span>
                     {isCloudSynced && cloudUserEmail && (
                       <span className="text-[10px] font-mono bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-800">
@@ -610,8 +625,8 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                   </div>
                   <p className={isCloudSynced ? 'text-blue-800 leading-relaxed' : 'text-amber-900 leading-relaxed'}>
                     {isCloudSynced
-                      ? 'Perubahan daftar petugas/akun langsung tersimpan ke Firebase Cloud. Klik Sinkronkan Sekarang untuk memastikan semua akun lokal terkirim ke cloud.'
-                      : 'Login manual berjalan lokal tanpa sesi Firebase Auth, sehingga penambahan/edit petugas hanya tersimpan di browser ini. Hubungkan Sesi Cloud Admin atau ekspor berkas JSON untuk memindahkan data akun ke perangkat lain.'}
+                      ? 'Perubahan daftar petugas, jadwal, dan laporan langsung tersinkron real-time ke semua perangkat. Klik Sinkronkan Sekarang untuk memastikan seluruh data lokal sudah terkirim.'
+                      : 'Keluar lalu Masuk ulang menggunakan Email & Kata Sandi terverifikasi untuk mengaktifkan Cloud Sync otomatis, atau gunakan tombol Hubungkan Cloud Sync di bawah.'}
                   </p>
                 </div>
               </div>
@@ -819,10 +834,20 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
                         <td className="py-3.5 px-4 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5">
+                            {onSendPasswordReset && user.email && (
+                              <button
+                                onClick={() => onSendPasswordReset(user.email)}
+                                className="p-1.5 bg-slate-100 hover:bg-emerald-100 text-slate-600 hover:text-emerald-700 rounded-lg transition-colors cursor-pointer"
+                                title={`Kirim Link Reset / Atur Kata Sandi ke ${user.email}`}
+                              >
+                                <KeyRound className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
                             {/* Edit User */}
                             <button
                               onClick={() => handleOpenEditModal(user)}
-                              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
+                              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer"
                               title="Edit Akun"
                             >
                               <Edit3 className="w-3.5 h-3.5" />
@@ -1266,11 +1291,12 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    Email (Opsional)
+                    Email Aktif <span className="text-rose-600">*</span>
                   </label>
                   <input
                     type="email"
-                    placeholder="petugas@scb.sch.id"
+                    required
+                    placeholder="nama@gmail.com"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                     className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -1416,14 +1442,27 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                 </div>
               </div>
 
-              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950 flex items-start gap-2">
-                <Key className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-bold text-emerald-900">Autentikasi Akun Manual</p>
-                  <p className="text-[11px] text-emerald-800 mt-0.5 leading-relaxed">
-                    Pengguna akan masuk menggunakan Username (<strong>@{formData.username || 'username'}</strong>) atau Email dengan Kata Sandi / PIN yang diatur di formulir ini.
-                  </p>
+              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950 flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2">
+                  <Key className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-emerald-900">Autentikasi Cloud Email &amp; Kata Sandi</p>
+                    <p className="text-[11px] text-emerald-800 mt-0.5 leading-relaxed">
+                      {editingUser
+                        ? 'Perubahan data profil langsung tersinkron. Jika ingin mengganti kata sandi login Cloud personel, kirim link reset kata sandi ke emailnya.'
+                        : 'Akun login Cloud akan dibuat otomatis dengan email & kata sandi ini, dan link verifikasi 1 kali dikirim ke email petugas.'}
+                    </p>
+                  </div>
                 </div>
+                {editingUser && onSendPasswordReset && formData.email && (
+                  <button
+                    type="button"
+                    onClick={() => onSendPasswordReset(formData.email)}
+                    className="shrink-0 px-2.5 py-1.5 bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-[11px] font-bold cursor-pointer"
+                  >
+                    Kirim Reset Sandi
+                  </button>
+                )}
               </div>
 
               <div className="pt-2 flex items-center justify-between border-t border-slate-100">

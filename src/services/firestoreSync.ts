@@ -112,7 +112,7 @@ export function resetCloudSyncSessionFlags(): void {
 }
 
 export function isFirebaseCloudConnected(): boolean {
-  return Boolean(auth.currentUser?.email);
+  return Boolean(auth.currentUser?.email && auth.currentUser?.emailVerified);
 }
 
 export function toEmailKey(email: string): string {
@@ -210,7 +210,7 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
   }
   saveReportsToStorage(current);
 
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
   const path = `${REPORTS_COLLECTION}/${report.id}`;
   try {
@@ -250,7 +250,7 @@ export async function updateReportInCloud(
     saveReportsToStorage(current);
   }
 
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
   const path = `${REPORTS_COLLECTION}/${id}`;
   try {
@@ -277,7 +277,7 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
   const filtered = current.filter((r) => r.id !== id);
   saveReportsToStorage(filtered);
 
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
   const path = `${REPORTS_COLLECTION}/${id}`;
   try {
@@ -298,7 +298,7 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
 export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Promise<void> {
   saveReportsToStorage(reports);
 
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
   try {
     const snapshot = await getDocs(collection(db, REPORTS_COLLECTION));
@@ -431,7 +431,7 @@ export async function ensureSuperAdminRecord(): Promise<void> {
  */
 export async function fetchUserByEmailFromCloud(email: string): Promise<User | null> {
   const cleanEmail = email.trim().toLowerCase();
-  if (!auth.currentUser || !cleanEmail) return null;
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !cleanEmail) return null;
 
   const path = `${USERS_COLLECTION}?email=${cleanEmail}`;
   try {
@@ -440,7 +440,12 @@ export async function fetchUserByEmailFromCloud(email: string): Promise<User | n
     if (snap.empty) return null;
     return snap.docs[0].data() as User;
   } catch (err) {
-    handleFirestoreError(err, OperationType.GET, path);
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while fetching user profile, falling back to local cache.');
+      return null;
+    }
+    console.warn(`Could not fetch user profile from cloud (${path}):`, err);
+    return null;
   }
 }
 
@@ -453,7 +458,7 @@ export function subscribeUsers(
   onError?: (err: Error) => void
 ): () => void {
   const fbUser = auth.currentUser;
-  if (!fbUser || !fbUser.email) {
+  if (!fbUser || !fbUser.email || !fbUser.emailVerified) {
     return () => {};
   }
 
@@ -574,7 +579,7 @@ export async function saveUserToCloud(user: User): Promise<void> {
   }
   saveUsersToStorage(current);
 
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
   const path = `${USERS_COLLECTION}/${normalizedUser.id}`;
   try {
@@ -601,7 +606,7 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
   const filtered = current.filter((u) => u.id !== id);
   saveUsersToStorage(filtered);
 
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
   const path = `${USERS_COLLECTION}/${id}`;
   try {
@@ -695,7 +700,7 @@ export function subscribeFormConfig(
 
 export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void> {
   saveMasterRooms(rooms);
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
@@ -718,7 +723,7 @@ export async function saveMasterRoomsToCloud(rooms: MasterRoom[]): Promise<void>
 
 export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[]): Promise<void> {
   saveMasterChecklists(checklists);
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
@@ -741,7 +746,7 @@ export async function saveMasterChecklistsToCloud(checklists: MasterChecklist[])
 
 export async function saveFormSettingsToCloud(settings: FormSettings): Promise<void> {
   saveFormSettings(settings);
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   try {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
@@ -815,7 +820,7 @@ export function subscribeRoomSchedules(
 
 export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<void> {
   saveRoomSchedules(schedules);
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
   const path = `${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}`;
   try {
     const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
