@@ -28,7 +28,7 @@ import {
   setCurrentUser, 
   clearCurrentUser
 } from './utils/storage';
-import { loadUsersFromIDB } from './utils/indexedDb';
+import { loadUsersFromIDB, loadReportsFromIDB } from './utils/indexedDb';
 import {
   getMasterRooms,
   saveMasterRooms,
@@ -57,6 +57,7 @@ import {
   subscribeRoomSchedules,
   saveRoomSchedulesToCloud,
   resetCloudSyncSessionFlags,
+  clearUnsyncedTrackers,
   syncAllUsersToCloud,
   syncAllAppDataToCloud
 } from './services/firestoreSync';
@@ -201,7 +202,21 @@ export default function App() {
           setUsers(getUsers());
         });
     }
-    setReports(getReports());
+    const initialReports = getReports();
+    setReports(initialReports);
+    if (initialReports.length === 0) {
+      loadReportsFromIDB()
+        .then((idbReports) => {
+          if (idbReports && idbReports.length > 0) {
+            const nonDemo = idbReports.filter((r) => !['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(r.id));
+            if (nonDemo.length > 0) {
+              saveReports(nonDemo);
+              setReports(nonDemo);
+            }
+          }
+        })
+        .catch(() => {});
+    }
     setMasterRooms(getMasterRooms());
     setMasterChecklists(getMasterChecklists());
     setFormSettings(getFormSettings());
@@ -883,6 +898,7 @@ export default function App() {
                   });
                 }}
                 onResetData={() => {
+                  clearUnsyncedTrackers();
                   saveReports([]);
                   setReports([]);
                   batchRestoreReportsToCloud([]).catch(() => {

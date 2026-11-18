@@ -101,14 +101,62 @@ const SUPERADMIN_EMAIL = 'operasional.scb@gmail.com';
 const FORM_CONFIG_DOC_ID = 'config_form_configs';
 const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
 
+const UNSYNCED_REPORT_IDS_KEY = 'scb_unsynced_report_ids_v1';
+const UNSYNCED_USER_IDS_KEY = 'scb_unsynced_user_ids_v1';
+
 let isUsersSeeded = false;
 let lastBootstrappedAdminUid: string | null = null;
 let lastBackfilledAdminUid: string | null = null;
+let hasBackfilledLocalReports = false;
+
+function getUnsyncedIdSet(storageKey: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUnsyncedIdSet(storageKey: string, ids: Set<string>): void {
+  try {
+    if (ids.size === 0) {
+      localStorage.removeItem(storageKey);
+    } else {
+      localStorage.setItem(storageKey, JSON.stringify(Array.from(ids)));
+    }
+  } catch {
+    // Ignore storage quota errors on metadata tracking
+  }
+}
+
+function markUnsyncedId(storageKey: string, id: string): void {
+  const ids = getUnsyncedIdSet(storageKey);
+  ids.add(id);
+  saveUnsyncedIdSet(storageKey, ids);
+}
+
+function unmarkUnsyncedId(storageKey: string, id: string): void {
+  const ids = getUnsyncedIdSet(storageKey);
+  if (ids.delete(id)) {
+    saveUnsyncedIdSet(storageKey, ids);
+  }
+}
+
+export function clearUnsyncedTrackers(): void {
+  try {
+    localStorage.removeItem(UNSYNCED_REPORT_IDS_KEY);
+    localStorage.removeItem(UNSYNCED_USER_IDS_KEY);
+  } catch {}
+}
 
 export function resetCloudSyncSessionFlags(): void {
   isUsersSeeded = false;
   lastBootstrappedAdminUid = null;
   lastBackfilledAdminUid = null;
+  hasBackfilledLocalReports = false;
 }
 
 export function isFirebaseCloudConnected(): boolean {
@@ -164,7 +212,7 @@ export function subscribeReports(
   onError?: (err: Error) => void
 ): () => void {
   const reportsRef = collection(db, REPORTS_COLLECTION);
-  const q = query(reportsRef);
+  const q = query(reportsRef, where('timestamp', '>', 0));
 
   return onSnapshot(
     q,
@@ -180,9 +228,35 @@ export function subscribeReports(
         }
       });
 
-      reportsList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      saveReportsToStorage(reportsList);
-      onReportsChanged(reportsList);
+      const localReports = getReportsFromStorage();
+      const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
+
+      // Protect local reports if Firestore returns empty (e.g., reports were previously saved offline/local)
+      if (reportsList.length === 0 && localReports.length > 0) {
+        const sortedLocal = [...localReports].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        onReportsChanged(sortedLocal);
+
+        if (isCurrentAuthSuperAdmin() && !hasBackfilledLocalReports) {
+          hasBackfilledLocalReports = true;
+          Promise.all(sortedLocal.map((rep) => saveReportToCloud(rep))).catch(() => {});
+        }
+        return;
+      }
+
+      const cloudIds = new Set(reportsList.map((r) => r.id));
+      const pendingLocalReports = localReports.filter(
+        (r) => !cloudIds.has(r.id) && unsyncedIds.has(r.id)
+      );
+
+      const merged = [...reportsList, ...pendingLocalReports];
+      merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      saveReportsToStorage(merged);
+      onReportsChanged(merged);
+
+      if (pendingLocalReports.length > 0 && isCurrentAuthSuperAdmin() && !hasBackfilledLocalReports) {
+        hasBackfilledLocalReports = true;
+        Promise.all(pendingLocalReports.map((rep) => saveReportToCloud(rep))).catch(() => {});
+      }
     },
     (error) => {
       const fallback = getReportsFromStorage();
@@ -210,7 +284,10 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
   }
   saveReportsToStorage(current);
 
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) {
+    markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, report.id);
+    return;
+  }
 
   const path = `${REPORTS_COLLECTION}/${report.id}`;
   try {
@@ -227,8 +304,10 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, report.id);
   } catch (err) {
     if (isQuotaExceededError(err)) {
+      markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, report.id);
       console.warn('Firestore quota exceeded while saving report, kept in local storage.');
       return;
     }
@@ -273,6 +352,7 @@ export async function updateReportInCloud(
  * Delete report from Firestore and local storage
  */
 export async function deleteReportFromCloud(id: string): Promise<void> {
+  unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
   const current = getReportsFromStorage();
   const filtered = current.filter((r) => r.id !== id);
   saveReportsToStorage(filtered);
@@ -301,7 +381,9 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
   if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
   try {
-    const snapshot = await getDocs(collection(db, REPORTS_COLLECTION));
+    const snapshot = await getDocs(
+      query(collection(db, REPORTS_COLLECTION), where('timestamp', '>', 0))
+    );
     const deleteBatch = writeBatch(db);
     snapshot.forEach((d) => {
       deleteBatch.delete(d.ref);
@@ -327,6 +409,7 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
       }
       await batch.commit();
     }
+    saveUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY, new Set());
   } catch (err) {
     if (isQuotaExceededError(err)) {
       console.warn('Firestore quota exceeded during batch restore, kept in local storage.');
@@ -521,17 +604,29 @@ export function subscribeUsers(
       });
 
       if (isAdmin && usersList.length > 0) {
-        usersList.sort((a, b) => {
+        const localUsers = getUsersFromStorage();
+        const unsyncedUserIds = getUnsyncedIdSet(UNSYNCED_USER_IDS_KEY);
+        const cloudUserIds = new Set(usersList.map((u) => u.id));
+        const pendingUsers = localUsers.filter(
+          (u) => !cloudUserIds.has(u.id) && unsyncedUserIds.has(u.id)
+        );
+        const mergedUsers = [...usersList, ...pendingUsers];
+
+        mergedUsers.sort((a, b) => {
           const order: Record<string, number> = { superadmin: 1, supervisor: 2, petugas: 3 };
           return (order[a.role] || 9) - (order[b.role] || 9);
         });
-        saveUsersToStorage(usersList);
-        onUsersChanged(usersList);
+        saveUsersToStorage(mergedUsers);
+        onUsersChanged(mergedUsers);
+
+        if (pendingUsers.length > 0) {
+          Promise.all(pendingUsers.map((u) => saveUserToCloud(u))).catch(() => {});
+        }
 
         // Backfill staff_roles directory once per authenticated admin session (never on every snapshot)
         if (lastBackfilledAdminUid !== fbUser.uid) {
           lastBackfilledAdminUid = fbUser.uid;
-          Promise.all(usersList.map((u) => syncStaffRoleToCloud(u))).catch((err) => {
+          Promise.all(mergedUsers.map((u) => syncStaffRoleToCloud(u))).catch((err) => {
             if (!isQuotaExceededError(err)) {
               console.warn('Staff role backfill note:', err);
             }
@@ -579,7 +674,10 @@ export async function saveUserToCloud(user: User): Promise<void> {
   }
   saveUsersToStorage(current);
 
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) {
+    markUnsyncedId(UNSYNCED_USER_IDS_KEY, normalizedUser.id);
+    return;
+  }
 
   const path = `${USERS_COLLECTION}/${normalizedUser.id}`;
   try {
@@ -588,8 +686,10 @@ export async function saveUserToCloud(user: User): Promise<void> {
     if (isCurrentAuthSuperAdmin()) {
       await syncStaffRoleToCloud(normalizedUser);
     }
+    unmarkUnsyncedId(UNSYNCED_USER_IDS_KEY, normalizedUser.id);
   } catch (err) {
     if (isQuotaExceededError(err)) {
+      markUnsyncedId(UNSYNCED_USER_IDS_KEY, normalizedUser.id);
       console.warn('Firestore quota exceeded while saving user, kept in local storage.');
       return;
     }
@@ -601,6 +701,7 @@ export async function saveUserToCloud(user: User): Promise<void> {
  * Delete user from Firestore and staff_roles
  */
 export async function deleteUserFromCloud(id: string): Promise<void> {
+  unmarkUnsyncedId(UNSYNCED_USER_IDS_KEY, id);
   const current = getUsersFromStorage();
   const targetUser = current.find((u) => u.id === id);
   const filtered = current.filter((u) => u.id !== id);

@@ -166,7 +166,7 @@ service cloud.firestore {
     // Mode Tamu & staff can view dashboard reports; only verified active staff can create/update.
     match /reports/{reportId} {
       allow get: if isValidId(reportId);
-      allow list: if resource.data.timestamp is number;
+      allow list: if isBootstrappedAdmin() || resource.data.timestamp > 0;
 
       allow create: if isValidId(reportId)
         && isValidReport(incoming())
@@ -224,7 +224,7 @@ service cloud.firestore {
         && (isAdmin() || existing().email.lower() == request.auth.token.email.lower());
 
       allow list: if isVerifiedEmail()
-        && (isBootstrappedAdmin() || resource.data.email.lower() == request.auth.token.email.lower());
+        && (isBootstrappedAdmin() || resource.data.email == request.auth.token.email.lower());
 
       allow create: if isAdmin()
         && isValidId(userId)
