@@ -501,7 +501,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
           {isOfficer && (
             <p className="text-[11px] text-slate-400 mt-2 flex items-center gap-1">
               <Lock className="w-3 h-3 text-slate-400" />
-              Terkunci otomatis sesuai akun Google Anda: <strong>{currentUser.name}</strong>
+              Terkunci otomatis sesuai akun login Anda: <strong>{currentUser.name}</strong>
             </p>
           )}
         </div>
@@ -525,7 +525,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
 
           <div className="space-y-2.5">
             {activeRooms.map((room) => {
-              const schedule = getScheduledOfficerForRoom(room.name, todayStr);
+              const schedule = getScheduledOfficerForRoom(room.name, todayStr, allSchedules);
               const isAssignedToCurrentUser = !isOfficer || myAssignedRoomsToday.includes(room.name);
               const isSelected = !isAreaOther && selectedArea === room.name;
               const scheduledOfficerName = schedule?.officerName || 'Semua Petugas';

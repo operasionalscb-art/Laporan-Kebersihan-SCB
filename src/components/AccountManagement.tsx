@@ -29,7 +29,11 @@ import {
   Info,
   ChevronRight,
   Eye,
-  EyeOff
+  EyeOff,
+  Cloud,
+  Download,
+  Upload,
+  Loader2,
 } from 'lucide-react';
 
 export interface RolePermissionFeature {
@@ -261,6 +265,13 @@ interface AccountManagementProps {
   onDeleteUser: (id: string) => void;
   onSwitchUser?: (user: User) => void;
   onResetData?: () => void;
+  isCloudSynced?: boolean;
+  cloudUserEmail?: string | null;
+  onConnectCloudSync?: () => Promise<void>;
+  onDisconnectCloudSync?: () => Promise<void>;
+  onSyncUsersNow?: () => Promise<void>;
+  onImportUsers?: (users: User[]) => void;
+  onShowToast?: (message: string, type?: 'success' | 'info' | 'error') => void;
 }
 
 export const AccountManagement: React.FC<AccountManagementProps> = ({
@@ -269,11 +280,20 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   onAddUser,
   onUpdateUser,
   onDeleteUser,
+  isCloudSynced = false,
+  cloudUserEmail = null,
+  onConnectCloudSync,
+  onDisconnectCloudSync,
+  onSyncUsersNow,
+  onImportUsers,
+  onShowToast,
 }) => {
   const [searchUser, setSearchUser] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [formError, setFormError] = useState<string>('');
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+  const importUsersInputRef = React.useRef<HTMLInputElement>(null);
 
   // Sub Tab Navigation: 'users' or 'checklist'
   const [activeSubTab, setActiveSubTab] = useState<'users' | 'checklist'>('users');
@@ -415,8 +435,68 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
     });
   }, [selectedCategory, searchFeature]);
 
+  const handleExportUsersJson = () => {
+    try {
+      const payload = {
+        appName: 'SIM-BERSIH SCB',
+        type: 'users_directory',
+        exportDate: new Date().toISOString(),
+        users,
+      };
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const filename = `Akun_Petugas_SCB_${dateStr}.json`;
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      onShowToast?.(`Daftar akun diekspor ke ${filename}`, 'success');
+    } catch {
+      onShowToast?.('Gagal mengekspor daftar akun.', 'error');
+    }
+  };
+
+  const handleImportUsersFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(String(ev.target?.result || ''));
+        const candidateUsers: User[] = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.users)
+          ? parsed.users
+          : [];
+        const validUsers = candidateUsers.filter(
+          (u) => u && typeof u.id === 'string' && typeof u.username === 'string' && typeof u.name === 'string'
+        );
+        if (validUsers.length === 0) {
+          onShowToast?.('Berkas JSON tidak memuat daftar akun petugas yang valid.', 'error');
+          return;
+        }
+        onImportUsers?.(validUsers);
+      } catch {
+        onShowToast?.('Format berkas JSON akun tidak valid.', 'error');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <input
+        ref={importUsersInputRef}
+        type="file"
+        accept=".json,application/json"
+        onChange={handleImportUsersFile}
+        className="hidden"
+      />
       {/* Header Banner */}
       <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -488,16 +568,128 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
       {/* TAB CONTENT 1: DAFTAR AKUN PENGGUNA */}
       {activeSubTab === 'users' && (
         <div className="space-y-6">
-          {/* Info Callout */}
-          <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-start gap-3">
-            <Key className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-bold text-emerald-950">
-                Otentikasi Akun Manual: Username / Email &amp; Kata Sandi atau PIN
-              </p>
-              <p className="text-emerald-800 leading-relaxed">
-                Semua personel (Superadmin, Supervisor, dan Petugas) masuk langsung menggunakan <strong>Username atau Email</strong> beserta <strong>Kata Sandi / PIN</strong> yang dikelola di sini tanpa perlu pop-up Google. Pastikan kredensial masing-masing personel diatur dengan benar.
-              </p>
+          {/* Cross-Device Cloud Sync Status & Manual Account Callout */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-start gap-3">
+              <Key className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold text-emerald-950">
+                  Otentikasi Akun Manual: Username / Email &amp; Kata Sandi atau PIN
+                </p>
+                <p className="text-emerald-800 leading-relaxed">
+                  Semua personel masuk langsung menggunakan <strong>Username atau Email</strong> beserta <strong>Kata Sandi / PIN</strong> tanpa pop-up Google. Pastikan kredensial masing-masing personel diatur dengan benar.
+                </p>
+              </div>
+            </div>
+
+            <div
+              className={`p-4 rounded-xl border text-xs flex flex-col justify-between gap-3 ${
+                isCloudSynced
+                  ? 'bg-blue-50/70 border-blue-200 text-blue-950'
+                  : 'bg-amber-50/80 border-amber-200 text-amber-950'
+              }`}
+            >
+              <div className="flex items-start gap-2.5">
+                <Cloud
+                  className={`w-5 h-5 shrink-0 mt-0.5 ${
+                    isCloudSynced ? 'text-blue-600' : 'text-amber-600'
+                  }`}
+                />
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold">
+                      {isCloudSynced
+                        ? 'Sinkronisasi Cloud Firestore Aktif'
+                        : 'Penyimpanan Lokal Browser (Belum Sinkron Antar Perangkat)'}
+                    </span>
+                    {isCloudSynced && cloudUserEmail && (
+                      <span className="text-[10px] font-mono bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-800">
+                        {cloudUserEmail}
+                      </span>
+                    )}
+                  </div>
+                  <p className={isCloudSynced ? 'text-blue-800 leading-relaxed' : 'text-amber-900 leading-relaxed'}>
+                    {isCloudSynced
+                      ? 'Perubahan daftar petugas/akun langsung tersimpan ke Firebase Cloud. Klik Sinkronkan Sekarang untuk memastikan semua akun lokal terkirim ke cloud.'
+                      : 'Login manual berjalan lokal tanpa sesi Firebase Auth, sehingga penambahan/edit petugas hanya tersimpan di browser ini. Hubungkan Sesi Cloud Admin atau ekspor berkas JSON untuk memindahkan data akun ke perangkat lain.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {!isCloudSynced && onConnectCloudSync ? (
+                  <button
+                    type="button"
+                    disabled={isSyncingCloud}
+                    onClick={async () => {
+                      setIsSyncingCloud(true);
+                      try {
+                        await onConnectCloudSync();
+                      } finally {
+                        setIsSyncingCloud(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[11px] shadow-xs transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    {isSyncingCloud ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Cloud className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isSyncingCloud ? 'Menghubungkan...' : 'Hubungkan Cloud Sync Admin'}</span>
+                  </button>
+                ) : (
+                  <>
+                    {onSyncUsersNow && (
+                      <button
+                        type="button"
+                        disabled={isSyncingCloud}
+                        onClick={async () => {
+                          setIsSyncingCloud(true);
+                          try {
+                            await onSyncUsersNow();
+                          } finally {
+                            setIsSyncingCloud(false);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-[11px] shadow-xs transition-colors cursor-pointer disabled:opacity-60"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+                        <span>Sinkronkan Semua Akun ke Cloud</span>
+                      </button>
+                    )}
+                    {onDisconnectCloudSync && (
+                      <button
+                        type="button"
+                        onClick={() => onDisconnectCloudSync()}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 font-semibold rounded-lg text-[11px] border border-slate-200 cursor-pointer"
+                      >
+                        <span>Putus Cloud</span>
+                      </button>
+                    )}
+                  </>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleExportUsersJson}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 font-semibold rounded-lg text-[11px] border border-slate-300 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Ekspor Akun (.JSON)</span>
+                </button>
+
+                {onImportUsers && (
+                  <button
+                    type="button"
+                    onClick={() => importUsersInputRef.current?.click()}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 font-semibold rounded-lg text-[11px] border border-slate-300 cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Impor Akun (.JSON)</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 

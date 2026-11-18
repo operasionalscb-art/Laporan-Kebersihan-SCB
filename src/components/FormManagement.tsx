@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   MasterRoom, 
   MasterChecklist, 
@@ -89,6 +89,10 @@ export const FormManagement: React.FC<FormManagementProps> = ({
 
   // Settings local state
   const [localSettings, setLocalSettings] = useState<FormSettings>({ ...formSettings });
+
+  useEffect(() => {
+    setLocalSettings({ ...formSettings });
+  }, [formSettings]);
 
   // Today context for live preview
   const todayIndex = new Date().getDay();

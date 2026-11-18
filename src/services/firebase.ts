@@ -1,6 +1,14 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  doc,
+  getDocFromServer,
+  Firestore,
+} from 'firebase/firestore';
 import rawConfig from '../../firebase-applet-config.json';
 
 export const firebaseConfig = {
@@ -24,10 +32,32 @@ export const FIRESTORE_DATABASE_ID: string =
 
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
+
+function initDb(): Firestore {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      },
+      FIRESTORE_DATABASE_ID
+    );
+  } catch {
+    return getFirestore(app, FIRESTORE_DATABASE_ID);
+  }
+}
+
+export const db: Firestore = initDb();
+
+let hasTestedConnection = false;
 
 // Connection test on initial boot to validate Firestore reachability
 export async function testFirestoreConnection(): Promise<boolean> {
+  if (hasTestedConnection) return true;
+  hasTestedConnection = true;
+
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     return true;
@@ -36,7 +66,7 @@ export async function testFirestoreConnection(): Promise<boolean> {
       console.error('Please check your Firebase configuration. Firestore client is offline.');
       return false;
     }
-    // Permission error or missing test doc still confirms live network reachability to Firestore
+    // Permission error, quota check, or missing test doc still confirms live network reachability to Firestore
     return true;
   }
 }

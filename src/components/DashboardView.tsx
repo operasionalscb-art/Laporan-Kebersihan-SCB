@@ -257,17 +257,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (list.length === 0) {
       return [
         {
-          id: 'user-supervisor-1',
-          name: 'SUPERVISOR SARPRAS SCB',
-          email: 'supervisor@scb.sch.id',
-          username: 'supervisor',
+          id: 'user-supervisor-windi',
+          name: 'WINDI',
+          email: 'operasional.ga2022@gmail.com',
+          username: 'windi',
           password: 'supervisor123',
           pin: '1234',
           role: 'supervisor' as const,
-          phone: '081234567890',
           isActive: true,
-          createdAt: '2026-01-05',
-          avatarColor: 'from-blue-600 to-indigo-700',
+          createdAt: '2026-09-29',
+          avatarColor: 'from-emerald-600 to-teal-700',
         },
       ];
     }

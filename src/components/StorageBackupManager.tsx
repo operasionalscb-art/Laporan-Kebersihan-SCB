@@ -1,5 +1,12 @@
 import React, { useState, useRef, useMemo } from 'react';
-import { CleaningReport } from '../types';
+import {
+  CleaningReport,
+  User,
+  MasterRoom,
+  MasterChecklist,
+  FormSettings,
+  RoomSchedule,
+} from '../types';
 import { 
   DEFAULT_DATABASE_FOLDER_ID,
   DEFAULT_DATABASE_FOLDER_URL,
@@ -50,17 +57,38 @@ import {
   Copy
 } from 'lucide-react';
 
+export interface FullBackupPayload {
+  reports: CleaningReport[];
+  users?: User[];
+  masterRooms?: MasterRoom[];
+  masterChecklists?: MasterChecklist[];
+  formSettings?: FormSettings;
+  roomSchedules?: RoomSchedule[];
+}
+
 interface StorageBackupManagerProps {
   reports: CleaningReport[];
+  users?: User[];
+  masterRooms?: MasterRoom[];
+  masterChecklists?: MasterChecklist[];
+  formSettings?: FormSettings;
+  roomSchedules?: RoomSchedule[];
   onShowToast: (message: string, type?: 'success' | 'info' | 'error') => void;
   onRestoreReports?: (reports: CleaningReport[]) => void;
+  onRestoreFullBackup?: (payload: FullBackupPayload, mode: 'replace' | 'merge') => void;
   onResetData?: () => void;
 }
 
 export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   reports,
+  users = [],
+  masterRooms = [],
+  masterChecklists = [],
+  formSettings,
+  roomSchedules = [],
   onShowToast,
   onRestoreReports,
+  onRestoreFullBackup,
   onResetData,
 }) => {
   // Configured Cloud Folder (Permanently fixed to official SCB folder)
@@ -72,9 +100,16 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   const [previewRestoreData, setPreviewRestoreData] = useState<{
     fileName: string;
     totalReports: number;
+    totalUsers?: number;
+    totalSchedules?: number;
     backupTimestamp?: string;
     appName?: string;
     reports: CleaningReport[];
+    users?: User[];
+    masterRooms?: MasterRoom[];
+    masterChecklists?: MasterChecklist[];
+    formSettings?: FormSettings;
+    roomSchedules?: RoomSchedule[];
   } | null>(null);
   const [restoreMode, setRestoreMode] = useState<'replace' | 'merge'>('replace');
 
@@ -131,16 +166,22 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
     };
   }, [reports]);
 
-  // Direct 1-Click JSON Backup Download
+  // Direct 1-Click JSON Backup Download (includes reports + accounts + form config + schedules)
   const handleDownloadJsonBackup = () => {
     try {
       const payload = {
         appName: 'SIM-BERSIH SCB',
         institution: 'Sekolah Cendekia BAZNAS (SCB)',
         exportDate: new Date().toISOString(),
-        version: '2.0',
+        version: '3.0',
         totalReports: reports.length,
+        totalUsers: users.length,
         reports,
+        users,
+        masterRooms,
+        masterChecklists,
+        formSettings,
+        roomSchedules,
       };
 
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -155,7 +196,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      onShowToast(`File cadangan database berhasil diunduh: ${filename}`, 'success');
+      onShowToast(`File cadangan lengkap berhasil diunduh: ${filename}`, 'success');
     } catch (err: any) {
       console.error(err);
       onShowToast('Gagal mengunduh file cadangan', 'error');
@@ -224,28 +265,52 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
         const parsed = JSON.parse(content);
 
         let reportsArray: CleaningReport[] = [];
+        let usersArray: User[] | undefined;
+        let parsedRooms: MasterRoom[] | undefined;
+        let parsedChecklists: MasterChecklist[] | undefined;
+        let parsedSettings: FormSettings | undefined;
+        let parsedSchedules: RoomSchedule[] | undefined;
+
         if (Array.isArray(parsed)) {
           reportsArray = parsed;
-        } else if (parsed && Array.isArray(parsed.reports)) {
-          reportsArray = parsed.reports;
+        } else if (parsed && typeof parsed === 'object') {
+          if (Array.isArray(parsed.reports)) reportsArray = parsed.reports;
+          if (Array.isArray(parsed.users)) usersArray = parsed.users;
+          if (Array.isArray(parsed.masterRooms)) parsedRooms = parsed.masterRooms;
+          if (Array.isArray(parsed.masterChecklists)) parsedChecklists = parsed.masterChecklists;
+          if (parsed.formSettings && typeof parsed.formSettings === 'object') parsedSettings = parsed.formSettings;
+          if (Array.isArray(parsed.roomSchedules)) parsedSchedules = parsed.roomSchedules;
+
+          if (!Array.isArray(parsed.reports) && !usersArray && !parsedSchedules && !parsedRooms) {
+            throw new Error('Berkas tidak memuat daftar laporan atau data sistem yang valid.');
+          }
         } else {
-          throw new Error('Berkas tidak memuat daftar laporan yang valid.');
+          throw new Error('Berkas tidak memuat data cadangan yang valid.');
         }
 
-        // Validate basic structure
-        if (reportsArray.length === 0) {
-          throw new Error('Berkas cadangan kosong (0 laporan).');
+        if (reportsArray.length === 0 && (!usersArray || usersArray.length === 0) && (!parsedSchedules || parsedSchedules.length === 0)) {
+          throw new Error('Berkas cadangan kosong (tidak ada laporan, akun, atau jadwal).');
         }
 
         setPreviewRestoreData({
           fileName: file.name,
           totalReports: reportsArray.length,
+          totalUsers: usersArray?.length,
+          totalSchedules: parsedSchedules?.length,
           backupTimestamp: parsed.exportDate || parsed.backupTimestamp,
           appName: parsed.appName || 'SIM-BERSIH SCB',
           reports: reportsArray,
+          users: usersArray,
+          masterRooms: parsedRooms,
+          masterChecklists: parsedChecklists,
+          formSettings: parsedSettings,
+          roomSchedules: parsedSchedules,
         });
 
-        onShowToast(`File cadangan valid (${reportsArray.length} laporan ditemukan). Silakan konfirmasi pemulihan.`, 'info');
+        onShowToast(
+          `Berkas cadangan valid (${reportsArray.length} laporan${usersArray ? `, ${usersArray.length} akun` : ''}). Silakan konfirmasi pemulihan.`,
+          'info'
+        );
       } catch (err: any) {
         console.error(err);
         onShowToast(err.message || 'Format file JSON cadangan tidak valid.', 'error');
@@ -259,19 +324,32 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
 
   // Confirm and Apply Restore
   const handleApplyRestore = () => {
-    if (!previewRestoreData || !onRestoreReports) return;
+    if (!previewRestoreData) return;
 
     try {
-      if (restoreMode === 'replace') {
-        onRestoreReports(previewRestoreData.reports);
-        onShowToast(`Berhasil memulihkan ${previewRestoreData.reports.length} laporan ke sistem!`, 'success');
-      } else {
-        // Merge mode: combine without duplicates based on ID
-        const existingIds = new Set(reports.map((r) => r.id));
-        const newReports = previewRestoreData.reports.filter((r) => !existingIds.has(r.id));
-        const merged = [...newReports, ...reports];
-        onRestoreReports(merged);
-        onShowToast(`Berhasil menggabungkan ${newReports.length} laporan baru ke sistem!`, 'success');
+      if (onRestoreFullBackup) {
+        onRestoreFullBackup(
+          {
+            reports: previewRestoreData.reports,
+            users: previewRestoreData.users,
+            masterRooms: previewRestoreData.masterRooms,
+            masterChecklists: previewRestoreData.masterChecklists,
+            formSettings: previewRestoreData.formSettings,
+            roomSchedules: previewRestoreData.roomSchedules,
+          },
+          restoreMode
+        );
+      } else if (onRestoreReports) {
+        if (restoreMode === 'replace') {
+          onRestoreReports(previewRestoreData.reports);
+          onShowToast(`Berhasil memulihkan ${previewRestoreData.reports.length} laporan ke sistem!`, 'success');
+        } else {
+          const existingIds = new Set(reports.map((r) => r.id));
+          const newReports = previewRestoreData.reports.filter((r) => !existingIds.has(r.id));
+          const merged = [...newReports, ...reports];
+          onRestoreReports(merged);
+          onShowToast(`Berhasil menggabungkan ${newReports.length} laporan baru ke sistem!`, 'success');
+        }
       }
 
       setPreviewRestoreData(null);
@@ -548,11 +626,17 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-emerald-200 text-xs space-y-2">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div>
                 <span className="text-slate-500 block text-[11px]">Jumlah Laporan:</span>
                 <span className="font-bold text-slate-800">{previewRestoreData.totalReports} Laporan</span>
               </div>
+              {typeof previewRestoreData.totalUsers === 'number' && (
+                <div>
+                  <span className="text-slate-500 block text-[11px]">Akun Personil:</span>
+                  <span className="font-bold text-slate-800">{previewRestoreData.totalUsers} Akun</span>
+                </div>
+              )}
               <div>
                 <span className="text-slate-500 block text-[11px]">Waktu Cadangan:</span>
                 <span className="font-bold text-slate-800">

@@ -24,6 +24,8 @@ interface NavbarProps {
   onLogout: () => void;
   onOpenLoginModal: (reason?: string) => void;
   onRequestInputReport: () => void;
+  isCloudSynced?: boolean;
+  cloudUserEmail?: string | null;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -33,6 +35,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout,
   onOpenLoginModal,
   onRequestInputReport,
+  isCloudSynced = false,
+  cloudUserEmail = null,
 }) => {
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
 
@@ -57,11 +61,27 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <div className="flex items-center space-x-3 text-[11px]">
             {currentUser ? (
-              <span className="inline-flex items-center gap-1 text-emerald-200">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="hidden md:inline">Status:</span>
+              <span
+                title={
+                  isCloudSynced
+                    ? `Tersinkron ke Firebase Cloud (${cloudUserEmail || 'aktif'})`
+                    : 'Mode Lokal: perubahan akun & laporan tersimpan di perangkat ini. Hubungkan Cloud Sync di Kelola Akun untuk sinkron antar perangkat.'
+                }
+                className="inline-flex items-center gap-1.5 text-emerald-100"
+              >
+                {isCloudSynced ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                ) : (
+                  <span className="w-2 h-2 rounded-full bg-amber-300 shrink-0" />
+                )}
                 <span className="font-semibold text-white">
-                  Online ({currentUser.role === 'superadmin' ? 'SUPERADMIN' : currentUser.role === 'supervisor' ? 'SUPERVISOR' : 'PETUGAS'})
+                  {isCloudSynced ? 'Cloud Aktif' : 'Lokal'} (
+                  {currentUser.role === 'superadmin'
+                    ? 'SUPERADMIN'
+                    : currentUser.role === 'supervisor'
+                    ? 'SUPERVISOR'
+                    : 'PETUGAS'}
+                  )
                 </span>
               </span>
             ) : (

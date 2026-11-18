@@ -55,7 +55,10 @@ import {
   saveMasterChecklistsToCloud,
   saveFormSettingsToCloud,
   subscribeRoomSchedules,
-  saveRoomSchedulesToCloud
+  saveRoomSchedulesToCloud,
+  resetCloudSyncSessionFlags,
+  syncAllUsersToCloud,
+  syncAllAppDataToCloud
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -65,7 +68,10 @@ import { AccountManagement } from './components/AccountManagement';
 import { LoginModal } from './components/LoginModal';
 import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
+import { FullBackupPayload } from './components/StorageBackupManager';
 import { 
+  googleSignIn,
+  parseAuthError,
   getGoogleAccessToken, 
   googleSignOut
 } from './services/googleAuth';
@@ -99,6 +105,7 @@ export default function App() {
 
   const [loginModalPrompt, setLoginModalPrompt] = useState<string>('');
   const [preselectedArea, setPreselectedArea] = useState<string | null>(null);
+  const [cloudUserEmail, setCloudUserEmail] = useState<string | null>(() => auth.currentUser?.email || null);
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ message, type });
@@ -201,6 +208,7 @@ export default function App() {
     // 2. Subscribe to Live Firestore Users ONLY if Firebase Auth session already exists
     let unsubscribeUsers: (() => void) | null = null;
     const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
+      setCloudUserEmail(fbUser?.email || null);
       if (unsubscribeUsers) {
         unsubscribeUsers();
         unsubscribeUsers = null;
@@ -209,6 +217,8 @@ export default function App() {
         unsubscribeUsers = subscribeUsers((cloudUsers) => {
           setUsers(cloudUsers);
         });
+      } else {
+        resetCloudSyncSessionFlags();
       }
     });
 
@@ -224,6 +234,32 @@ export default function App() {
       setRoomSchedules(schedules);
     });
 
+    // 5. Cross-tab localStorage sync on the same browser
+    const handleStorageChange = (event: StorageEvent) => {
+      if (!event.key) return;
+      if (event.key === 'scb_cleaning_users_v2') {
+        setUsers(getUsers());
+      } else if (event.key === 'scb_cleaning_reports_v2') {
+        try {
+          const parsed = event.newValue ? JSON.parse(event.newValue) : [];
+          if (Array.isArray(parsed)) setReports(parsed);
+        } catch {
+          setReports(getReports());
+        }
+      } else if (event.key === 'scb_master_rooms_v1') {
+        setMasterRooms(getMasterRooms());
+      } else if (event.key === 'scb_master_checklists_v1') {
+        setMasterChecklists(getMasterChecklists());
+      } else if (event.key === 'scb_form_settings_v1') {
+        setFormSettings(getFormSettings());
+      } else if (event.key === 'scb_room_schedules_v1') {
+        setRoomSchedules(getRoomSchedules());
+      } else if (event.key === 'scb_current_user_v2') {
+        setCurrentUserState(getCurrentUser());
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
     return () => {
       unsubscribeReports();
       unsubscribeAuth();
@@ -232,8 +268,34 @@ export default function App() {
       }
       unsubscribeFormConfig();
       unsubscribeSchedules();
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
+
+  // Keep active manual session aligned with any roster updates (e.g., rename/role/deactivation)
+  useEffect(() => {
+    if (!currentUser || users.length === 0) return;
+    const latest = users.find((u) => u.id === currentUser.id);
+    if (!latest) return;
+    if (latest.isActive === false) {
+      clearCurrentUser();
+      setCurrentUserState(null);
+      setActiveTab('dashboard');
+      showToast('Akun Anda telah dinonaktifkan oleh Superadmin.', 'error');
+      return;
+    }
+    if (
+      latest.name !== currentUser.name ||
+      latest.role !== currentUser.role ||
+      latest.email !== currentUser.email ||
+      latest.username !== currentUser.username ||
+      latest.password !== currentUser.password ||
+      latest.pin !== currentUser.pin
+    ) {
+      setCurrentUserState(latest);
+      setCurrentUser(latest);
+    }
+  }, [users, currentUser]);
 
   // Handlers for Reports
   const handleAddNewReport = async (newReportData: Omit<CleaningReport, 'id' | 'timestamp'>) => {
@@ -386,12 +448,24 @@ export default function App() {
   };
 
   const handleUpdateUser = async (id: string, updates: Partial<User>) => {
+    const previousUser = users.find((u) => u.id === id);
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...updates } : u)));
     const updated = updateUser(id, updates);
     if (currentUser?.id === id && updated) {
       setCurrentUserState(updated);
       setCurrentUser(updated);
     }
+
+    // Keep officerName synced inside roomSchedules if user was renamed
+    if (updated && previousUser && updates.name && updates.name !== previousUser.name) {
+      const updatedSchedules = roomSchedules.map((sch) =>
+        sch.officerId === id || sch.officerName.trim().toLowerCase() === previousUser.name.trim().toLowerCase()
+          ? { ...sch, officerName: updated.name }
+          : sch
+      );
+      handleSaveSchedules(updatedSchedules);
+    }
+
     showToast('Data petugas berhasil diperbarui.');
 
     if (updated) {
@@ -413,6 +487,132 @@ export default function App() {
     } catch (e) {
       console.warn('Deleted user locally, cloud sync error:', e);
     }
+  };
+
+  const handleConnectCloudSync = async () => {
+    const localUsersSnapshot = getUsers();
+    const localRoomsSnapshot = getMasterRooms();
+    const localChecklistsSnapshot = getMasterChecklists();
+    const localSettingsSnapshot = getFormSettings();
+    const localSchedulesSnapshot = getRoomSchedules();
+    const localReportsSnapshot = getReports();
+
+    try {
+      const res = await googleSignIn('firebase', 'operasional.scb@gmail.com', 'login');
+      const email = res?.profile?.email?.trim().toLowerCase() || '';
+      setCloudUserEmail(email || auth.currentUser?.email || null);
+      if (email === 'operasional.scb@gmail.com') {
+        await syncAllAppDataToCloud({
+          users: localUsersSnapshot,
+          masterRooms: localRoomsSnapshot,
+          masterChecklists: localChecklistsSnapshot,
+          formSettings: localSettingsSnapshot,
+          roomSchedules: localSchedulesSnapshot,
+          reports: localReportsSnapshot,
+        });
+        showToast('Sinkronisasi Cloud Firestore aktif! Seluruh data petugas & laporan disinkronkan.', 'success');
+      } else {
+        showToast(
+          `Terhubung ke Cloud (${email}). Gunakan operasional.scb@gmail.com agar hak tulis Superadmin aktif.`,
+          'info'
+        );
+      }
+    } catch (err: any) {
+      const parsed = parseAuthError(err);
+      showToast(parsed.message || 'Gagal menghubungkan sesi Cloud Admin.', 'error');
+    }
+  };
+
+  const handleDisconnectCloudSync = async () => {
+    await googleSignOut();
+    resetCloudSyncSessionFlags();
+    setCloudUserEmail(null);
+    showToast('Koneksi Cloud Sync diputus. Sistem kembali ke penyimpanan lokal.', 'info');
+  };
+
+  const handleSyncUsersNow = async () => {
+    try {
+      await syncAllUsersToCloud(users);
+      showToast(`${users.length} akun petugas berhasil disinkronkan ke Cloud!`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal menyinkronkan daftar akun ke Cloud.', 'error');
+    }
+  };
+
+  const handleImportUsers = async (importedUsers: User[]) => {
+    const mergedMap = new Map<string, User>(users.map((u) => [u.id, u]));
+    for (const incoming of importedUsers) {
+      mergedMap.set(incoming.id, incoming);
+    }
+    const mergedList = Array.from(mergedMap.values());
+    saveUsers(mergedList);
+    setUsers(mergedList);
+    if (auth.currentUser) {
+      await syncAllUsersToCloud(mergedList).catch(() => {});
+    }
+    showToast(`${importedUsers.length} akun petugas berhasil diimpor ke sistem!`, 'success');
+  };
+
+  const handleRestoreFullBackup = async (payload: FullBackupPayload, mode: 'replace' | 'merge') => {
+    // 1. Reports
+    let finalReports = payload.reports || [];
+    if (mode === 'merge') {
+      const existingIds = new Set(reports.map((r) => r.id));
+      const newReps = finalReports.filter((r) => !existingIds.has(r.id));
+      finalReports = [...newReps, ...reports];
+    }
+    saveReports(finalReports);
+    setReports(finalReports);
+
+    // 2. Users (if present in backup)
+    let finalUsers: User[] | undefined;
+    if (Array.isArray(payload.users) && payload.users.length > 0) {
+      if (mode === 'replace') {
+        finalUsers = payload.users;
+      } else {
+        const userMap = new Map(users.map((u) => [u.id, u]));
+        for (const u of payload.users) userMap.set(u.id, u);
+        finalUsers = Array.from(userMap.values());
+      }
+      saveUsers(finalUsers);
+      setUsers(finalUsers);
+    }
+
+    // 3. Form Config & Schedules (if present in backup)
+    if (Array.isArray(payload.masterRooms) && payload.masterRooms.length > 0) {
+      saveMasterRooms(payload.masterRooms);
+      setMasterRooms(payload.masterRooms);
+      saveMasterRoomsToCloud(payload.masterRooms).catch(() => {});
+    }
+    if (Array.isArray(payload.masterChecklists) && payload.masterChecklists.length > 0) {
+      saveMasterChecklists(payload.masterChecklists);
+      setMasterChecklists(payload.masterChecklists);
+      saveMasterChecklistsToCloud(payload.masterChecklists).catch(() => {});
+    }
+    if (payload.formSettings) {
+      saveFormSettings(payload.formSettings);
+      setFormSettings(payload.formSettings);
+      saveFormSettingsToCloud(payload.formSettings).catch(() => {});
+    }
+    if (Array.isArray(payload.roomSchedules) && payload.roomSchedules.length > 0) {
+      saveRoomSchedules(payload.roomSchedules);
+      setRoomSchedules(payload.roomSchedules);
+      saveRoomSchedulesToCloud(payload.roomSchedules).catch(() => {});
+    }
+
+    try {
+      await batchRestoreReportsToCloud(finalReports);
+      if (finalUsers) {
+        await syncAllUsersToCloud(finalUsers);
+      }
+    } catch {
+      showToast('Data dipulihkan lokal, sinkronisasi cloud gagal.', 'error');
+      return;
+    }
+    showToast(
+      `Berhasil memulihkan ${finalReports.length} laporan${finalUsers ? ` & ${finalUsers.length} akun` : ''}!`,
+      'success'
+    );
   };
 
   const handleLoginSuccess = (user: User) => {
@@ -476,6 +676,8 @@ export default function App() {
         onLogout={handleLogout}
         onOpenLoginModal={(reason) => handleOpenLoginModal(reason)}
         onRequestInputReport={handleRequestInputReport}
+        isCloudSynced={Boolean(cloudUserEmail)}
+        cloudUserEmail={cloudUserEmail}
       />
 
       {/* Main Content Area */}
@@ -591,6 +793,13 @@ export default function App() {
               onAddUser={handleAddUser}
               onUpdateUser={handleUpdateUser}
               onDeleteUser={handleDeleteUser}
+              isCloudSynced={Boolean(cloudUserEmail)}
+              cloudUserEmail={cloudUserEmail}
+              onConnectCloudSync={handleConnectCloudSync}
+              onDisconnectCloudSync={handleDisconnectCloudSync}
+              onSyncUsersNow={handleSyncUsersNow}
+              onImportUsers={handleImportUsers}
+              onShowToast={showToast}
             />
           ) : (
             <div className="max-w-md mx-auto my-12 p-6 bg-white rounded-2xl border border-slate-200 text-center">
@@ -614,7 +823,13 @@ export default function App() {
             <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
               <GoogleDriveManager
                 reports={reports}
+                users={users}
+                masterRooms={masterRooms}
+                masterChecklists={masterChecklists}
+                formSettings={formSettings}
+                roomSchedules={roomSchedules}
                 onShowToast={showToast}
+                onRestoreFullBackup={handleRestoreFullBackup}
                 onRestoreReports={(restoredReports) => {
                   saveReports(restoredReports);
                   setReports(restoredReports);
@@ -688,6 +903,8 @@ export default function App() {
           reports={printReportsData}
           periodeLabel={printPeriodeLabel}
           currentUser={currentUser}
+          officers={officers}
+          supervisors={users.filter((u) => u.role === 'supervisor')}
         />
       )}
     </div>

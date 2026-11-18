@@ -10,6 +10,8 @@ interface PrintModalProps {
   reports: CleaningReport[];
   periodeLabel?: string;
   currentUser: User | null;
+  officers?: User[];
+  supervisors?: User[];
 }
 
 export const PrintModal: React.FC<PrintModalProps> = ({
@@ -18,6 +20,8 @@ export const PrintModal: React.FC<PrintModalProps> = ({
   reports,
   periodeLabel,
   currentUser,
+  officers = [],
+  supervisors = [],
 }) => {
   const [showExportPopup, setShowExportPopup] = useState<boolean>(false);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
@@ -224,7 +228,14 @@ export const PrintModal: React.FC<PrintModalProps> = ({
             <div>
               <p className="text-slate-600 mb-16">Petugas Kebersihan,</p>
               <p className="font-bold underline text-slate-900 uppercase">
-                ( IDAY / KODIR / WAHYUDIN )
+                ({' '}
+                {officers.filter((o) => o.isActive !== false).length > 0
+                  ? officers
+                      .filter((o) => o.isActive !== false)
+                      .map((o) => o.name)
+                      .join(' / ')
+                  : 'TIM CLEANING SERVICE'}{' '}
+                )
               </p>
               <p className="text-[10px] text-slate-500">Divisi Cleaning Service</p>
             </div>
@@ -232,7 +243,14 @@ export const PrintModal: React.FC<PrintModalProps> = ({
             <div>
               <p className="text-slate-600 mb-16">Supervisor Kebersihan,</p>
               <p className="font-bold underline text-slate-900 uppercase">
-                ( ..................................... )
+                ({' '}
+                {supervisors.filter((s) => s.role === 'supervisor' && s.isActive !== false).length > 0
+                  ? supervisors
+                      .filter((s) => s.role === 'supervisor' && s.isActive !== false)
+                      .map((s) => s.name)
+                      .join(' / ')
+                  : '.....................................'}{' '}
+                )
               </p>
               <p className="text-[10px] text-slate-500">Supervisor Lapangan</p>
             </div>

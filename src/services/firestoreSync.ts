@@ -102,6 +102,18 @@ const FORM_CONFIG_DOC_ID = 'config_form_configs';
 const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
 
 let isUsersSeeded = false;
+let lastBootstrappedAdminUid: string | null = null;
+let lastBackfilledAdminUid: string | null = null;
+
+export function resetCloudSyncSessionFlags(): void {
+  isUsersSeeded = false;
+  lastBootstrappedAdminUid = null;
+  lastBackfilledAdminUid = null;
+}
+
+export function isFirebaseCloudConnected(): boolean {
+  return Boolean(auth.currentUser?.email);
+}
 
 export function toEmailKey(email: string): string {
   return email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
@@ -453,8 +465,13 @@ export function subscribeUsers(
   return onSnapshot(
     usersQuery,
     async (snapshot) => {
-      if (isAdmin) {
-        await ensureSuperAdminRecord().catch(() => {});
+      if (isAdmin && lastBootstrappedAdminUid !== fbUser.uid) {
+        lastBootstrappedAdminUid = fbUser.uid;
+        await ensureSuperAdminRecord().catch((err) => {
+          if (!isQuotaExceededError(err)) {
+            console.warn('Admin bootstrap note:', err);
+          }
+        });
       }
 
       if (snapshot.empty && isAdmin && !isUsersSeeded) {
@@ -481,6 +498,10 @@ export function subscribeUsers(
           }
           await batch.commit();
         } catch (err) {
+          if (isQuotaExceededError(err)) {
+            console.warn('Firestore quota exceeded while seeding users, using local storage.');
+            return;
+          }
           handleFirestoreError(err, OperationType.WRITE, USERS_COLLECTION);
         }
         return;
@@ -501,8 +522,16 @@ export function subscribeUsers(
         });
         saveUsersToStorage(usersList);
         onUsersChanged(usersList);
-        // Backfill staff_roles directory quietly on admin session
-        Promise.all(usersList.map((u) => syncStaffRoleToCloud(u))).catch(() => {});
+
+        // Backfill staff_roles directory once per authenticated admin session (never on every snapshot)
+        if (lastBackfilledAdminUid !== fbUser.uid) {
+          lastBackfilledAdminUid = fbUser.uid;
+          Promise.all(usersList.map((u) => syncStaffRoleToCloud(u))).catch((err) => {
+            if (!isQuotaExceededError(err)) {
+              console.warn('Staff role backfill note:', err);
+            }
+          });
+        }
       } else if (usersList.length > 0) {
         // Merge own synced user profile into existing roster without overwriting non-PII list
         const existingLocal = getUsersFromStorage();
@@ -797,5 +826,100 @@ export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promi
       return;
     }
     handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Batch syncs all local users and staff_roles to Firestore (Superadmin only)
+ */
+export async function syncAllUsersToCloud(users: User[]): Promise<void> {
+  saveUsersToStorage(users);
+  if (!auth.currentUser || !isCurrentAuthSuperAdmin()) return;
+
+  try {
+    await ensureSuperAdminRecord();
+    const existingSnap = await getDocs(collection(db, USERS_COLLECTION));
+    const desiredIds = new Set(users.map((u) => u.id));
+    const batch = writeBatch(db);
+
+    existingSnap.forEach((docSnap) => {
+      if (!docSnap.id.startsWith('config_') && !docSnap.id.startsWith('sys_') && !desiredIds.has(docSnap.id)) {
+        batch.delete(docSnap.ref);
+      }
+    });
+
+    for (const u of users) {
+      const cleanUser = sanitizeForFirestore({
+        ...u,
+        email: (u.email || `${u.username}@scb.sch.id`).trim().toLowerCase(),
+      });
+      batch.set(doc(db, USERS_COLLECTION, cleanUser.id), cleanUser);
+      if (cleanUser.email) {
+        batch.set(doc(db, STAFF_ROLES_COLLECTION, toEmailKey(cleanUser.email)), {
+          email: cleanUser.email,
+          role: cleanUser.role,
+          isActive: cleanUser.isActive !== false,
+          userId: cleanUser.id,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    await batch.commit();
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('Firestore quota exceeded while syncing users batch.');
+      return;
+    }
+    handleFirestoreError(err, OperationType.WRITE, USERS_COLLECTION);
+  }
+}
+
+/**
+ * Pushes full local configuration & users up to Firestore when Superadmin connects Cloud Sync
+ */
+export async function syncAllAppDataToCloud(payload: {
+  users?: User[];
+  masterRooms?: MasterRoom[];
+  masterChecklists?: MasterChecklist[];
+  formSettings?: FormSettings;
+  roomSchedules?: RoomSchedule[];
+  reports?: CleaningReport[];
+}): Promise<void> {
+  if (!auth.currentUser || !isCurrentAuthSuperAdmin()) return;
+
+  if (payload.users && payload.users.length > 0) {
+    await syncAllUsersToCloud(payload.users);
+  }
+
+  if (payload.masterRooms || payload.masterChecklists || payload.formSettings) {
+    try {
+      await setDoc(
+        doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID),
+        sanitizeForFirestore({
+          rooms: payload.masterRooms || getMasterRooms(),
+          checklists: payload.masterChecklists || getMasterChecklists(),
+          settings: payload.formSettings || getFormSettings(),
+        })
+      );
+    } catch (err) {
+      if (!isQuotaExceededError(err)) {
+        handleFirestoreError(
+          err,
+          OperationType.WRITE,
+          `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`
+        );
+      }
+    }
+  }
+
+  if (payload.roomSchedules) {
+    await saveRoomSchedulesToCloud(payload.roomSchedules);
+  }
+
+  if (payload.reports && payload.reports.length > 0) {
+    for (const rep of payload.reports) {
+      await saveReportToCloud(rep);
+    }
   }
 }
