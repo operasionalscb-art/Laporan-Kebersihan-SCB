@@ -3,8 +3,7 @@ import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDocFromServer,
   Firestore,
@@ -38,9 +37,7 @@ function initDb(): Firestore {
     return initializeFirestore(
       app,
       {
-        localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager(),
-        }),
+        localCache: memoryLocalCache(),
       },
       FIRESTORE_DATABASE_ID
     );

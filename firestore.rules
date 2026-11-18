@@ -166,7 +166,7 @@ service cloud.firestore {
     // Mode Tamu & staff can view dashboard reports; only verified active staff can create/update.
     match /reports/{reportId} {
       allow get: if isValidId(reportId);
-      allow list: if isBootstrappedAdmin() || resource.data.timestamp > 0;
+      allow list: if resource.data.timestamp > 0;
 
       allow create: if isValidId(reportId)
         && isValidReport(incoming())
