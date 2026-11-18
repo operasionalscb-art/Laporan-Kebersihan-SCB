@@ -33,10 +33,36 @@ if (typeof window !== 'undefined') {
   }).catch(() => {});
 }
 
+const STORAGE_OFFICIAL_USERS_SYNC_KEY = 'scb_official_users_sync_v1';
+
 export const INITIAL_USERS: User[] = [
   {
+    id: 'user-supervisor-windi',
+    name: 'WINDI',
+    email: 'operasional.ga2022@gmail.com',
+    username: 'windi',
+    password: 'supervisor123',
+    pin: '1234',
+    role: 'supervisor',
+    isActive: true,
+    createdAt: '2026-09-29',
+    avatarColor: 'from-emerald-600 to-teal-700',
+  },
+  {
+    id: 'user-supervisor-azar',
+    name: 'AZAR',
+    email: 'it.labkomscb@gmail.com',
+    username: 'azar',
+    password: 'supervisor123',
+    pin: '1234',
+    role: 'supervisor',
+    isActive: true,
+    createdAt: '2026-09-30',
+    avatarColor: 'from-emerald-600 to-teal-700',
+  },
+  {
     id: 'user-admin-1',
-    name: 'Superadmin Operasional SCB',
+    name: 'SUPERADMIN OPERASIONAL SCB',
     email: 'operasional.scb@gmail.com',
     username: 'operasional.scb',
     password: 'admin123',
@@ -45,25 +71,12 @@ export const INITIAL_USERS: User[] = [
     phone: '081298765432',
     isActive: true,
     createdAt: '2026-01-01',
-    avatarColor: 'from-amber-600 to-yellow-700',
-  },
-  {
-    id: 'user-supervisor-1',
-    name: 'SUPERVISOR SARPRAS SCB',
-    email: 'supervisor@scb.sch.id',
-    username: 'supervisor',
-    password: 'supervisor123',
-    pin: '1234',
-    role: 'supervisor',
-    phone: '081234567890',
-    isActive: true,
-    createdAt: '2026-01-05',
-    avatarColor: 'from-blue-600 to-indigo-700',
+    avatarColor: 'from-emerald-600 to-teal-700',
   },
   {
     id: 'user-officer-1',
     name: 'IDAY M YUSUF',
-    email: 'iday@scb.sch.id',
+    email: 'idaymuhamadyusup@gmail.com',
     username: 'iday',
     password: '123456',
     pin: '1234',
@@ -71,25 +84,12 @@ export const INITIAL_USERS: User[] = [
     phone: '085712345678',
     isActive: true,
     createdAt: '2026-01-10',
-    avatarColor: 'from-emerald-600 to-teal-700',
-  },
-  {
-    id: 'user-officer-2',
-    name: 'ABDUL KODIR',
-    email: 'kodir@scb.sch.id',
-    username: 'kodir',
-    password: '123456',
-    pin: '1234',
-    role: 'petugas',
-    phone: '085887654321',
-    isActive: true,
-    createdAt: '2026-01-10',
-    avatarColor: 'from-amber-600 to-orange-700',
+    avatarColor: 'from-blue-600 to-indigo-700',
   },
   {
     id: 'user-officer-3',
     name: 'WAHYUDIN',
-    email: 'wahyudin@scb.sch.id',
+    email: 'aldbayu88@gmail.com',
     username: 'wahyudin',
     password: '123456',
     pin: '1234',
@@ -133,21 +133,80 @@ export function getCurrentTimeString(): string {
 
 export const INITIAL_REPORTS: CleaningReport[] = [];
 
+function syncOfficialUsersOnce(existing: User[]): User[] {
+  try {
+    if (localStorage.getItem(STORAGE_OFFICIAL_USERS_SYNC_KEY) === 'true') {
+      return existing;
+    }
+
+    const legacyDummyEmails = new Set(['supervisor@scb.sch.id', 'kodir@scb.sch.id']);
+    const cleaned = existing.filter(
+      (u) => !legacyDummyEmails.has((u.email || '').trim().toLowerCase())
+    );
+
+    const officialByUsername = new Map(
+      INITIAL_USERS.map((u) => [u.username.trim().toLowerCase(), u])
+    );
+
+    const merged: User[] = cleaned.map((u) => {
+      const key = (u.username || '').trim().toLowerCase();
+      const official = officialByUsername.get(key);
+      if (!official) return u;
+      return {
+        ...official,
+        ...u,
+        name: official.name,
+        email: official.email,
+        role: official.role,
+        createdAt: official.createdAt,
+        password: u.password || official.password,
+        pin: u.pin || official.pin,
+        avatarColor: u.avatarColor || official.avatarColor,
+      };
+    });
+
+    for (const official of INITIAL_USERS) {
+      const key = official.username.trim().toLowerCase();
+      const exists = merged.some((u) => (u.username || '').trim().toLowerCase() === key);
+      if (!exists) {
+        merged.push(official);
+      }
+    }
+
+    const orderMap = new Map(
+      INITIAL_USERS.map((u, idx) => [u.username.trim().toLowerCase(), idx])
+    );
+    merged.sort((a, b) => {
+      const idxA = orderMap.get((a.username || '').trim().toLowerCase()) ?? 999;
+      const idxB = orderMap.get((b.username || '').trim().toLowerCase()) ?? 999;
+      return idxA - idxB;
+    });
+
+    saveUsers(merged);
+    localStorage.setItem(STORAGE_OFFICIAL_USERS_SYNC_KEY, 'true');
+    return merged;
+  } catch {
+    return existing;
+  }
+}
+
 // User storage
 export function getUsers(): User[] {
   try {
     const raw = localStorage.getItem(STORAGE_USERS_KEY);
     if (!raw) {
-      localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(INITIAL_USERS));
+      saveUsers(INITIAL_USERS);
+      localStorage.setItem(STORAGE_OFFICIAL_USERS_SYNC_KEY, 'true');
       return INITIAL_USERS;
     }
     const parsed: User[] = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) {
-      localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(INITIAL_USERS));
+      saveUsers(INITIAL_USERS);
+      localStorage.setItem(STORAGE_OFFICIAL_USERS_SYNC_KEY, 'true');
       return INITIAL_USERS;
     }
 
-    return parsed;
+    return syncOfficialUsersOnce(parsed);
   } catch (e) {
     console.error('Failed to load users from localStorage', e);
     return INITIAL_USERS;
@@ -169,7 +228,7 @@ export function addUser(user: Omit<User, 'id' | 'createdAt'>): User {
     ...user,
     id: `user-${Date.now()}`,
     createdAt: getTodayDateString(),
-    avatarColor: 'from-emerald-600 to-teal-700',
+    avatarColor: user.avatarColor || 'from-emerald-600 to-teal-700',
   };
   users.push(newUser);
   saveUsers(users);

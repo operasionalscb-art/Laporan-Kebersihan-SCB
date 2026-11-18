@@ -171,8 +171,8 @@ export const DEFAULT_ROOM_SCHEDULES: RoomSchedule[] = [
   {
     id: 'sch-3',
     roomName: 'KM KANTOR UTAMA',
-    officerId: 'user-officer-2',
-    officerName: 'ABDUL KODIR',
+    officerId: 'user-officer-1',
+    officerName: 'IDAY M YUSUF',
     daysOfWeek: [1, 2, 3, 4, 5, 6],
     shift: 'Harian',
     isActive: true,
@@ -181,8 +181,8 @@ export const DEFAULT_ROOM_SCHEDULES: RoomSchedule[] = [
   {
     id: 'sch-4',
     roomName: 'T WUDHU KLINIK',
-    officerId: 'user-officer-2',
-    officerName: 'ABDUL KODIR',
+    officerId: 'user-officer-3',
+    officerName: 'WAHYUDIN',
     daysOfWeek: [1, 2, 3, 4, 5, 6],
     shift: 'Harian',
     isActive: true,

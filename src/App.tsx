@@ -13,6 +13,7 @@ import {
   RoomSchedule 
 } from './types';
 import { 
+  INITIAL_USERS,
   getUsers, 
   saveUsers,
   addUser, 
@@ -170,24 +171,27 @@ export default function App() {
     setCurrentUserState(loadedCurrentUser);
 
     // Initial local cache load for instant render
-    setUsers(getUsers());
+    if (hasLocalUsers) {
+      setUsers(getUsers());
+    } else {
+      setUsers(INITIAL_USERS);
+      loadUsersFromIDB()
+        .then((idbUsers) => {
+          if (idbUsers && idbUsers.length > 0) {
+            localStorage.removeItem('scb_official_users_sync_v1');
+            saveUsers(idbUsers);
+          }
+          setUsers(getUsers());
+        })
+        .catch(() => {
+          setUsers(getUsers());
+        });
+    }
     setReports(getReports());
     setMasterRooms(getMasterRooms());
     setMasterChecklists(getMasterChecklists());
     setFormSettings(getFormSettings());
     setRoomSchedules(getRoomSchedules());
-
-    // Restore custom manual accounts from IndexedDB if localStorage was wiped
-    if (!hasLocalUsers) {
-      loadUsersFromIDB()
-        .then((idbUsers) => {
-          if (idbUsers && idbUsers.length > 0) {
-            saveUsers(idbUsers);
-            setUsers(idbUsers);
-          }
-        })
-        .catch(() => {});
-    }
 
     // 1. Subscribe to Live Firestore Reports (auto-falls back to local cache on quota limit)
     const unsubscribeReports = subscribeReports((cloudReports) => {
