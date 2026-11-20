@@ -39,6 +39,10 @@ import {
   DEFAULT_FORM_SETTINGS,
   DEFAULT_ROOM_SCHEDULES,
 } from '../utils/formStorage';
+import {
+  recompressImageDataUrl,
+  createMicroThumbnail,
+} from '../utils/imageCompressor';
 
 export enum OperationType {
   CREATE = 'create',
@@ -93,6 +97,7 @@ export function handleFirestoreError(
 }
 
 const REPORTS_COLLECTION = 'reports';
+const REPORT_PHOTOS_COLLECTION = 'report_photos';
 const USERS_COLLECTION = 'users';
 const FORM_CONFIGS_COLLECTION = 'form_configs';
 const ROOM_SCHEDULES_COLLECTION = 'room_schedules';
@@ -103,12 +108,17 @@ const SUPERADMIN_EMAIL = 'operasional.scb@gmail.com';
 const FORM_CONFIG_DOC_ID = 'config_form_configs';
 const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
 
+export const DEFAULT_REPORT_WINDOW_DAYS = 35;
+const CONFIG_CACHE_TTL_MS = 15 * 60 * 1000; // 15 menit cache untuk tamu
+
 const UNSYNCED_REPORT_IDS_KEY = 'scb_unsynced_report_ids_v1';
 const UNSYNCED_USER_IDS_KEY = 'scb_unsynced_user_ids_v1';
 const UNSYNCED_FORM_CONFIG_KEY = 'scb_unsynced_form_config_v1';
 const UNSYNCED_SCHEDULES_KEY = 'scb_unsynced_schedules_v1';
 const CLOUD_CANONICAL_USERS_KEY = 'scb_cloud_canonical_users_v2';
 const CLOUD_CANONICAL_SCHEDULES_KEY = 'scb_cloud_canonical_schedules_v2';
+const FORM_CONFIG_FETCHED_AT_KEY = 'scb_form_config_fetched_at_v1';
+const SCHEDULES_FETCHED_AT_KEY = 'scb_schedules_fetched_at_v1';
 
 export interface CloudSaveResult {
   status: 'synced' | 'local_unauthenticated' | 'local_quota' | 'local_error';
@@ -119,6 +129,36 @@ let isUsersSeeded = false;
 let lastBootstrappedAdminUid: string | null = null;
 let lastBackfilledAdminUid: string | null = null;
 let hasBackfilledLocalReports = false;
+let olderCloudReportsLoaded = false;
+const hydratedPhotoIds = new Set<string>();
+
+let isQuotaLimitedState = false;
+const quotaStatusListeners = new Set<(limited: boolean) => void>();
+
+function notifyQuotaStatus(limited: boolean): void {
+  if (isQuotaLimitedState !== limited) {
+    isQuotaLimitedState = limited;
+    quotaStatusListeners.forEach((cb) => {
+      try {
+        cb(limited);
+      } catch {
+        // Ignore subscriber error
+      }
+    });
+  }
+}
+
+export function subscribeQuotaStatus(callback: (limited: boolean) => void): () => void {
+  quotaStatusListeners.add(callback);
+  callback(isQuotaLimitedState);
+  return () => {
+    quotaStatusListeners.delete(callback);
+  };
+}
+
+export function hasLoadedOlderCloudReports(): boolean {
+  return olderCloudReportsLoaded;
+}
 
 function getUnsyncedIdSet(storageKey: string): Set<string> {
   try {
@@ -235,19 +275,147 @@ export function sanitizeForFirestore<T>(data: T): T {
   return data;
 }
 
+const MAX_FIRESTORE_PHOTOS_BYTES = 760_000;
+
+async function ensureReportPhotosFitLimit(rawPhotos: string[] = []): Promise<string[]> {
+  const capped = Array.isArray(rawPhotos) ? rawPhotos.slice(0, 5) : [];
+  const calcSize = (arr: string[]) => arr.reduce((sum, item) => sum + (item?.length || 0), 0);
+
+  if (calcSize(capped) <= MAX_FIRESTORE_PHOTOS_BYTES) {
+    return capped;
+  }
+
+  let current = await Promise.all(
+    capped.map((p) => recompressImageDataUrl(p, 500, 500, 0.48))
+  );
+  if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
+    return current;
+  }
+
+  current = await Promise.all(
+    current.map((p) => recompressImageDataUrl(p, 400, 400, 0.42))
+  );
+  if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
+    return current;
+  }
+
+  return Promise.all(
+    current.map((p) => recompressImageDataUrl(p, 320, 320, 0.35))
+  );
+}
+
+function getWindowCutoffMs(): number {
+  return Math.max(1, Date.now() - DEFAULT_REPORT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+}
+
+function hasFullLocalPhotos(localRep: CleaningReport | undefined, expectedCount: number): boolean {
+  if (!localRep || !Array.isArray(localRep.fotoBukti) || localRep.fotoBukti.length === 0) {
+    return false;
+  }
+  if (expectedCount > 0 && localRep.fotoBukti.length < expectedCount) {
+    return false;
+  }
+  return localRep.fotoBukti.some(
+    (p) =>
+      p.startsWith('http://') ||
+      p.startsWith('https://') ||
+      p.startsWith('data:image/svg+xml') ||
+      p.length > 12_000
+  );
+}
+
+function buildNormalizedCloudReport(docId: string, raw: CleaningReport): CleaningReport {
+  const fotos = Array.isArray(raw.fotoBukti) ? raw.fotoBukti : [];
+  return {
+    ...raw,
+    id: raw.id || docId,
+    checklist: Array.isArray(raw.checklist) ? raw.checklist : [],
+    keteranganTambahan: raw.keteranganTambahan ?? '',
+    fotoBukti: fotos,
+    fotoCount: typeof raw.fotoCount === 'number' ? raw.fotoCount : fotos.length,
+    photosOffloaded: Boolean(raw.photosOffloaded),
+    drivePhotoLinks: Array.isArray(raw.drivePhotoLinks) ? raw.drivePhotoLinks : undefined,
+  };
+}
+
+function mergeCloudWithLocalReports(
+  cloudReportsList: CleaningReport[],
+  localReports: CleaningReport[],
+  unsyncedIds: Set<string>,
+  preserveOlderLocalCutoffMs?: number
+): CleaningReport[] {
+  const localById = new Map(localReports.map((r) => [r.id, r]));
+  const cloudIds = new Set(cloudReportsList.map((r) => r.id));
+
+  const mergedCloud = cloudReportsList.map((cloudRep) => {
+    const localVersion = localById.get(cloudRep.id);
+    if (unsyncedIds.has(cloudRep.id) && localVersion) {
+      return localVersion;
+    }
+    if (
+      cloudRep.photosOffloaded &&
+      localVersion &&
+      (hydratedPhotoIds.has(cloudRep.id) ||
+        hasFullLocalPhotos(localVersion, cloudRep.fotoCount ?? cloudRep.fotoBukti.length))
+    ) {
+      return {
+        ...cloudRep,
+        fotoBukti: localVersion.fotoBukti,
+        fotoCount: cloudRep.fotoCount ?? localVersion.fotoBukti.length,
+      };
+    }
+    return cloudRep;
+  });
+
+  const preservedLocalOnly = localReports.filter((r) => {
+    if (cloudIds.has(r.id)) return false;
+    if (unsyncedIds.has(r.id)) return true;
+    if (preserveOlderLocalCutoffMs !== undefined && (r.timestamp || 0) <= preserveOlderLocalCutoffMs) {
+      return true;
+    }
+    return false;
+  });
+
+  const merged = [...mergedCloud, ...preservedLocalOnly];
+  merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  return merged;
+}
+
+function isCacheFresh(storageKey: string, ttlMs: number): boolean {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return false;
+    const ts = Number(raw);
+    return Number.isFinite(ts) && ts > 0 && Date.now() - ts < ttlMs;
+  } catch {
+    return false;
+  }
+}
+
+function markCacheFetchedNow(storageKey: string): void {
+  try {
+    localStorage.setItem(storageKey, String(Date.now()));
+  } catch {
+    // Ignore quota errors
+  }
+}
+
 /**
- * Subscribes to real-time reports from Firestore.
+ * Subscribes to recent real-time reports from Firestore (default rolling window: 35 days)
+ * to save Firestore read units. Older history is loaded on demand via loadOlderReportsFromCloud().
  */
 export function subscribeReports(
   onReportsChanged: (reports: CleaningReport[]) => void,
   onError?: (err: Error) => void
 ): () => void {
+  const windowCutoffMs = getWindowCutoffMs();
   const reportsRef = collection(db, REPORTS_COLLECTION);
-  const q = query(reportsRef, where('timestamp', '>', 0));
+  const q = query(reportsRef, where('timestamp', '>', windowCutoffMs));
 
   return onSnapshot(
     q,
     (snapshot) => {
+      notifyQuotaStatus(false);
       const reportsList: CleaningReport[] = [];
       snapshot.forEach((docSnap) => {
         if (['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(docSnap.id)) {
@@ -255,38 +423,37 @@ export function subscribeReports(
             deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id)).catch(() => {});
           }
         } else {
-          reportsList.push(docSnap.data() as CleaningReport);
+          const raw = docSnap.data() as CleaningReport;
+          reportsList.push(buildNormalizedCloudReport(docSnap.id, raw));
         }
       });
 
       const localReports = getReportsFromStorage();
       const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
 
-      // Protect local reports if Firestore returns empty (e.g., reports were previously saved offline/local)
+      // Protect local reports if Firestore returns empty inside active window
       if (reportsList.length === 0 && localReports.length > 0) {
         const sortedLocal = [...localReports].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         onReportsChanged(sortedLocal);
 
-        if (isCurrentAuthSuperAdmin() && !hasBackfilledLocalReports) {
+        const pendingRecent = sortedLocal.filter(
+          (rep) => unsyncedIds.has(rep.id) || (rep.timestamp || 0) > windowCutoffMs
+        );
+        if (isFirebaseCloudConnected() && !hasBackfilledLocalReports && pendingRecent.length > 0) {
           hasBackfilledLocalReports = true;
-          Promise.all(sortedLocal.map((rep) => saveReportToCloud(rep))).catch(() => {});
+          Promise.all(pendingRecent.map((rep) => saveReportToCloud(rep).catch(() => {}))).catch(() => {});
         }
         return;
       }
 
-      const cloudIds = new Set(reportsList.map((r) => r.id));
-      const pendingLocalReports = localReports.filter(
-        (r) => !cloudIds.has(r.id) && unsyncedIds.has(r.id)
-      );
-
-      const merged = [...reportsList, ...pendingLocalReports];
-      merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      const merged = mergeCloudWithLocalReports(reportsList, localReports, unsyncedIds, windowCutoffMs);
       saveReportsToStorage(merged);
       onReportsChanged(merged);
 
-      if (pendingLocalReports.length > 0 && isCurrentAuthSuperAdmin() && !hasBackfilledLocalReports) {
+      const pendingToSync = merged.filter((r) => unsyncedIds.has(r.id));
+      if (pendingToSync.length > 0 && isFirebaseCloudConnected() && !hasBackfilledLocalReports) {
         hasBackfilledLocalReports = true;
-        Promise.all(pendingLocalReports.map((rep) => saveReportToCloud(rep))).catch(() => {});
+        Promise.all(pendingToSync.map((rep) => saveReportToCloud(rep).catch(() => {}))).catch(() => {});
       }
     },
     (error) => {
@@ -294,6 +461,7 @@ export function subscribeReports(
       onReportsChanged(fallback);
       if (onError) onError(error);
       if (isQuotaExceededError(error)) {
+        notifyQuotaStatus(true);
         console.warn('Firestore quota exceeded on reports listener, using local storage cache.');
         return;
       }
@@ -303,44 +471,202 @@ export function subscribeReports(
 }
 
 /**
- * Create a new cleaning report in Firestore and local storage
+ * Loads older reports (> 35 days old) on demand when the user selects "Semua" or an older month filter.
  */
-export async function saveReportToCloud(report: CleaningReport): Promise<void> {
+export async function loadOlderReportsFromCloud(): Promise<{
+  loadedCount: number;
+  quotaExceeded?: boolean;
+}> {
+  if (olderCloudReportsLoaded) {
+    return { loadedCount: 0 };
+  }
+
+  const windowCutoffMs = getWindowCutoffMs();
+  try {
+    const q = query(
+      collection(db, REPORTS_COLLECTION),
+      where('timestamp', '>', 0),
+      where('timestamp', '<=', windowCutoffMs)
+    );
+    const snapshot = await getDocs(q);
+    notifyQuotaStatus(false);
+    olderCloudReportsLoaded = true;
+
+    const olderCloudList: CleaningReport[] = [];
+    snapshot.forEach((docSnap) => {
+      if (!['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(docSnap.id)) {
+        olderCloudList.push(buildNormalizedCloudReport(docSnap.id, docSnap.data() as CleaningReport));
+      }
+    });
+
+    if (olderCloudList.length > 0) {
+      const localReports = getReportsFromStorage();
+      const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
+      const existingRecentOrLocal = localReports.filter((r) => (r.timestamp || 0) > windowCutoffMs);
+      const merged = mergeCloudWithLocalReports(
+        [...existingRecentOrLocal, ...olderCloudList],
+        localReports,
+        unsyncedIds
+      );
+      saveReportsToStorage(merged);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('scb_idb_reports_hydrated'));
+      }
+    }
+
+    return { loadedCount: olderCloudList.length };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      console.warn('Firestore quota exceeded while loading older reports.');
+      return { loadedCount: 0, quotaExceeded: true };
+    }
+    console.warn('Failed to load older reports:', err);
+    return { loadedCount: 0 };
+  }
+}
+
+/**
+ * Fetches full-resolution photos for a specific report from /report_photos/{reportId} on demand,
+ * caching them into local/IDB storage so subsequent views cost 0 Firestore reads.
+ */
+export async function fetchReportPhotosFromCloud(reportId: string): Promise<string[] | null> {
+  if (!reportId) return null;
+
+  const localReports = getReportsFromStorage();
+  const localRep = localReports.find((r) => r.id === reportId);
+  if (
+    localRep &&
+    (!localRep.photosOffloaded ||
+      hydratedPhotoIds.has(reportId) ||
+      hasFullLocalPhotos(localRep, localRep.fotoCount ?? localRep.fotoBukti?.length ?? 0))
+  ) {
+    return localRep.fotoBukti || [];
+  }
+
+  try {
+    const snap = await getDoc(doc(db, REPORT_PHOTOS_COLLECTION, reportId));
+    notifyQuotaStatus(false);
+    if (!snap.exists()) {
+      return localRep?.fotoBukti || null;
+    }
+
+    const data = snap.data();
+    const photos = Array.isArray(data?.photos)
+      ? data.photos.filter((p): p is string => typeof p === 'string')
+      : [];
+
+    hydratedPhotoIds.add(reportId);
+
+    if (photos.length > 0) {
+      const latest = getReportsFromStorage();
+      const idx = latest.findIndex((r) => r.id === reportId);
+      if (idx >= 0) {
+        latest[idx] = {
+          ...latest[idx],
+          fotoBukti: photos,
+          fotoCount: photos.length,
+        };
+        saveReportsToStorage(latest);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('scb_idb_reports_hydrated'));
+        }
+      }
+    }
+
+    return photos;
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      console.warn('Firestore quota exceeded while fetching full report photos, using cached thumbnail.');
+      return localRep?.fotoBukti || null;
+    }
+    console.warn(`Could not fetch report_photos/${reportId}:`, err);
+    return localRep?.fotoBukti || null;
+  }
+}
+
+/**
+ * Create a new cleaning report in Firestore (summary + micro-thumbnail in /reports, full photos in /report_photos)
+ * and keep full-resolution photos in local/IndexedDB storage.
+ */
+export async function saveReportToCloud(report: CleaningReport): Promise<CloudSaveResult> {
+  const safePhotos = await ensureReportPhotosFitLimit(report.fotoBukti);
+  const resolvedAuthorUid = report.authorUid || auth.currentUser?.uid || undefined;
+  const isOffloaded = safePhotos.length > 0;
+
+  const preparedLocalReport: CleaningReport = {
+    ...report,
+    checklist: Array.isArray(report.checklist) ? report.checklist : [],
+    keteranganTambahan: report.keteranganTambahan ?? '',
+    fotoBukti: safePhotos,
+    fotoCount: safePhotos.length,
+    photosOffloaded: isOffloaded,
+    authorUid: resolvedAuthorUid,
+  };
+
+  if (isOffloaded) {
+    hydratedPhotoIds.add(preparedLocalReport.id);
+  }
+
   const current = getReportsFromStorage();
-  const existingIdx = current.findIndex((r) => r.id === report.id);
+  const existingIdx = current.findIndex((r) => r.id === preparedLocalReport.id);
   if (existingIdx >= 0) {
-    current[existingIdx] = report;
+    current[existingIdx] = preparedLocalReport;
   } else {
-    current.unshift(report);
+    current.unshift(preparedLocalReport);
   }
   saveReportsToStorage(current);
 
   if (!auth.currentUser || !auth.currentUser.emailVerified) {
-    markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, report.id);
-    return;
+    markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, preparedLocalReport.id);
+    return {
+      status: 'local_unauthenticated',
+      message: 'Laporan & foto tersimpan di perangkat ini. Masuk ulang dengan Email & Sandi agar sinkron ke Dashboard semua pengguna.',
+    };
   }
 
-  const path = `${REPORTS_COLLECTION}/${report.id}`;
+  const path = `${REPORTS_COLLECTION}/${preparedLocalReport.id}`;
   try {
-    const docRef = doc(db, REPORTS_COLLECTION, report.id);
-    const sanitized = sanitizeForFirestore({
-      ...report,
-      checklist: Array.isArray(report.checklist) ? report.checklist : [],
-      keteranganTambahan: report.keteranganTambahan ?? '',
-      fotoBukti: Array.isArray(report.fotoBukti) ? report.fotoBukti : [],
-      authorUid: report.authorUid || auth.currentUser?.uid || undefined,
-    });
-    await setDoc(docRef, {
-      ...sanitized,
+    const thumbList = isOffloaded ? [await createMicroThumbnail(safePhotos[0])] : [];
+    const cloudSummaryReport: CleaningReport = {
+      ...preparedLocalReport,
+      fotoBukti: thumbList,
+      fotoCount: safePhotos.length,
+      photosOffloaded: isOffloaded,
+    };
+
+    const batch = writeBatch(db);
+    const reportRef = doc(db, REPORTS_COLLECTION, preparedLocalReport.id);
+    batch.set(reportRef, {
+      ...sanitizeForFirestore(cloudSummaryReport),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-    unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, report.id);
+
+    if (isOffloaded) {
+      const photosRef = doc(db, REPORT_PHOTOS_COLLECTION, preparedLocalReport.id);
+      batch.set(photosRef, sanitizeForFirestore({
+        id: preparedLocalReport.id,
+        photos: safePhotos,
+        authorUid: resolvedAuthorUid,
+        updatedAt: serverTimestamp(),
+      }));
+    }
+
+    await batch.commit();
+    notifyQuotaStatus(false);
+    unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, preparedLocalReport.id);
+    return { status: 'synced' };
   } catch (err) {
+    markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, preparedLocalReport.id);
     if (isQuotaExceededError(err)) {
-      markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, report.id);
+      notifyQuotaStatus(true);
       console.warn('Firestore quota exceeded while saving report, kept in local storage.');
-      return;
+      return {
+        status: 'local_quota',
+        message: 'Kuota harian Firestore penuh. Laporan & foto aman tersimpan lokal.',
+      };
     }
     handleFirestoreError(err, OperationType.CREATE, path);
   }
@@ -352,31 +678,120 @@ export async function saveReportToCloud(report: CleaningReport): Promise<void> {
 export async function updateReportInCloud(
   id: string,
   updates: Partial<CleaningReport>
-): Promise<void> {
+): Promise<CloudSaveResult> {
+  const preparedUpdates: Partial<CleaningReport> = { ...updates };
+  let fullUpdatedPhotos: string[] | null = null;
+  if (Array.isArray(preparedUpdates.fotoBukti)) {
+    fullUpdatedPhotos = await ensureReportPhotosFitLimit(preparedUpdates.fotoBukti);
+    preparedUpdates.fotoBukti = fullUpdatedPhotos;
+    preparedUpdates.fotoCount = fullUpdatedPhotos.length;
+    preparedUpdates.photosOffloaded = fullUpdatedPhotos.length > 0;
+    if (fullUpdatedPhotos.length > 0) {
+      hydratedPhotoIds.add(id);
+    }
+  }
+  if (Array.isArray(preparedUpdates.drivePhotoLinks)) {
+    preparedUpdates.drivePhotoLinks = preparedUpdates.drivePhotoLinks.slice(0, 10);
+  }
+
   const current = getReportsFromStorage();
   const idx = current.findIndex((r) => r.id === id);
+  const existingAuthorUid = idx >= 0 ? current[idx].authorUid : undefined;
   if (idx >= 0) {
-    current[idx] = { ...current[idx], ...updates };
+    current[idx] = { ...current[idx], ...preparedUpdates };
     saveReportsToStorage(current);
   }
 
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+  if (!auth.currentUser || !auth.currentUser.emailVerified) {
+    markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
+    return {
+      status: 'local_unauthenticated',
+      message: 'Perubahan tersimpan lokal. Masuk Cloud agar sinkron ke pengguna lain.',
+    };
+  }
 
   const path = `${REPORTS_COLLECTION}/${id}`;
   try {
+    const cloudUpdates: Partial<CleaningReport> = { ...preparedUpdates };
+    if (fullUpdatedPhotos !== null) {
+      cloudUpdates.fotoBukti =
+        fullUpdatedPhotos.length > 0 ? [await createMicroThumbnail(fullUpdatedPhotos[0])] : [];
+      cloudUpdates.fotoCount = fullUpdatedPhotos.length;
+      cloudUpdates.photosOffloaded = fullUpdatedPhotos.length > 0;
+    }
+
     const docRef = doc(db, REPORTS_COLLECTION, id);
-    const sanitizedUpdates = sanitizeForFirestore(updates);
-    await updateDoc(docRef, {
-      ...sanitizedUpdates,
-      updatedAt: serverTimestamp(),
-    });
+    const sanitizedUpdates = sanitizeForFirestore(cloudUpdates);
+
+    if (fullUpdatedPhotos !== null && fullUpdatedPhotos.length > 0) {
+      const batch = writeBatch(db);
+      batch.update(docRef, {
+        ...sanitizedUpdates,
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(
+        doc(db, REPORT_PHOTOS_COLLECTION, id),
+        sanitizeForFirestore({
+          id,
+          photos: fullUpdatedPhotos,
+          authorUid: existingAuthorUid || auth.currentUser?.uid,
+          updatedAt: serverTimestamp(),
+        })
+      );
+      await batch.commit();
+    } else {
+      await updateDoc(docRef, {
+        ...sanitizedUpdates,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    notifyQuotaStatus(false);
+    unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
+    return { status: 'synced' };
   } catch (err) {
+    markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
     if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
       console.warn('Firestore quota exceeded while updating report, kept in local storage.');
-      return;
+      return {
+        status: 'local_quota',
+        message: 'Kuota harian Firestore penuh. Perubahan aman tersimpan lokal.',
+      };
     }
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
+}
+
+/**
+ * Syncs any locally created/updated reports waiting in UNSYNCED_REPORT_IDS_KEY to Cloud
+ * whenever a verified user signs in.
+ */
+export async function syncPendingLocalReportsToCloud(): Promise<number> {
+  if (!isFirebaseCloudConnected()) return 0;
+
+  const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
+  if (unsyncedIds.size === 0) return 0;
+
+  const localReports = getReportsFromStorage();
+  const pendingReports = localReports.filter((r) => unsyncedIds.has(r.id));
+  if (pendingReports.length === 0) return 0;
+
+  let syncedCount = 0;
+  for (const rep of pendingReports) {
+    try {
+      const res = await saveReportToCloud({
+        ...rep,
+        authorUid: rep.authorUid || auth.currentUser?.uid || undefined,
+      });
+      if (res.status === 'synced') {
+        syncedCount++;
+      }
+    } catch {
+      // Keep marked as unsynced for next attempt
+    }
+  }
+  return syncedCount;
 }
 
 /**
@@ -384,6 +799,7 @@ export async function updateReportInCloud(
  */
 export async function deleteReportFromCloud(id: string): Promise<void> {
   unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
+  hydratedPhotoIds.delete(id);
   const current = getReportsFromStorage();
   const filtered = current.filter((r) => r.id !== id);
   saveReportsToStorage(filtered);
@@ -392,10 +808,11 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
 
   const path = `${REPORTS_COLLECTION}/${id}`;
   try {
-    const docRef = doc(db, REPORTS_COLLECTION, id);
-    await deleteDoc(docRef);
+    await deleteDoc(doc(db, REPORTS_COLLECTION, id));
+    await deleteDoc(doc(db, REPORT_PHOTOS_COLLECTION, id)).catch(() => {});
   } catch (err) {
     if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
       console.warn('Firestore quota exceeded while deleting report, kept in local storage.');
       return;
     }
@@ -415,34 +832,57 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
     const snapshot = await getDocs(
       query(collection(db, REPORTS_COLLECTION), where('timestamp', '>', 0))
     );
-    const deleteBatch = writeBatch(db);
-    snapshot.forEach((d) => {
-      deleteBatch.delete(d.ref);
-    });
-    await deleteBatch.commit();
+    const chunkSize = 200;
+    const existingDocs = snapshot.docs;
+    for (let i = 0; i < existingDocs.length; i += chunkSize) {
+      const deleteBatch = writeBatch(db);
+      for (const d of existingDocs.slice(i, i + chunkSize)) {
+        deleteBatch.delete(d.ref);
+        deleteBatch.delete(doc(db, REPORT_PHOTOS_COLLECTION, d.id));
+      }
+      await deleteBatch.commit();
+    }
 
-    const chunkSize = 400;
     for (let i = 0; i < reports.length; i += chunkSize) {
       const chunk = reports.slice(i, i + chunkSize);
       const batch = writeBatch(db);
       for (const rep of chunk) {
+        const safePhotos = await ensureReportPhotosFitLimit(rep.fotoBukti);
+        const isOffloaded = safePhotos.length > 0;
+        const thumbList = isOffloaded ? [await createMicroThumbnail(safePhotos[0])] : [];
         const sanitized = sanitizeForFirestore({
           ...rep,
           checklist: Array.isArray(rep.checklist) ? rep.checklist : [],
           keteranganTambahan: rep.keteranganTambahan ?? '',
-          fotoBukti: Array.isArray(rep.fotoBukti) ? rep.fotoBukti : [],
+          fotoBukti: thumbList,
+          fotoCount: safePhotos.length,
+          photosOffloaded: isOffloaded,
         });
         batch.set(doc(db, REPORTS_COLLECTION, rep.id), {
           ...sanitized,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        if (isOffloaded) {
+          hydratedPhotoIds.add(rep.id);
+          batch.set(
+            doc(db, REPORT_PHOTOS_COLLECTION, rep.id),
+            sanitizeForFirestore({
+              id: rep.id,
+              photos: safePhotos,
+              authorUid: rep.authorUid || auth.currentUser?.uid,
+              updatedAt: serverTimestamp(),
+            })
+          );
+        }
       }
       await batch.commit();
     }
+    notifyQuotaStatus(false);
     saveUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY, new Set());
   } catch (err) {
     if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
       console.warn('Firestore quota exceeded during batch restore, kept in local storage.');
       return;
     }
@@ -806,9 +1246,69 @@ export function subscribeFormConfig(
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
 
+  // Guest optimization: use 15-min local cache or single one-shot getDoc instead of live onSnapshot
+  if (!isFirebaseCloudConnected()) {
+    const hasLocalRooms = Boolean(localStorage.getItem('scb_master_rooms_v1'));
+    if (hasLocalRooms && isCacheFresh(FORM_CONFIG_FETCHED_AT_KEY, CONFIG_CACHE_TTL_MS)) {
+      onConfigChanged({
+        rooms: getMasterRooms(),
+        checklists: getMasterChecklists(),
+        settings: getFormSettings(),
+      });
+      return () => {};
+    }
+
+    let cancelled = false;
+    getDoc(docRef)
+      .then((snapshot) => {
+        if (cancelled) return;
+        notifyQuotaStatus(false);
+        markCacheFetchedNow(FORM_CONFIG_FETCHED_AT_KEY);
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          const rooms: MasterRoom[] =
+            data?.rooms && Array.isArray(data.rooms) ? data.rooms : DEFAULT_MASTER_ROOMS;
+          const checklists: MasterChecklist[] =
+            data?.checklists && Array.isArray(data.checklists)
+              ? data.checklists
+              : DEFAULT_MASTER_CHECKLISTS;
+          const settings: FormSettings = data?.settings ? data.settings : DEFAULT_FORM_SETTINGS;
+          saveMasterRooms(rooms);
+          saveMasterChecklists(checklists);
+          saveFormSettings(settings);
+          onConfigChanged({ rooms, checklists, settings });
+        } else {
+          onConfigChanged({
+            rooms: getMasterRooms(),
+            checklists: getMasterChecklists(),
+            settings: getFormSettings(),
+          });
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        onConfigChanged({
+          rooms: getMasterRooms(),
+          checklists: getMasterChecklists(),
+          settings: getFormSettings(),
+        });
+        if (isQuotaExceededError(err)) {
+          notifyQuotaStatus(true);
+          console.warn('Firestore quota exceeded on guest form config fetch, using local storage cache.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }
+
   return onSnapshot(
     docRef,
     async (snapshot) => {
+      notifyQuotaStatus(false);
+      markCacheFetchedNow(FORM_CONFIG_FETCHED_AT_KEY);
+
       if (hasUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY)) {
         const localConfig = {
           rooms: getMasterRooms() || DEFAULT_MASTER_ROOMS,
@@ -882,6 +1382,7 @@ export function subscribeFormConfig(
         settings: getFormSettings(),
       });
       if (isQuotaExceededError(err)) {
+        notifyQuotaStatus(true);
         console.warn('Firestore quota exceeded on form config listener, using local storage cache.');
         return;
       }
@@ -963,9 +1464,51 @@ export function subscribeRoomSchedules(
   const path = `${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}`;
   const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
 
+  // Guest optimization: use 15-min local cache or single one-shot getDoc instead of live onSnapshot
+  if (!isFirebaseCloudConnected()) {
+    const hasLocalSchedules = Boolean(localStorage.getItem('scb_room_schedules_v1'));
+    if (hasLocalSchedules && isCacheFresh(SCHEDULES_FETCHED_AT_KEY, CONFIG_CACHE_TTL_MS)) {
+      onSchedulesChanged(getRoomSchedules());
+      return () => {};
+    }
+
+    let cancelled = false;
+    getDoc(docRef)
+      .then((snapshot) => {
+        if (cancelled) return;
+        notifyQuotaStatus(false);
+        markCacheFetchedNow(SCHEDULES_FETCHED_AT_KEY);
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          const rawSchedules: RoomSchedule[] =
+            data?.schedules && Array.isArray(data.schedules) ? data.schedules : getRoomSchedules();
+          const cleaned = sanitizeSchedulesToOfficial(rawSchedules);
+          saveRoomSchedules(cleaned);
+          onSchedulesChanged(cleaned);
+        } else {
+          onSchedulesChanged(getRoomSchedules());
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        onSchedulesChanged(getRoomSchedules());
+        if (isQuotaExceededError(err)) {
+          notifyQuotaStatus(true);
+          console.warn('Firestore quota exceeded on guest schedules fetch, using local storage cache.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }
+
   return onSnapshot(
     docRef,
     async (snapshot) => {
+      notifyQuotaStatus(false);
+      markCacheFetchedNow(SCHEDULES_FETCHED_AT_KEY);
+
       if (hasUnsyncedFlag(UNSYNCED_SCHEDULES_KEY)) {
         const localSchedules = getRoomSchedules();
         onSchedulesChanged(localSchedules);
@@ -1030,6 +1573,7 @@ export function subscribeRoomSchedules(
     (err) => {
       onSchedulesChanged(getRoomSchedules());
       if (isQuotaExceededError(err)) {
+        notifyQuotaStatus(true);
         console.warn('Firestore quota exceeded on room schedules listener, using local storage cache.');
         return;
       }

@@ -109,6 +109,9 @@ export function getSavedToken(): string | null {
         // Clear only expired token, KEEP the linked profile and status!
         localStorage.removeItem(STORAGE_ACCESS_TOKEN_KEY);
         cachedAccessToken = null;
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('scb_gdrive_auth_cleared'));
+        }
         return null;
       }
     }
@@ -140,6 +143,9 @@ export function clearStoredGoogleAuth() {
     localStorage.removeItem(STORAGE_EXPIRY_KEY);
     localStorage.removeItem(STORAGE_KEEP_CONNECTED_KEY);
   } catch {}
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('scb_gdrive_auth_cleared'));
+  }
 }
 
 export const getDiagnosticInfo = () => {

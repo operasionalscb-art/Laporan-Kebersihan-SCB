@@ -2,7 +2,7 @@
  * Compresses an image file (from camera or file picker) to a web-friendly size
  * and returns a JPEG data URL.
  */
-export async function compressImage(file: File, maxWidth = 720, maxHeight = 720, quality = 0.65): Promise<string> {
+export async function compressImage(file: File, maxWidth = 560, maxHeight = 560, quality = 0.52): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -82,3 +82,112 @@ export function createSamplePhotoUrl(title: string, subtitle: string, bgColor = 
   </svg>`;
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
+
+/**
+ * Re-compresses an existing image data URL to smaller dimensions/quality
+ * so multi-photo reports always stay safely below Firestore's 1MB document limit.
+ */
+export async function recompressImageDataUrl(
+  dataUrl: string,
+  maxWidth = 520,
+  maxHeight = 520,
+  quality = 0.5
+): Promise<string> {
+  if (!dataUrl || !dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:image/svg+xml')) {
+    return dataUrl;
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, width);
+        canvas.height = Math.max(1, height);
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const smaller = canvas.toDataURL('image/jpeg', quality);
+        resolve(smaller.length < dataUrl.length ? smaller : dataUrl);
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * Generates a lightweight micro-thumbnail (~2–5 KB) for Dashboard card previews
+ * stored in the main /reports document while full photos live in /report_photos.
+ */
+export async function createMicroThumbnail(
+  dataUrl: string,
+  maxWidth = 220,
+  maxHeight = 220,
+  quality = 0.36
+): Promise<string> {
+  return recompressImageDataUrl(dataUrl, maxWidth, maxHeight, quality);
+}
+
+/**
+ * Extracts a Google Drive file ID from common Drive share/view URLs.
+ */
+export function extractGoogleDriveFileId(url: string): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed.includes('drive.google.com') && !trimmed.includes('googleusercontent.com')) {
+    return null;
+  }
+  const fileMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileMatch?.[1]) return fileMatch[1];
+
+  const dMatch = trimmed.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (dMatch?.[1]) return dMatch[1];
+
+  const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch?.[1]) return idMatch[1];
+
+  return null;
+}
+
+/**
+ * Returns renderable <img> src candidates for a report photo URL.
+ * Converts legacy Google Drive /view HTML URLs into direct image/thumbnail URLs.
+ */
+export function getGoogleDriveImageCandidates(url: string): string[] {
+  if (!url) return [];
+  const fileId = extractGoogleDriveFileId(url);
+  if (fileId) {
+    return [
+      `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`,
+      `https://lh3.googleusercontent.com/d/${fileId}=w1000`,
+    ];
+  }
+  return [url];
+}
+

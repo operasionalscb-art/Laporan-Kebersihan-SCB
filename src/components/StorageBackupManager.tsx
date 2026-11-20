@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   CleaningReport,
   User,
@@ -17,6 +17,7 @@ import {
   executeAutoBackupToDrive,
   batchUploadAllReportsPhotosToDrive
 } from '../services/googleDriveService';
+import { fetchReportPhotosFromCloud } from '../services/firestoreSync';
 import { 
   googleSignIn, 
   getGoogleAccessToken,
@@ -74,6 +75,7 @@ interface StorageBackupManagerProps {
   formSettings?: FormSettings;
   roomSchedules?: RoomSchedule[];
   onShowToast: (message: string, type?: 'success' | 'info' | 'error') => void;
+  onUpdateReport?: (id: string, updates: Partial<CleaningReport>) => void;
   onRestoreReports?: (reports: CleaningReport[]) => void;
   onRestoreFullBackup?: (payload: FullBackupPayload, mode: 'replace' | 'merge') => void;
   onResetData?: () => void;
@@ -87,6 +89,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   formSettings,
   roomSchedules = [],
   onShowToast,
+  onUpdateReport,
   onRestoreReports,
   onRestoreFullBackup,
   onResetData,
@@ -124,6 +127,16 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   });
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => Boolean(getSavedToken()));
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
+
+  useEffect(() => {
+    const handleAuthCleared = () => {
+      setIsGoogleConnected(false);
+    };
+    window.addEventListener('scb_gdrive_auth_cleared', handleAuthCleared);
+    return () => {
+      window.removeEventListener('scb_gdrive_auth_cleared', handleAuthCleared);
+    };
+  }, []);
   const [isVercelModalOpen, setIsVercelModalOpen] = useState(false);
   const [customClientIdInput, setCustomClientIdInput] = useState(() => getActiveOAuthClientId());
   const [isCopiedOrigin, setIsCopiedOrigin] = useState(false);
@@ -136,11 +149,14 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   const [isUploadingBatchPhotos, setIsUploadingBatchPhotos] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
 
-  // Count pending local photos that can be uploaded
+  // Count pending local photos that haven't been archived to Google Drive yet
   const pendingLocalPhotosCount = useMemo(() => {
     let count = 0;
     for (const r of reports) {
-      count += (r.fotoBukti || []).filter((p) => p && p.startsWith('data:image/')).length;
+      const base64Count = (r.fotoBukti || []).filter((p) => p && p.startsWith('data:image/')).length;
+      const effectivePhotoCount = Math.max(r.fotoCount ?? 0, base64Count);
+      const archivedCount = (r.drivePhotoLinks || []).filter((l) => l && l.startsWith('http')).length;
+      count += Math.max(0, effectivePhotoCount - archivedCount);
     }
     return count;
   }, [reports]);
@@ -477,16 +493,36 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
         setGoogleProfile(loginRes.profile);
       }
 
-      const result = await batchUploadAllReportsPhotosToDrive(reports, (cur, tot) => {
+      const hydratedReports = await Promise.all(
+        reports.map(async (r) => {
+          const archivedCount = (r.drivePhotoLinks || []).filter((l) => l && l.startsWith('http')).length;
+          const expectedCount = r.fotoCount ?? r.fotoBukti?.length ?? 0;
+          if (r.photosOffloaded && expectedCount > archivedCount && (r.fotoBukti?.length || 0) < expectedCount) {
+            const fullPhotos = await fetchReportPhotosFromCloud(r.id);
+            if (fullPhotos && fullPhotos.length > 0) {
+              return { ...r, fotoBukti: fullPhotos, fotoCount: fullPhotos.length };
+            }
+          }
+          return r;
+        })
+      );
+
+      const result = await batchUploadAllReportsPhotosToDrive(hydratedReports, (cur, tot) => {
         setBatchProgress({ current: cur, total: tot });
       });
 
-      if (onRestoreReports && result.updatedReports) {
-        onRestoreReports(result.updatedReports);
+      if (result.modifiedReports.length > 0) {
+        if (onUpdateReport) {
+          for (const mod of result.modifiedReports) {
+            onUpdateReport(mod.id, { drivePhotoLinks: mod.drivePhotoLinks });
+          }
+        } else if (onRestoreReports && result.updatedReports) {
+          onRestoreReports(result.updatedReports);
+        }
       }
 
       setIsGoogleConnected(true);
-      onShowToast(`Berhasil mengunggah ${result.totalUploaded} foto ke folder Google Drive!`, 'success');
+      onShowToast(`Berhasil mengarsipkan ${result.totalUploaded} foto ke folder Google Drive!`, 'success');
     } catch (err: any) {
       console.error(err);
       onShowToast(err.message || 'Gagal mengunggah foto ke Google Drive', 'error');

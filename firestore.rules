@@ -75,9 +75,9 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'tanggal', 'waktu', 'timestamp', 'petugasId', 'namaPetugas',
           'area', 'isAreaOther', 'areaCustom', 'checklist', 'checklistCustom',
-          'kondisiAkhir', 'keteranganTambahan', 'fotoBukti', 'statusVerifikasi',
-          'catatanSupervisor', 'diverifikasiOleh', 'diverifikasiPada',
-          'authorUid', 'createdAt', 'updatedAt'
+          'kondisiAkhir', 'keteranganTambahan', 'fotoBukti', 'fotoCount', 'photosOffloaded',
+          'drivePhotoLinks', 'statusVerifikasi', 'catatanSupervisor', 'diverifikasiOleh',
+          'diverifikasiPada', 'authorUid', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
         && data.tanggal is string && data.tanggal.size() >= 8 && data.tanggal.size() <= 20
@@ -95,10 +95,22 @@ service cloud.firestore {
         && data.keteranganTambahan is string && data.keteranganTambahan.size() <= 2000
         && data.fotoBukti is list && data.fotoBukti.size() <= 10
         && (data.fotoBukti.size() == 0 || data.fotoBukti[0] is string)
+        && (!('fotoCount' in data) || (data.fotoCount is int && data.fotoCount >= 0 && data.fotoCount <= 10))
+        && (!('photosOffloaded' in data) || data.photosOffloaded is bool)
+        && (!('drivePhotoLinks' in data) || (data.drivePhotoLinks is list && data.drivePhotoLinks.size() <= 10 && (data.drivePhotoLinks.size() == 0 || data.drivePhotoLinks[0] is string)))
         && data.statusVerifikasi is string && data.statusVerifikasi in ['Menunggu', 'Disetujui', 'Perlu Perbaikan']
         && (!('catatanSupervisor' in data) || (data.catatanSupervisor is string && data.catatanSupervisor.size() <= 2000))
         && (!('diverifikasiOleh' in data) || (data.diverifikasiOleh is string && data.diverifikasiOleh.size() <= 150))
         && (!('diverifikasiPada' in data) || (data.diverifikasiPada is string && data.diverifikasiPada.size() <= 80))
+        && (!('authorUid' in data) || (data.authorUid is string && data.authorUid.size() <= 128));
+    }
+
+    function isValidReportPhoto(data) {
+      return data.keys().hasAll(['id', 'photos'])
+        && data.keys().hasOnly(['id', 'photos', 'authorUid', 'updatedAt'])
+        && isValidId(data.id)
+        && data.photos is list && data.photos.size() <= 10
+        && (data.photos.size() == 0 || data.photos[0] is string)
         && (!('authorUid' in data) || (data.authorUid is string && data.authorUid.size() <= 128));
     }
 
@@ -192,8 +204,8 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'tanggal', 'waktu', 'petugasId', 'namaPetugas', 'area', 'isAreaOther',
               'areaCustom', 'checklist', 'checklistCustom', 'kondisiAkhir',
-              'keteranganTambahan', 'fotoBukti', 'statusVerifikasi',
-              'catatanSupervisor', 'diverifikasiOleh', 'diverifikasiPada', 'updatedAt'
+              'keteranganTambahan', 'fotoBukti', 'fotoCount', 'photosOffloaded', 'drivePhotoLinks',
+              'statusVerifikasi', 'catatanSupervisor', 'diverifikasiOleh', 'diverifikasiPada', 'updatedAt'
             ]))
           || (
             existing().statusVerifikasi != 'Disetujui'
@@ -208,9 +220,38 @@ service cloud.firestore {
               (isActiveStaff()
                 && ('authorUid' in existing() && existing().authorUid == request.auth.uid)
                 && incoming().statusVerifikasi == existing().statusVerifikasi
-                && incoming().diff(existing()).affectedKeys().hasOnly(['fotoBukti', 'updatedAt']))
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'fotoBukti', 'fotoCount', 'photosOffloaded', 'drivePhotoLinks', 'updatedAt'
+                ]))
             )
           )
+        );
+
+      allow delete: if isAdmin() && isValidId(reportId);
+    }
+
+    // On-demand full-resolution evidence photos (loaded only when opening report details)
+    match /report_photos/{reportId} {
+      allow get: if isValidId(reportId);
+      allow list: if false;
+
+      allow create: if isVerifiedEmail()
+        && isValidId(reportId)
+        && isValidReportPhoto(incoming())
+        && incoming().id == reportId
+        && (
+          isAdmin()
+          || (isActiveStaff() && 'authorUid' in incoming() && incoming().authorUid == request.auth.uid)
+        );
+
+      allow update: if isVerifiedEmail()
+        && isValidId(reportId)
+        && isValidReportPhoto(incoming())
+        && incoming().id == existing().id
+        && (!('authorUid' in existing()) || incoming().authorUid == existing().authorUid)
+        && (
+          isAdmin()
+          || (isActiveStaff() && 'authorUid' in existing() && existing().authorUid == request.auth.uid)
         );
 
       allow delete: if isAdmin() && isValidId(reportId);

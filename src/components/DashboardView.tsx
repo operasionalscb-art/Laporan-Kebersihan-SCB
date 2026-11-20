@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { CleaningReport, User, KondisiAkhir, MasterRoom, RoomSchedule } from '../types';
 import { INITIAL_AREAS, exportReportsToCsv, getTodayDateString } from '../utils/storage';
 import { getDayIndex } from '../utils/formStorage';
 import { downloadReportsPdf } from '../utils/pdfExport';
+import { extractGoogleDriveFileId, getGoogleDriveImageCandidates } from '../utils/imageCompressor';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -40,6 +41,9 @@ import {
   Building2,
   SlidersHorizontal,
   RotateCcw,
+  ExternalLink,
+  ImageOff,
+  Camera,
 } from 'lucide-react';
 
 export function formatMonthIndo(yearMonth: string): string {
@@ -72,6 +76,68 @@ function formatLocalYmd(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+const ReportPhotoImage: React.FC<{
+  src: string;
+  alt: string;
+  className?: string;
+  compact?: boolean;
+}> = ({ src, alt, className = '', compact = false }) => {
+  const candidates = useMemo(() => getGoogleDriveImageCandidates(src), [src]);
+  const [candidateIdx, setCandidateIdx] = useState(0);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setCandidateIdx(0);
+    setFailed(false);
+  }, [src]);
+
+  if (failed || candidates.length === 0) {
+    const isExternalUrl = !!extractGoogleDriveFileId(src) || src.startsWith('http');
+    return (
+      <div
+        className={`w-full h-full flex flex-col items-center justify-center bg-slate-100 text-slate-500 text-center ${
+          compact ? 'p-3 gap-1.5' : 'p-6 gap-2.5 min-w-[260px] min-h-[180px] rounded-xl bg-slate-900 text-slate-200'
+        }`}
+      >
+        <ImageOff className={compact ? 'w-5 h-5 text-slate-400' : 'w-8 h-8 text-slate-400'} />
+        <span className={compact ? 'text-[11px] font-medium leading-tight' : 'text-xs font-medium'}>
+          {isExternalUrl ? 'Pratinjau foto Google Drive dibatasi' : 'Foto tidak dapat dimuat'}
+        </span>
+        {isExternalUrl && (
+          <a
+            href={src}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className={`inline-flex items-center gap-1 font-semibold underline ${
+              compact ? 'text-[11px] text-emerald-700 hover:text-emerald-900' : 'text-xs text-emerald-400 hover:text-emerald-300'
+            }`}
+          >
+            <ExternalLink className="w-3 h-3" />
+            <span>Buka Foto di Google Drive</span>
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={candidates[candidateIdx]}
+      alt={alt}
+      referrerPolicy="no-referrer"
+      className={className}
+      onError={() => {
+        if (candidateIdx < candidates.length - 1) {
+          setCandidateIdx((prev) => prev + 1);
+        } else {
+          setFailed(true);
+        }
+      }}
+    />
+  );
+};
+
 interface DashboardViewProps {
   reports: CleaningReport[];
   currentUser: User | null;
@@ -85,6 +151,9 @@ interface DashboardViewProps {
   onOpenPrintModal: (filteredReports: CleaningReport[], periodeLabel?: string) => void;
   onOpenLoginModal?: (reason?: string, tab?: string) => void;
   onSwitchUser?: (user: User) => void;
+  isFirestoreQuotaLimited?: boolean;
+  onLoadOlderReports?: () => Promise<{ loadedCount: number; quotaExceeded?: boolean }>;
+  onLoadReportPhotos?: (reportId: string) => Promise<string[] | null>;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -99,6 +168,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onDeleteReport,
   onOpenPrintModal,
   onOpenLoginModal,
+  isFirestoreQuotaLimited = false,
+  onLoadOlderReports,
+  onLoadReportPhotos,
 }) => {
   // Filters state
   const [dateFilter, setDateFilter] = useState<'today' | '7days' | 'month' | 'specific_month' | 'all'>('today');
@@ -120,9 +192,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Detail Modal
   const [activeReportDetail, setActiveReportDetail] = useState<CleaningReport | null>(null);
+  const currentDetailReport = useMemo(
+    () => (activeReportDetail ? reports.find((r) => r.id === activeReportDetail.id) || activeReportDetail : null),
+    [activeReportDetail, reports]
+  );
   const [supervisorNoteInput, setSupervisorNoteInput] = useState<string>('');
   const [selectedImagePreview, setSelectedImagePreview] = useState<string | null>(null);
   const [selectedModalSupervisorId, setSelectedModalSupervisorId] = useState<string>('');
+  const [loadingPhotosReportId, setLoadingPhotosReportId] = useState<string | null>(null);
+  const [isLoadingOlderReports, setIsLoadingOlderReports] = useState<boolean>(false);
+  const [hasRequestedOlderReports, setHasRequestedOlderReports] = useState<boolean>(false);
 
   // Target chart inspected date (null = today)
   const [inspectedTargetDate, setInspectedTargetDate] = useState<string | null>(null);
@@ -927,6 +1006,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   }, [roomAnalyticsData, selectedRoomForDetail]);
 
+  // Load older reports (>35 days) on demand only when user explicitly switches to all / specific month
+  useEffect(() => {
+    const needsOlderWindow =
+      dateFilter === 'all' || dateFilter === 'specific_month' || roomTimeRange === 'all';
+    if (!needsOlderWindow || hasRequestedOlderReports || !onLoadOlderReports) return;
+
+    setHasRequestedOlderReports(true);
+    setIsLoadingOlderReports(true);
+    onLoadOlderReports()
+      .catch(() => {})
+      .finally(() => {
+        setIsLoadingOlderReports(false);
+      });
+  }, [dateFilter, roomTimeRange, hasRequestedOlderReports, onLoadOlderReports]);
+
   const handleOpenDetail = (report: CleaningReport) => {
     setActiveReportDetail(report);
     setSupervisorNoteInput(report.catatanSupervisor || '');
@@ -934,6 +1028,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setSelectedModalSupervisorId(currentUser.id);
     } else if (registeredSupervisors.length > 0) {
       setSelectedModalSupervisorId(registeredSupervisors[0].id);
+    }
+
+    const expectedCount = report.fotoCount ?? report.fotoBukti?.length ?? 0;
+    const needsPhotoHydration =
+      Boolean(onLoadReportPhotos) &&
+      Boolean(report.photosOffloaded) &&
+      (!report.fotoBukti ||
+        report.fotoBukti.length < expectedCount ||
+        (report.fotoBukti.length === 1 &&
+          !report.fotoBukti[0].startsWith('http') &&
+          !report.fotoBukti[0].startsWith('data:image/svg+xml') &&
+          report.fotoBukti[0].length <= 12_000));
+
+    if (needsPhotoHydration && onLoadReportPhotos) {
+      setLoadingPhotosReportId(report.id);
+      onLoadReportPhotos(report.id)
+        .then((fullPhotos) => {
+          if (fullPhotos && fullPhotos.length > 0) {
+            setActiveReportDetail((prev) =>
+              prev && prev.id === report.id
+                ? { ...prev, fotoBukti: fullPhotos, fotoCount: fullPhotos.length }
+                : prev
+            );
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          setLoadingPhotosReportId((prev) => (prev === report.id ? null : prev));
+        });
     }
   };
 
@@ -2079,10 +2202,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 space-y-4">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-bold text-slate-900">Riwayat &amp; Daftar Laporan</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900">Riwayat &amp; Daftar Laporan</h2>
+                {isLoadingOlderReports && (
+                  <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                    Memuat riwayat lama...
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 tabular-nums">
                 Menampilkan {filteredReports.length} dari {reports.length} laporan tersimpan
               </p>
+              {isFirestoreQuotaLimited && (
+                <p className="text-[11px] text-amber-700 mt-1">
+                  Kuota baca harian Firestore sedang mencapai batas gratis; menampilkan data cache lokal perangkat.
+                </p>
+              )}
             </div>
 
             {/* Quick Category Filter Tabs */}
@@ -2324,10 +2459,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     onClick={() => handleOpenDetail(report)}
                   >
                     {report.fotoBukti && report.fotoBukti.length > 0 ? (
-                      <img
+                      <ReportPhotoImage
                         src={report.fotoBukti[0]}
                         alt={`Bukti ${report.area}`}
-                        referrerPolicy="no-referrer"
+                        compact
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                     ) : (
@@ -2364,9 +2499,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </span>
                     </div>
 
-                    {report.fotoBukti && report.fotoBukti.length > 0 && (
+                    {(report.fotoCount ?? report.fotoBukti?.length ?? 0) > 0 && (
                       <div className="absolute bottom-2 right-2 bg-black/65 text-white text-[11px] font-medium px-2 py-0.5 rounded-md tabular-nums">
-                        {report.fotoBukti.length} Foto
+                        {report.fotoCount ?? report.fotoBukti?.length ?? 0} Foto
                       </div>
                     )}
                   </div>
@@ -2483,7 +2618,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <td className="py-3 px-4 whitespace-nowrap font-semibold text-slate-900">
                         {report.namaPetugas}
                       </td>
-                      <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800">{report.area}</td>
+                      <td className="py-3 px-4 whitespace-nowrap font-medium text-slate-800">
+                        <div className="flex items-center gap-1.5">
+                          <span>{report.area}</span>
+                          {(report.fotoCount ?? report.fotoBukti?.length ?? 0) > 0 && (
+                            <span
+                              className="inline-flex items-center gap-0.5 text-[11px] font-normal text-slate-400 tabular-nums"
+                              title={`${report.fotoCount ?? report.fotoBukti?.length ?? 0} foto bukti`}
+                            >
+                              <Camera className="w-3 h-3" />
+                              {report.fotoCount ?? report.fotoBukti?.length ?? 0}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="py-3 px-4 whitespace-nowrap">
                         <span
                           className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
@@ -2554,7 +2702,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* DETAIL MODAL WITH SUPERVISOR VERIFICATION */}
-      {activeReportDetail && (
+      {currentDetailReport && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-150">
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[90vh] flex flex-col">
             <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
@@ -2564,17 +2712,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span className="text-slate-300" aria-hidden="true">·</span>
                   <span
                     className={`font-semibold ${
-                      activeReportDetail.statusVerifikasi === 'Disetujui'
+                      currentDetailReport.statusVerifikasi === 'Disetujui'
                         ? 'text-emerald-700'
-                        : activeReportDetail.statusVerifikasi === 'Perlu Perbaikan'
+                        : currentDetailReport.statusVerifikasi === 'Perlu Perbaikan'
                         ? 'text-rose-700'
                         : 'text-amber-700'
                     }`}
                   >
-                    {activeReportDetail.statusVerifikasi}
+                    {currentDetailReport.statusVerifikasi}
                   </span>
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 mt-0.5">{activeReportDetail.area}</h3>
+                <h3 className="text-lg font-bold text-slate-900 mt-0.5">{currentDetailReport.area}</h3>
               </div>
               <button
                 onClick={() => setActiveReportDetail(null)}
@@ -2588,32 +2736,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-100 text-xs tabular-nums">
                 <div>
                   <span className="text-slate-400 block font-medium">Petugas</span>
-                  <strong className="text-slate-900 text-sm">{activeReportDetail.namaPetugas}</strong>
+                  <strong className="text-slate-900 text-sm">{currentDetailReport.namaPetugas}</strong>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">Waktu Lapor</span>
                   <strong className="text-slate-900 text-sm">
-                    {activeReportDetail.tanggal} · {activeReportDetail.waktu}
+                    {currentDetailReport.tanggal} · {currentDetailReport.waktu}
                   </strong>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">Kondisi Akhir</span>
                   <strong
                     className={`inline-block font-bold mt-0.5 ${
-                      activeReportDetail.kondisiAkhir === 'Bersih'
+                      currentDetailReport.kondisiAkhir === 'Bersih'
                         ? 'text-emerald-700'
-                        : activeReportDetail.kondisiAkhir === 'Ada Kerusakan'
+                        : currentDetailReport.kondisiAkhir === 'Ada Kerusakan'
                         ? 'text-rose-700'
                         : 'text-amber-700'
                     }`}
                   >
-                    {activeReportDetail.kondisiAkhir}
+                    {currentDetailReport.kondisiAkhir}
                   </strong>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">Bukti Foto</span>
                   <strong className="text-slate-900 text-sm">
-                    {activeReportDetail.fotoBukti?.length || 0} Terlampir
+                    {currentDetailReport.fotoCount ?? currentDetailReport.fotoBukti?.length ?? 0} Terlampir
                   </strong>
                 </div>
               </div>
@@ -2621,23 +2769,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div>
                 <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
                   <span>Foto Bukti Kegiatan</span>
-                  <span className="text-slate-400 font-normal normal-case">Klik foto untuk perbesar</span>
+                  <span className="text-slate-400 font-normal normal-case">
+                    {loadingPhotosReportId === currentDetailReport.id
+                      ? 'Memuat foto resolusi penuh...'
+                      : 'Klik foto untuk perbesar'}
+                  </span>
                 </h4>
-                {activeReportDetail.fotoBukti && activeReportDetail.fotoBukti.length > 0 ? (
+                {currentDetailReport.fotoBukti && currentDetailReport.fotoBukti.length > 0 ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                    {activeReportDetail.fotoBukti.map((url, i) => (
+                    {currentDetailReport.fotoBukti.map((url, i) => (
                       <div
                         key={i}
                         onClick={() => setSelectedImagePreview(url)}
                         className="aspect-4/3 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 cursor-pointer hover:opacity-90 transition-opacity relative group"
                       >
-                        <img
+                        <ReportPhotoImage
                           src={url}
-                          alt="Foto bukti"
-                          referrerPolicy="no-referrer"
+                          alt={`Foto bukti ${i + 1}`}
+                          compact
                           className="w-full h-full object-cover"
                         />
-                        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-semibold transition-opacity">
+                        <div className="pointer-events-none absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-semibold transition-opacity">
                           Perbesar Foto
                         </div>
                       </div>
@@ -2646,6 +2798,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 ) : (
                   <p className="text-xs text-slate-400 italic">Tidak ada foto dilampirkan.</p>
                 )}
+
+                {currentDetailReport.drivePhotoLinks && currentDetailReport.drivePhotoLinks.length > 0 && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-3 text-xs">
+                    <span className="text-slate-500 font-medium">Arsip Google Drive:</span>
+                    {currentDetailReport.drivePhotoLinks.map((driveUrl, idx) => (
+                      <a
+                        key={idx}
+                        href={driveUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-900 font-semibold underline"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Foto {idx + 1}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -2653,7 +2823,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   Checklist Kebersihan Terpenuhi
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {activeReportDetail.checklist.map((item, idx) => (
+                  {currentDetailReport.checklist.map((item, idx) => (
                     <div
                       key={idx}
                       className="flex items-center gap-2 p-2 rounded-lg bg-emerald-50/70 border border-emerald-200 text-emerald-900 text-xs font-medium"
@@ -2670,7 +2840,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   Catatan Petugas
                 </h4>
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700">
-                  {activeReportDetail.keteranganTambahan || 'Tidak ada catatan tambahan.'}
+                  {currentDetailReport.keteranganTambahan || 'Tidak ada catatan tambahan.'}
                 </div>
               </div>
 
@@ -2680,9 +2850,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <ShieldCheck className="w-4 h-4 text-emerald-600" />
                     <span>Evaluasi &amp; Persetujuan Supervisor</span>
                   </h4>
-                  {activeReportDetail.diverifikasiOleh && (
+                  {currentDetailReport.diverifikasiOleh && (
                     <span className="text-[11px] text-slate-600 tabular-nums">
-                      Oleh: <strong>{activeReportDetail.diverifikasiOleh}</strong> ({activeReportDetail.diverifikasiPada})
+                      Oleh: <strong>{currentDetailReport.diverifikasiOleh}</strong> ({currentDetailReport.diverifikasiPada})
                     </span>
                   )}
                 </div>
@@ -2748,11 +2918,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4"
           onClick={() => setSelectedImagePreview(null)}
         >
-          <div className="relative max-w-3xl max-h-[90vh]">
-            <img
+          <div
+            className="relative max-w-3xl max-h-[90vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ReportPhotoImage
               src={selectedImagePreview}
               alt="Bukti foto resolusi tinggi"
-              referrerPolicy="no-referrer"
               className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl"
             />
             <button

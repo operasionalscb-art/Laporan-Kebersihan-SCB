@@ -185,18 +185,36 @@ export const ReportForm: React.FC<ReportFormProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
+    const maxPhotos = 5;
+    const remainingSlots = maxPhotos - photos.length;
+    if (remainingSlots <= 0) {
+      setErrorMsg(`Maksimal ${maxPhotos} foto bukti per laporan.`);
+      return;
+    }
+
     setIsCompressing(true);
     setErrorMsg('');
 
     try {
       const newPhotoUrls: string[] = [];
-      for (let i = 0; i < files.length; i++) {
+      const limit = Math.min(files.length, remainingSlots);
+      for (let i = 0; i < limit; i++) {
         const file = files[i];
-        if (!file.type.startsWith('image/')) continue;
+        const isImageFile =
+          file.type.startsWith('image/') ||
+          /\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(file.name);
+        if (!isImageFile) continue;
         const compressed = await compressImage(file);
         newPhotoUrls.push(compressed);
       }
-      setPhotos((prev) => [...prev, ...newPhotoUrls]);
+      if (newPhotoUrls.length === 0) {
+        setErrorMsg('Format berkas tidak dikenali sebagai gambar. Pilih foto JPG/PNG.');
+      } else {
+        setPhotos((prev) => [...prev, ...newPhotoUrls]);
+        if (files.length > remainingSlots) {
+          setErrorMsg(`Hanya ${remainingSlots} foto pertama yang ditambahkan (batas maksimal ${maxPhotos} foto).`);
+        }
+      }
     } catch (err) {
       console.error(err);
       setErrorMsg('Gagal memproses gambar. Pastikan format foto didukung.');
@@ -829,7 +847,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
             6. Upload Bukti Foto Kegiatan {activeSettings.requirePhoto && <span className="text-rose-600">*</span>}
           </label>
           <p className="text-xs text-slate-500 mb-3">
-            Ambil foto langsung dengan kamera ponsel atau pilih dari galeri dokumen (minimal {activeSettings.minPhotos || 1} foto)
+            Ambil foto langsung dengan kamera ponsel atau pilih dari galeri dokumen (minimal {activeSettings.minPhotos || 1}, maks. 5 foto)
           </p>
 
           {/* Action buttons */}

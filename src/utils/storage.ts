@@ -14,8 +14,10 @@ if (typeof window !== 'undefined') {
   loadReportsFromIDB().then((idbReports) => {
     if (idbReports && idbReports.length > 0) {
       const cleanIdb = idbReports.filter((r) => !['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(r.id));
+      let restoredAny = false;
       if (!inMemoryReports || inMemoryReports.length === 0) {
         inMemoryReports = cleanIdb;
+        restoredAny = cleanIdb.length > 0;
       } else {
         // Merge full photos from IDB into inMemoryReports in case localStorage had stripped them
         const idbMap = new Map(cleanIdb.map((r) => [r.id, r]));
@@ -23,11 +25,22 @@ if (typeof window !== 'undefined') {
           .filter((r) => !['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(r.id))
           .map((r) => {
             const fromIdb = idbMap.get(r.id);
-            if (fromIdb && fromIdb.fotoBukti && fromIdb.fotoBukti.length > 0 && (!r.fotoBukti || r.fotoBukti.length === 0)) {
-              return { ...r, fotoBukti: fromIdb.fotoBukti };
+            if (!fromIdb) return r;
+            const needsPhotos = (!r.fotoBukti || r.fotoBukti.length === 0) && fromIdb.fotoBukti && fromIdb.fotoBukti.length > 0;
+            const needsDrive = (!r.drivePhotoLinks || r.drivePhotoLinks.length === 0) && fromIdb.drivePhotoLinks && fromIdb.drivePhotoLinks.length > 0;
+            if (needsPhotos || needsDrive) {
+              restoredAny = true;
+              return {
+                ...r,
+                fotoBukti: needsPhotos ? fromIdb.fotoBukti : r.fotoBukti,
+                drivePhotoLinks: needsDrive ? fromIdb.drivePhotoLinks : r.drivePhotoLinks,
+              };
             }
             return r;
           });
+      }
+      if (restoredAny) {
+        window.dispatchEvent(new Event('scb_idb_reports_hydrated'));
       }
     }
   }).catch(() => {});
@@ -294,6 +307,7 @@ function safelySaveToLocalStorage(reports: CleaningReport[]): void {
       if (index < 3) return r;
       return {
         ...r,
+        fotoCount: r.fotoCount ?? (r.fotoBukti?.length || 0),
         fotoBukti: r.fotoBukti
           ? r.fotoBukti.filter((f) => f.length < 500 || f.startsWith('data:image/svg+xml'))
           : [],
@@ -309,6 +323,7 @@ function safelySaveToLocalStorage(reports: CleaningReport[]): void {
   try {
     const withoutHeavyPhotos = reports.map((r) => ({
       ...r,
+      fotoCount: r.fotoCount ?? (r.fotoBukti?.length || 0),
       fotoBukti: r.fotoBukti
         ? r.fotoBukti.filter((f) => f.length < 500 || f.startsWith('data:image/svg+xml'))
         : [],
@@ -323,6 +338,7 @@ function safelySaveToLocalStorage(reports: CleaningReport[]): void {
   try {
     const compactReports = reports.slice(0, 25).map((r) => ({
       ...r,
+      fotoCount: r.fotoCount ?? (r.fotoBukti?.length || 0),
       fotoBukti: [],
     }));
     localStorage.setItem(STORAGE_REPORTS_KEY, JSON.stringify(compactReports));

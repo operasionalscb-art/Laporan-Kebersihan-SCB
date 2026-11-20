@@ -40,7 +40,10 @@ export interface CleaningReport {
   checklistCustom?: string;
   kondisiAkhir: KondisiAkhir;
   keteranganTambahan: string;
-  fotoBukti: string[]; // Base64 data URLs
+  fotoBukti: string[]; // Base64 data URLs (or legacy URLs / micro-thumbnail)
+  fotoCount?: number; // True attached photo count when full photos are offloaded
+  photosOffloaded?: boolean; // True when full-resolution photos reside in report_photos collection
+  drivePhotoLinks?: string[]; // Optional archived Google Drive links
   statusVerifikasi: 'Menunggu' | 'Disetujui' | 'Perlu Perbaikan';
   catatanSupervisor?: string;
   diverifikasiOleh?: string;

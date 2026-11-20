@@ -1,6 +1,12 @@
 import { getGoogleAccessToken, clearStoredGoogleAuth } from './googleAuth';
 import { CleaningReport } from '../types';
 
+function createDriveAuthError(message: string): Error & { isDriveAuthError?: boolean } {
+  const err: Error & { isDriveAuthError?: boolean } = new Error(message);
+  err.isDriveAuthError = true;
+  return err;
+}
+
 export const DEFAULT_DATABASE_FOLDER_ID = '1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z';
 export const DEFAULT_DATABASE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_DATABASE_FOLDER_ID}?usp=sharing`;
 export const STORAGE_FOLDER_KEY = 'scb_custom_gdrive_folder_id';
@@ -125,7 +131,7 @@ export async function listDriveFiles(
   if (!response.ok) {
     if (response.status === 401) {
       clearStoredGoogleAuth();
-      throw new Error('Sesi Google Drive telah berakhir. Silakan klik "Hubungkan Akun Google" untuk memperbarui sesi.');
+      throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan klik "Hubungkan Akun Google" untuk memperbarui sesi.');
     }
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error?.message || `Gagal memuat file Google Drive (${response.status})`);
@@ -210,7 +216,7 @@ export async function readJsonFromDrive<T = any>(fileId: string): Promise<T> {
   if (!res.ok) {
     if (res.status === 401) {
       clearStoredGoogleAuth();
-      throw new Error('Sesi Google Drive telah berakhir. Silakan hubungkan kembali akun Google.');
+      throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan hubungkan kembali akun Google.');
     }
     throw new Error(`Gagal mengunduh file dari Google Drive (${res.status})`);
   }
@@ -273,7 +279,7 @@ export async function uploadFileToDrive(
   if (!res.ok) {
     if (res.status === 401) {
       clearStoredGoogleAuth();
-      throw new Error('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
+      throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
     }
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error?.message || `Gagal mengunggah file ke Google Drive (${res.status})`);
@@ -366,7 +372,7 @@ export async function deleteDriveFile(fileId: string): Promise<boolean> {
   if (!res.ok) {
     if (res.status === 401) {
       clearStoredGoogleAuth();
-      throw new Error('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
+      throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
     }
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error?.message || `Gagal menghapus file (${res.status})`);
@@ -438,32 +444,37 @@ export async function uploadBase64ImageToDrive(
 
 /**
  * Automatically uploads all photos from a cleaning report to Google Drive.
- * Returns an array of Google Drive webViewLinks for successfully uploaded photos.
+ * Preserves local compressed base64 images in fotoBukti so Dashboard thumbnails always render
+ * reliably across all users/devices, while returning Drive links for drivePhotoLinks backup.
  */
 export async function uploadReportPhotosToDrive(
   report: CleaningReport,
   folderId?: string
 ): Promise<{ updatedPhotos: string[]; uploadedCount: number; driveLinks: string[] }> {
   if (!report.fotoBukti || report.fotoBukti.length === 0) {
-    return { updatedPhotos: [], uploadedCount: 0, driveLinks: [] };
+    return { updatedPhotos: [], uploadedCount: 0, driveLinks: report.drivePhotoLinks || [] };
   }
 
   const token = await getGoogleAccessToken();
   if (!token) {
-    return { updatedPhotos: report.fotoBukti, uploadedCount: 0, driveLinks: [] };
+    return { updatedPhotos: report.fotoBukti, uploadedCount: 0, driveLinks: report.drivePhotoLinks || [] };
   }
 
   const targetFolder = folderId || getConfiguredFolderId();
-  const updatedPhotos: string[] = [];
+  const updatedPhotos: string[] = [...report.fotoBukti];
+  const existingDriveLinks: string[] = Array.isArray(report.drivePhotoLinks) ? [...report.drivePhotoLinks] : [];
   const driveLinks: string[] = [];
   let uploadedCount = 0;
 
   for (let i = 0; i < report.fotoBukti.length; i++) {
     const photo = report.fotoBukti[i];
-    // If it's already a URL, retain it
+    // If fotoBukti itself already holds an external URL (legacy) or already archived at index i, reuse it
     if (photo.startsWith('http://') || photo.startsWith('https://')) {
-      updatedPhotos.push(photo);
       driveLinks.push(photo);
+      continue;
+    }
+    if (existingDriveLinks[i] && existingDriveLinks[i].startsWith('http')) {
+      driveLinks.push(existingDriveLinks[i]);
       continue;
     }
 
@@ -473,14 +484,13 @@ export async function uploadReportPhotosToDrive(
       const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
 
       const uploadResult = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
-      // We retain the Drive web link
-      updatedPhotos.push(uploadResult.webViewLink);
       driveLinks.push(uploadResult.webViewLink);
       uploadedCount++;
-    } catch (err) {
+    } catch (err: any) {
       console.warn(`Gagal mengunggah foto ke-${i + 1} ke Google Drive:`, err);
-      // Fallback: keep original base64 so image is not lost
-      updatedPhotos.push(photo);
+      if (err?.isDriveAuthError) {
+        break;
+      }
     }
   }
 
@@ -516,11 +526,16 @@ export async function executeAutoBackupToDrive(
 
 /**
  * Batch upload all pending local/base64 photos across all reports into Google Drive
+ * while keeping fotoBukti intact for reliable dashboard rendering.
  */
 export async function batchUploadAllReportsPhotosToDrive(
   reports: CleaningReport[],
   onProgress?: (current: number, total: number) => void
-): Promise<{ updatedReports: CleaningReport[]; totalUploaded: number }> {
+): Promise<{
+  updatedReports: CleaningReport[];
+  modifiedReports: CleaningReport[];
+  totalUploaded: number;
+}> {
   const token = await getGoogleAccessToken();
   if (!token) {
     throw new Error('Akses Google Drive belum terautentikasi.');
@@ -529,11 +544,14 @@ export async function batchUploadAllReportsPhotosToDrive(
   const targetFolder = getConfiguredFolderId();
   let totalUploaded = 0;
   const updatedReports: CleaningReport[] = [];
+  const modifiedReports: CleaningReport[] = [];
 
-  // Count total photos to process
+  // Count total photos not yet archived in drivePhotoLinks
   let totalPhotos = 0;
   for (const r of reports) {
-    totalPhotos += (r.fotoBukti || []).filter((p) => p.startsWith('data:image/')).length;
+    const base64Count = (r.fotoBukti || []).filter((p) => p && p.startsWith('data:image/')).length;
+    const archivedCount = (r.drivePhotoLinks || []).filter((l) => l && l.startsWith('http')).length;
+    totalPhotos += Math.max(0, base64Count - archivedCount);
   }
 
   let processedCount = 0;
@@ -545,10 +563,20 @@ export async function batchUploadAllReportsPhotosToDrive(
     }
 
     let reportModified = false;
-    const newPhotos: string[] = [];
+    const existingLinks = Array.isArray(report.drivePhotoLinks) ? [...report.drivePhotoLinks] : [];
+    const newDriveLinks: string[] = [];
 
     for (let i = 0; i < report.fotoBukti.length; i++) {
       const photo = report.fotoBukti[i];
+      if (photo.startsWith('http://') || photo.startsWith('https://')) {
+        newDriveLinks.push(photo);
+        continue;
+      }
+      if (existingLinks[i] && existingLinks[i].startsWith('http')) {
+        newDriveLinks.push(existingLinks[i]);
+        continue;
+      }
+
       if (photo.startsWith('data:image/')) {
         try {
           const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
@@ -556,26 +584,28 @@ export async function batchUploadAllReportsPhotosToDrive(
           const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
 
           const result = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
-          newPhotos.push(result.webViewLink);
+          newDriveLinks.push(result.webViewLink);
           reportModified = true;
           totalUploaded++;
-        } catch (e) {
+        } catch (e: any) {
           console.warn('Batch photo upload item error:', e);
-          newPhotos.push(photo);
+          if (e?.isDriveAuthError) {
+            throw e;
+          }
         }
         processedCount++;
         if (onProgress) onProgress(processedCount, totalPhotos);
-      } else {
-        newPhotos.push(photo);
       }
     }
 
     if (reportModified) {
-      updatedReports.push({ ...report, fotoBukti: newPhotos });
+      const updated = { ...report, drivePhotoLinks: newDriveLinks };
+      updatedReports.push(updated);
+      modifiedReports.push(updated);
     } else {
       updatedReports.push(report);
     }
   }
 
-  return { updatedReports, totalUploaded };
+  return { updatedReports, modifiedReports, totalUploaded };
 }

@@ -76,7 +76,19 @@
         },
         "fotoBukti": {
           "type": "array",
-          "description": "Array of compressed image data URLs or Google Drive links (max 10 items)"
+          "description": "Array of compressed image data URLs, micro-thumbnail, or Google Drive links (max 10 items)"
+        },
+        "fotoCount": {
+          "type": "integer",
+          "description": "Total number of attached photos when full photos are offloaded"
+        },
+        "photosOffloaded": {
+          "type": "boolean",
+          "description": "Whether full-resolution photos are stored in /report_photos/{reportId}"
+        },
+        "drivePhotoLinks": {
+          "type": "array",
+          "description": "Optional archived Google Drive photo links (max 10 items)"
         },
         "statusVerifikasi": {
           "type": "string",
@@ -277,12 +289,42 @@
         }
       },
       "required": ["email", "role", "isActive"]
+    },
+    "ReportPhoto": {
+      "title": "ReportPhoto",
+      "description": "On-demand full-resolution compressed photo evidence for a cleaning report",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "photos": {
+          "type": "array",
+          "description": "Full list of compressed evidence image data URLs (max 10 items)"
+        },
+        "authorUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "photos"]
     }
   },
   "firestore": {
     "/reports/{reportId}": {
       "schema": "Report",
       "description": "Collection of all cleaning service inspection reports"
+    },
+    "/report_photos/{reportId}": {
+      "schema": "ReportPhoto",
+      "description": "On-demand full-resolution evidence photos separated from report summaries"
     },
     "/users/{userId}": {
       "schema": "User",

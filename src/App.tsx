@@ -62,6 +62,10 @@ import {
   syncAllUsersToCloud,
   syncAllAppDataToCloud,
   syncPendingLocalChangesToCloud,
+  syncPendingLocalReportsToCloud,
+  subscribeQuotaStatus,
+  loadOlderReportsFromCloud,
+  fetchReportPhotosFromCloud,
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -115,6 +119,7 @@ export default function App() {
   const [cloudUserEmail, setCloudUserEmail] = useState<string | null>(() =>
     auth.currentUser?.email && auth.currentUser?.emailVerified ? auth.currentUser.email : null
   );
+  const [isFirestoreQuotaLimited, setIsFirestoreQuotaLimited] = useState<boolean>(false);
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ message, type });
@@ -232,12 +237,27 @@ export default function App() {
     setFormSettings(getFormSettings());
     setRoomSchedules(getRoomSchedules());
 
-    // 1. Subscribe to Live Firestore Reports (auto-falls back to local cache on quota limit)
+    // 1. Track Firestore daily quota state cleanly
+    const unsubscribeQuota = subscribeQuotaStatus((limited) => {
+      setIsFirestoreQuotaLimited(limited);
+    });
+
+    // 2. Subscribe to Live Firestore Reports (35-day window, auto-falls back to local cache)
     const unsubscribeReports = subscribeReports((cloudReports) => {
       setReports(cloudReports);
     });
 
-    // 2. Subscribe to Live Firestore Users ONLY when Firebase Auth email is verified
+    // 3. Form Config & Schedules (15-min one-shot cache for guests; live onSnapshot for verified staff)
+    let unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
+      setMasterRooms(rooms);
+      setMasterChecklists(checklists);
+      setFormSettings(settings);
+    });
+    let unsubscribeSchedules = subscribeRoomSchedules((schedules) => {
+      setRoomSchedules(schedules);
+    });
+
+    // 4. Subscribe to Live Firestore Users ONLY when Firebase Auth email is verified
     let unsubscribeUsers: (() => void) | null = null;
     const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
       const verifiedEmail = fbUser?.email && fbUser.emailVerified ? fbUser.email : null;
@@ -247,9 +267,28 @@ export default function App() {
         unsubscribeUsers = null;
       }
       if (fbUser && fbUser.email && fbUser.emailVerified) {
+        unsubscribeFormConfig();
+        unsubscribeSchedules();
+        unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
+          setMasterRooms(rooms);
+          setMasterChecklists(checklists);
+          setFormSettings(settings);
+        });
+        unsubscribeSchedules = subscribeRoomSchedules((schedules) => {
+          setRoomSchedules(schedules);
+        });
+
         unsubscribeUsers = subscribeUsers((cloudUsers) => {
           setUsers(cloudUsers);
         });
+        syncPendingLocalReportsToCloud()
+          .then((count) => {
+            if (count > 0) {
+              setReports(getReports());
+              showToast(`${count} laporan tertunda berhasil disinkronkan ke Cloud!`, 'success');
+            }
+          })
+          .catch(() => {});
         if (fbUser.email.trim().toLowerCase() === 'operasional.scb@gmail.com') {
           syncPendingLocalChangesToCloud()
             .then(({ syncedConfig, syncedSchedules }) => {
@@ -262,18 +301,6 @@ export default function App() {
       } else {
         resetCloudSyncSessionFlags();
       }
-    });
-
-    // 3. Subscribe to Live Form Configuration (Rooms, Checklists, Form Settings)
-    const unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
-      setMasterRooms(rooms);
-      setMasterChecklists(checklists);
-      setFormSettings(settings);
-    });
-
-    // 4. Subscribe to Live Room Schedules
-    const unsubscribeSchedules = subscribeRoomSchedules((schedules) => {
-      setRoomSchedules(schedules);
     });
 
     // 5. Cross-tab localStorage sync on the same browser
@@ -300,9 +327,14 @@ export default function App() {
         setCurrentUserState(getCurrentUser());
       }
     };
+    const handleIdbHydrated = () => {
+      setReports(getReports());
+    };
     window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
 
     return () => {
+      unsubscribeQuota();
       unsubscribeReports();
       unsubscribeAuth();
       if (unsubscribeUsers) {
@@ -311,6 +343,7 @@ export default function App() {
       unsubscribeFormConfig();
       unsubscribeSchedules();
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
     };
   }, []);
 
@@ -353,28 +386,36 @@ export default function App() {
     // 1. Save locally first for instant feedback
     const saved = addReport(reportWithAuthor);
     setReports(getReports());
-    showToast(`Laporan ${saved.area} berhasil disimpan!`);
 
     // 2. Persist to Firestore Cloud in real-time
     try {
-      await saveReportToCloud(saved);
-    } catch (e) {
+      const cloudRes = await saveReportToCloud(saved);
+      if (cloudRes.status === 'synced') {
+        showToast(`Laporan ${saved.area} berhasil disimpan & disinkronkan ke Cloud!`);
+      } else {
+        showToast(cloudRes.message || `Laporan ${saved.area} tersimpan lokal (sinkronisasi Cloud tertunda).`, 'info');
+      }
+    } catch (e: any) {
       console.warn('Saved locally, cloud sync failed:', e);
+      showToast(
+        `Laporan ${saved.area} tersimpan di perangkat ini, namun gagal terkirim ke Cloud. Pastikan akun sudah diverifikasi & disinkronkan oleh Superadmin.`,
+        'error'
+      );
     }
 
-    // 3. Automatic Google Drive Photo Upload & Backup
+    // 3. Automatic Google Drive Photo Archive & Backup (preserves fotoBukti data URLs for reliable Dashboard rendering)
     const token = await getGoogleAccessToken();
     if (token) {
       (async () => {
-        // Auto-upload documentation photos to Google Drive folder
+        // Auto-archive documentation photos to Google Drive folder without overwriting fotoBukti
         if (isAutoPhotosUploadEnabled() && saved.fotoBukti && saved.fotoBukti.length > 0) {
           try {
-            const { updatedPhotos, uploadedCount } = await uploadReportPhotosToDrive(saved);
-            if (uploadedCount > 0) {
-              updateReport(saved.id, { fotoBukti: updatedPhotos });
+            const { driveLinks, uploadedCount } = await uploadReportPhotosToDrive(saved);
+            if (uploadedCount > 0 && driveLinks.length > 0) {
+              updateReport(saved.id, { drivePhotoLinks: driveLinks });
               setReports(getReports());
-              await updateReportInCloud(saved.id, { fotoBukti: updatedPhotos });
-              showToast(`📸 ${uploadedCount} foto bukti otomatis diunggah ke Google Drive!`, 'success');
+              await updateReportInCloud(saved.id, { drivePhotoLinks: driveLinks }).catch(() => {});
+              showToast(`📸 ${uploadedCount} foto bukti otomatis diarsipkan ke Google Drive!`, 'success');
             }
           } catch (photoErr) {
             console.warn('Auto upload photos to Drive error:', photoErr);
@@ -401,13 +442,18 @@ export default function App() {
   const handleUpdateReport = async (id: string, updates: Partial<CleaningReport>) => {
     const updated = updateReport(id, updates);
     setReports(getReports());
-    showToast('Laporan berhasil diperbarui / diverifikasi.');
 
     if (updated) {
       try {
-        await updateReportInCloud(id, updates);
+        const cloudRes = await updateReportInCloud(id, updates);
+        if (cloudRes.status === 'synced') {
+          showToast('Laporan berhasil diperbarui & disinkronkan.');
+        } else {
+          showToast(cloudRes.message || 'Perubahan tersimpan lokal, sinkronisasi Cloud tertunda.', 'info');
+        }
       } catch (e) {
         console.warn('Updated locally, cloud sync failed:', e);
+        showToast('Perubahan tersimpan lokal, gagal sinkron ke Cloud.', 'error');
       }
 
       if (isAutoBackupEnabled()) {
@@ -789,6 +835,9 @@ export default function App() {
               setCurrentUserState(user);
               showToast(`Berhasil masuk sebagai ${user.name} (${user.role.toUpperCase()})`, 'success');
             }}
+            isFirestoreQuotaLimited={isFirestoreQuotaLimited}
+            onLoadOlderReports={loadOlderReportsFromCloud}
+            onLoadReportPhotos={fetchReportPhotosFromCloud}
           />
         )}
 
@@ -918,6 +967,7 @@ export default function App() {
                 formSettings={formSettings}
                 roomSchedules={roomSchedules}
                 onShowToast={showToast}
+                onUpdateReport={handleUpdateReport}
                 onRestoreFullBackup={handleRestoreFullBackup}
                 onRestoreReports={(restoredReports) => {
                   saveReports(restoredReports);
