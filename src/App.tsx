@@ -63,6 +63,10 @@ import {
   syncAllAppDataToCloud,
   syncPendingLocalChangesToCloud,
   syncPendingLocalReportsToCloud,
+  retrySingleReportCloudSync,
+  subscribePendingUnsyncedCount,
+  fetchUserByEmailFromCloud,
+  CloudSaveResult,
   subscribeQuotaStatus,
   loadOlderReportsFromCloud,
   fetchReportPhotosFromCloud,
@@ -119,6 +123,8 @@ export default function App() {
   const [cloudUserEmail, setCloudUserEmail] = useState<string | null>(() =>
     auth.currentUser?.email && auth.currentUser?.emailVerified ? auth.currentUser.email : null
   );
+  const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
+  const [pendingUnsyncedCount, setPendingUnsyncedCount] = useState<number>(0);
   const [isFirestoreQuotaLimited, setIsFirestoreQuotaLimited] = useState<boolean>(false);
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
@@ -237,10 +243,21 @@ export default function App() {
     setFormSettings(getFormSettings());
     setRoomSchedules(getRoomSchedules());
 
-    // 1. Track Firestore daily quota state cleanly
+    // 1. Track Firestore daily quota & pending local report queue cleanly
     const unsubscribeQuota = subscribeQuotaStatus((limited) => {
       setIsFirestoreQuotaLimited(limited);
     });
+    const unsubscribeUnsynced = subscribePendingUnsyncedCount((count) => {
+      setPendingUnsyncedCount(count);
+    });
+
+    auth.authStateReady()
+      .then(() => {
+        setIsAuthReady(true);
+      })
+      .catch(() => {
+        setIsAuthReady(true);
+      });
 
     // 2. Subscribe to Live Firestore Reports (35-day window, auto-falls back to local cache)
     const unsubscribeReports = subscribeReports((cloudReports) => {
@@ -259,14 +276,31 @@ export default function App() {
 
     // 4. Subscribe to Live Firestore Users ONLY when Firebase Auth email is verified
     let unsubscribeUsers: (() => void) | null = null;
-    const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (fbUser) => {
       const verifiedEmail = fbUser?.email && fbUser.emailVerified ? fbUser.email : null;
       setCloudUserEmail(verifiedEmail);
+      setIsAuthReady(true);
+
       if (unsubscribeUsers) {
         unsubscribeUsers();
         unsubscribeUsers = null;
       }
       if (fbUser && fbUser.email && fbUser.emailVerified) {
+        const cleanEmail = fbUser.email.trim().toLowerCase();
+        // Restore or align local currentUser with verified Firebase Auth session
+        const existingLocalSession = getCurrentUser();
+        if (!existingLocalSession || (existingLocalSession.email || '').trim().toLowerCase() !== cleanEmail) {
+          const localRoster = getUsers();
+          let matched = localRoster.find((u) => (u.email || '').trim().toLowerCase() === cleanEmail);
+          if (!matched) {
+            matched = (await fetchUserByEmailFromCloud(cleanEmail).catch(() => null)) || undefined;
+          }
+          if (matched && matched.isActive !== false) {
+            setCurrentUser(matched);
+            setCurrentUserState(matched);
+          }
+        }
+
         unsubscribeFormConfig();
         unsubscribeSchedules();
         unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
@@ -289,7 +323,7 @@ export default function App() {
             }
           })
           .catch(() => {});
-        if (fbUser.email.trim().toLowerCase() === 'operasional.scb@gmail.com') {
+        if (cleanEmail === 'operasional.scb@gmail.com') {
           syncPendingLocalChangesToCloud()
             .then(({ syncedConfig, syncedSchedules }) => {
               if (syncedConfig || syncedSchedules) {
@@ -303,7 +337,21 @@ export default function App() {
       }
     });
 
-    // 5. Cross-tab localStorage sync on the same browser
+    // 5. Auto-sync pending reports when network connection recovers
+    const handleOnlineReconnect = () => {
+      if (auth.currentUser?.email && auth.currentUser.emailVerified) {
+        syncPendingLocalReportsToCloud()
+          .then((count) => {
+            if (count > 0) {
+              setReports(getReports());
+              showToast(`${count} laporan tertunda berhasil disinkronkan setelah koneksi pulih!`, 'success');
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
+    // 6. Cross-tab localStorage sync on the same browser
     const handleStorageChange = (event: StorageEvent) => {
       if (!event.key) return;
       if (event.key === 'scb_cleaning_users_v2') {
@@ -330,11 +378,13 @@ export default function App() {
     const handleIdbHydrated = () => {
       setReports(getReports());
     };
+    window.addEventListener('online', handleOnlineReconnect);
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
 
     return () => {
       unsubscribeQuota();
+      unsubscribeUnsynced();
       unsubscribeReports();
       unsubscribeAuth();
       if (unsubscribeUsers) {
@@ -342,6 +392,7 @@ export default function App() {
       }
       unsubscribeFormConfig();
       unsubscribeSchedules();
+      window.removeEventListener('online', handleOnlineReconnect);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
     };
@@ -350,8 +401,21 @@ export default function App() {
   // Keep active manual session aligned with any roster updates (e.g., rename/role/deactivation)
   useEffect(() => {
     if (!currentUser || users.length === 0) return;
-    const latest = users.find((u) => u.id === currentUser.id);
+    const currentEmailLower = (currentUser.email || '').trim().toLowerCase();
+    const latest = users.find(
+      (u) =>
+        u.id === currentUser.id ||
+        (currentEmailLower && (u.email || '').trim().toLowerCase() === currentEmailLower)
+    );
     if (!latest) {
+      // Do not log out a user who is verified via Firebase Auth while roster is still hydrating
+      if (
+        auth.currentUser?.emailVerified &&
+        currentEmailLower &&
+        (auth.currentUser.email || '').trim().toLowerCase() === currentEmailLower
+      ) {
+        return;
+      }
       clearCurrentUser();
       setCurrentUserState(null);
       setActiveTab('dashboard');
@@ -365,6 +429,7 @@ export default function App() {
       return;
     }
     if (
+      latest.id !== currentUser.id ||
       latest.name !== currentUser.name ||
       latest.role !== currentUser.role ||
       latest.email !== currentUser.email ||
@@ -378,7 +443,9 @@ export default function App() {
   }, [users, currentUser]);
 
   // Handlers for Reports
-  const handleAddNewReport = async (newReportData: Omit<CleaningReport, 'id' | 'timestamp'>) => {
+  const handleAddNewReport = async (
+    newReportData: Omit<CleaningReport, 'id' | 'timestamp'> & { id?: string; timestamp?: number }
+  ): Promise<{ saved: CleaningReport; cloudResult: CloudSaveResult }> => {
     const reportWithAuthor = auth.currentUser?.uid
       ? { ...newReportData, authorUid: auth.currentUser.uid }
       : newReportData;
@@ -387,55 +454,99 @@ export default function App() {
     const saved = addReport(reportWithAuthor);
     setReports(getReports());
 
-    // 2. Persist to Firestore Cloud in real-time
+    // 2. Persist to Firestore Cloud in real-time and await exact outcome
+    let cloudResult: CloudSaveResult;
     try {
-      const cloudRes = await saveReportToCloud(saved);
-      if (cloudRes.status === 'synced') {
+      cloudResult = await saveReportToCloud(saved);
+      setReports(getReports());
+      if (cloudResult.status === 'synced') {
         showToast(`Laporan ${saved.area} berhasil disimpan & disinkronkan ke Cloud!`);
       } else {
-        showToast(cloudRes.message || `Laporan ${saved.area} tersimpan lokal (sinkronisasi Cloud tertunda).`, 'info');
+        showToast(
+          cloudResult.message || `Laporan ${saved.area} tersimpan lokal (belum masuk ke Cloud).`,
+          'error'
+        );
       }
     } catch (e: any) {
       console.warn('Saved locally, cloud sync failed:', e);
-      showToast(
-        `Laporan ${saved.area} tersimpan di perangkat ini, namun gagal terkirim ke Cloud. Pastikan akun sudah diverifikasi & disinkronkan oleh Superadmin.`,
-        'error'
-      );
+      const rawErr = e?.message || String(e || '');
+      const isPermission = rawErr.toLowerCase().includes('permission');
+      cloudResult = {
+        status: 'local_error',
+        message: isPermission
+          ? 'Izin tulis Firestore ditolak (PERMISSION_DENIED). Pastikan akun Anda aktif & terverifikasi, lalu klik Coba Kirim Ulang.'
+          : `Gagal mengirim ke Cloud (${rawErr || 'gangguan jaringan'}). Data tersimpan lokal dan siap dikirim ulang.`,
+      };
+      showToast(cloudResult.message || 'Gagal mengirim ke Cloud.', 'error');
     }
 
-    // 3. Automatic Google Drive Photo Archive & Backup (preserves fotoBukti data URLs for reliable Dashboard rendering)
-    const token = await getGoogleAccessToken();
-    if (token) {
-      (async () => {
-        // Auto-archive documentation photos to Google Drive folder without overwriting fotoBukti
-        if (isAutoPhotosUploadEnabled() && saved.fotoBukti && saved.fotoBukti.length > 0) {
-          try {
-            const { driveLinks, uploadedCount } = await uploadReportPhotosToDrive(saved);
-            if (uploadedCount > 0 && driveLinks.length > 0) {
-              updateReport(saved.id, { drivePhotoLinks: driveLinks });
-              setReports(getReports());
-              await updateReportInCloud(saved.id, { drivePhotoLinks: driveLinks }).catch(() => {});
-              showToast(`📸 ${uploadedCount} foto bukti otomatis diarsipkan ke Google Drive!`, 'success');
+    // 3. Automatic Google Drive Photo Archive & Backup (non-blocking background task)
+    getGoogleAccessToken()
+      .then((token) => {
+        if (!token) {
+          if (isAutoBackupEnabled()) {
+            showToast('ℹ️ Laporan tersimpan di sistem. Buka tab Cadangan Data & klik "Aktifkan" agar data otomatis terunggah ke Google Drive.', 'info');
+          }
+          return;
+        }
+        (async () => {
+          if (isAutoPhotosUploadEnabled() && saved.fotoBukti && saved.fotoBukti.length > 0) {
+            try {
+              const { driveLinks, uploadedCount } = await uploadReportPhotosToDrive(saved);
+              if (uploadedCount > 0 && driveLinks.length > 0) {
+                updateReport(saved.id, { drivePhotoLinks: driveLinks });
+                setReports(getReports());
+                await updateReportInCloud(saved.id, { drivePhotoLinks: driveLinks }).catch(() => {});
+                showToast(`📸 ${uploadedCount} foto bukti otomatis diarsipkan ke Google Drive!`, 'success');
+              }
+            } catch (photoErr) {
+              console.warn('Auto upload photos to Drive error:', photoErr);
             }
-          } catch (photoErr) {
-            console.warn('Auto upload photos to Drive error:', photoErr);
           }
-        }
 
-        // Auto-backup updated database to Google Drive folder
-        if (isAutoBackupEnabled()) {
-          try {
-            const allLatestReports = getReports();
-            await executeAutoBackupToDrive(allLatestReports);
-            showToast('☁️ Data laporan otomatis dicadangkan ke Google Drive!', 'info');
-          } catch (backupErr: any) {
-            console.warn('Auto backup to Google Drive error:', backupErr);
-            showToast('⚠️ Gagal menyimpan ke Google Drive: ' + (backupErr?.message || 'Periksa izin akun'), 'error');
+          if (isAutoBackupEnabled()) {
+            try {
+              const allLatestReports = getReports();
+              await executeAutoBackupToDrive(allLatestReports);
+              showToast('☁️ Data laporan otomatis dicadangkan ke Google Drive!', 'info');
+            } catch (backupErr: any) {
+              console.warn('Auto backup to Google Drive error:', backupErr);
+              showToast('⚠️ Gagal menyimpan ke Google Drive: ' + (backupErr?.message || 'Periksa izin akun'), 'error');
+            }
           }
-        }
-      })();
-    } else if (isAutoBackupEnabled()) {
-      showToast('ℹ️ Laporan tersimpan di sistem. Buka tab Cadangan Data & klik "Aktifkan" agar data otomatis terunggah ke Google Drive.', 'info');
+        })();
+      })
+      .catch(() => {});
+
+    return { saved, cloudResult };
+  };
+
+  const handleRetrySingleReportSync = async (reportId: string): Promise<CloudSaveResult> => {
+    const res = await retrySingleReportCloudSync(reportId);
+    setReports(getReports());
+    if (res.status === 'synced') {
+      showToast('Laporan berhasil disinkronkan ke Cloud & Dashboard!', 'success');
+    } else if (res.message) {
+      showToast(res.message, 'error');
+    }
+    return res;
+  };
+
+  const handleSyncPendingReportsNow = async () => {
+    if (!auth.currentUser || !auth.currentUser.emailVerified) {
+      handleOpenLoginModal(
+        'Masuk menggunakan Email & Kata Sandi akun Anda untuk mengirim laporan tertunda di perangkat ini ke Dashboard Cloud.'
+      );
+      return;
+    }
+    const syncedCount = await syncPendingLocalReportsToCloud();
+    setReports(getReports());
+    if (syncedCount > 0) {
+      showToast(`${syncedCount} laporan tertunda berhasil disinkronkan ke Cloud!`, 'success');
+    } else if (pendingUnsyncedCount > 0) {
+      showToast('Sebagian laporan masih tertunda (periksa jaringan atau izin akun).', 'error');
+    } else {
+      showToast('Seluruh laporan sudah tersinkron dengan Cloud.', 'success');
     }
   };
 
@@ -748,6 +859,19 @@ export default function App() {
   };
 
   const handleLoginSuccess = (user: User) => {
+    setUsers((prev) => {
+      const emailLower = (user.email || '').trim().toLowerCase();
+      const matched = prev.some(
+        (u) => u.id === user.id || (emailLower && (u.email || '').trim().toLowerCase() === emailLower)
+      );
+      const next = matched
+        ? prev.map((u) =>
+            u.id === user.id || (emailLower && (u.email || '').trim().toLowerCase() === emailLower) ? user : u
+          )
+        : [...prev, user];
+      saveUsers(next);
+      return next;
+    });
     setCurrentUser(user);
     setCurrentUserState(user);
     showToast(`Selamat datang, ${user.name}!`);
@@ -836,6 +960,10 @@ export default function App() {
               showToast(`Berhasil masuk sebagai ${user.name} (${user.role.toUpperCase()})`, 'success');
             }}
             isFirestoreQuotaLimited={isFirestoreQuotaLimited}
+            isCloudSynced={Boolean(cloudUserEmail)}
+            isAuthReady={isAuthReady}
+            pendingUnsyncedCount={pendingUnsyncedCount}
+            onSyncPendingReports={handleSyncPendingReportsNow}
             onLoadOlderReports={loadOlderReportsFromCloud}
             onLoadReportPhotos={fetchReportPhotosFromCloud}
           />
@@ -851,9 +979,14 @@ export default function App() {
               formSettings={formSettings}
               roomSchedules={roomSchedules}
               initialArea={preselectedArea}
-              onSubmitSuccess={(newReport) => {
-                handleAddNewReport(newReport);
+              isCloudSynced={Boolean(cloudUserEmail)}
+              isAuthReady={isAuthReady}
+              onOpenLoginModal={handleOpenLoginModal}
+              onRetryCloudSync={handleRetrySingleReportSync}
+              onSubmitSuccess={async (newReport) => {
+                const res = await handleAddNewReport(newReport);
                 setPreselectedArea(null);
+                return res;
               }}
               onViewDashboard={() => {
                 setActiveTab('dashboard');

@@ -1,7 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { CleaningReport, User, KondisiAkhir, MasterRoom, RoomSchedule } from '../types';
 import { INITIAL_AREAS, exportReportsToCsv, getTodayDateString } from '../utils/storage';
-import { getDayIndex } from '../utils/formStorage';
+import {
+  getDayIndex,
+  getIndonesianDayName,
+  getMandatoryTargetRoomsForDate,
+  getRoomScheduleEntry,
+  hasAssignedOfficer,
+} from '../utils/formStorage';
 import { downloadReportsPdf } from '../utils/pdfExport';
 import { extractGoogleDriveFileId, getGoogleDriveImageCandidates } from '../utils/imageCompressor';
 import { doesReportNeedPhotoHydration } from '../services/firestoreSync';
@@ -45,6 +51,8 @@ import {
   ExternalLink,
   ImageOff,
   Camera,
+  CloudOff,
+  RefreshCw,
 } from 'lucide-react';
 
 export function formatMonthIndo(yearMonth: string): string {
@@ -153,6 +161,10 @@ interface DashboardViewProps {
   onOpenLoginModal?: (reason?: string, tab?: string) => void;
   onSwitchUser?: (user: User) => void;
   isFirestoreQuotaLimited?: boolean;
+  isCloudSynced?: boolean;
+  isAuthReady?: boolean;
+  pendingUnsyncedCount?: number;
+  onSyncPendingReports?: () => Promise<void> | void;
   onLoadOlderReports?: () => Promise<{ loadedCount: number; quotaExceeded?: boolean }>;
   onLoadReportPhotos?: (reportId: string) => Promise<string[] | null>;
 }
@@ -170,6 +182,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenPrintModal,
   onOpenLoginModal,
   isFirestoreQuotaLimited = false,
+  isCloudSynced = false,
+  isAuthReady = false,
+  pendingUnsyncedCount = 0,
+  onSyncPendingReports,
   onLoadOlderReports,
   onLoadReportPhotos,
 }) => {
@@ -278,23 +294,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Active & mandatory room lists (synced with Master Rooms, excluding test entries)
   const activeRoomsList = useMemo(() => {
     if (masterRooms && masterRooms.length > 0) {
-      const valid = masterRooms
-        .filter((r) => r.isActive !== false && r.name && !isTestAreaName(r.name))
-        .map((r) => r.name.trim());
-      if (valid.length > 0) return Array.from(new Set(valid));
+      const seen = new Set<string>();
+      const valid: string[] = [];
+      masterRooms.forEach((r) => {
+        if (r.isActive === false || !r.name || isTestAreaName(r.name)) return;
+        const trimmed = r.name.trim();
+        const upper = trimmed.toUpperCase();
+        if (seen.has(upper)) return;
+        seen.add(upper);
+        valid.push(trimmed);
+      });
+      return valid;
     }
     return INITIAL_AREAS;
   }, [masterRooms]);
 
   const mandatoryRoomsList = useMemo(() => {
     if (masterRooms && masterRooms.length > 0) {
-      const activeMandatory = masterRooms.filter(
-        (r) => r.isActive !== false && r.isMandatoryDaily !== false && r.name && !isTestAreaName(r.name)
-      );
-      if (activeMandatory.length > 0) return Array.from(new Set(activeMandatory.map((r) => r.name.trim())));
+      const seen = new Set<string>();
+      const activeMandatory: string[] = [];
+      masterRooms.forEach((r) => {
+        if (r.isActive === false || r.isMandatoryDaily === false || !r.name || isTestAreaName(r.name)) return;
+        const trimmed = r.name.trim();
+        const upper = trimmed.toUpperCase();
+        if (seen.has(upper)) return;
+        seen.add(upper);
+        activeMandatory.push(trimmed);
+      });
+      return activeMandatory;
     }
     return INITIAL_AREAS;
   }, [masterRooms]);
+
+  // Scheduled mandatory rooms for today (synced with Jadwal Ruangan Petugas)
+  const todayTargetRoomsList = useMemo(() => {
+    return getMandatoryTargetRoomsForDate(todayStr, masterRooms, roomSchedules);
+  }, [todayStr, masterRooms, roomSchedules]);
 
   // Helper to determine if an issue report has received follow-up or resolution
   const isReportFollowedUp = (report: CleaningReport, allReports: CleaningReport[]) => {
@@ -573,13 +608,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
   }, []);
 
-  // Today's Room Target Status
+  // Today's Room Target Status (strictly follows scheduled mandatory rooms for today)
   const todayRoomTargetStatus = useMemo(() => {
-    const totalTarget = mandatoryRoomsList.length;
+    const totalTarget = todayTargetRoomsList.length;
     const reportedRooms: Array<{ areaName: string; latestReport: CleaningReport; totalToday: number }> = [];
     const unreportedRooms: string[] = [];
 
-    mandatoryRoomsList.forEach((areaName) => {
+    todayTargetRoomsList.forEach((areaName) => {
       const normalized = areaName.trim().toUpperCase();
       const areaReps = todayReports.filter((r) => (r.area || '').trim().toUpperCase() === normalized);
       if (areaReps.length > 0) {
@@ -601,11 +636,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       reportedCount,
       unreportedCount: unreportedRooms.length,
       percentage,
-      isTargetAchieved: reportedCount === totalTarget,
+      isTargetAchieved: reportedCount >= totalTarget,
       reportedRooms,
       unreportedRooms,
     };
-  }, [todayReports, mandatoryRoomsList]);
+  }, [todayReports, todayTargetRoomsList]);
 
   const activeTargetDate = inspectedTargetDate || todayStr;
   const isInspectingToday = activeTargetDate === todayStr;
@@ -614,62 +649,103 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return reports.filter((r) => r.tanggal === activeTargetDate);
   }, [reports, activeTargetDate]);
 
-  // Active Room Target Status for inspected date
+  // Active Room Target Status for inspected date (shows scheduled targets + unscheduled rooms neutrally)
   const activeRoomTargetStatus = useMemo(() => {
     const inspectedDayIndex = getDayIndex(activeTargetDate);
-    const totalTarget = mandatoryRoomsList.length;
-    const items = mandatoryRoomsList.map((areaName) => {
-      const cleanArea = areaName.trim().toUpperCase();
-      const areaReps = activeTargetReports.filter((r) => (r.area || '').trim().toUpperCase() === cleanArea);
-      const isReported = areaReps.length > 0;
-      const latestReport = areaReps[0];
+    const inspectedDayName = getIndonesianDayName(inspectedDayIndex);
+    const scheduledTargets = getMandatoryTargetRoomsForDate(activeTargetDate, masterRooms, roomSchedules);
+    const scheduledTargetSet = new Set(scheduledTargets.map((n) => n.trim().toUpperCase()));
+    const mandatorySet = new Set(mandatoryRoomsList.map((n) => n.trim().toUpperCase()));
 
-      let schedule = (roomSchedules || []).find(
-        (s) =>
-          s.roomName &&
-          s.roomName.trim().toUpperCase() === cleanArea &&
-          Array.isArray(s.daysOfWeek) &&
-          s.daysOfWeek.includes(inspectedDayIndex)
-      );
-
-      if (!schedule) {
-        schedule = (roomSchedules || []).find(
-          (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanArea
-        );
+    // Combine activeRoomsList with any scheduledTargets (keeping order)
+    const displayRoomNames: string[] = [...activeRoomsList];
+    const seenDisplay = new Set(displayRoomNames.map((n) => n.trim().toUpperCase()));
+    scheduledTargets.forEach((name) => {
+      const upper = name.trim().toUpperCase();
+      if (!seenDisplay.has(upper)) {
+        seenDisplay.add(upper);
+        displayRoomNames.push(name);
       }
-
-      const assignedOfficer = (allUsers || officers || []).find(
-        (u) =>
-          u.role === 'petugas' &&
-          u.isActive !== false &&
-          ((schedule?.officerId && u.id === schedule.officerId) ||
-            (schedule?.officerName && u.name.trim().toLowerCase() === schedule.officerName.trim().toLowerCase()))
-      );
-      const scheduledOfficerName = assignedOfficer?.name || 'Semua Petugas';
-
-      return {
-        areaName,
-        isReported,
-        total: areaReps.length,
-        latestKondisi: latestReport?.kondisiAkhir as KondisiAkhir | undefined,
-        latestPetugas: latestReport?.namaPetugas,
-        latestWaktu: latestReport?.waktu,
-        latestReport,
-        reportId: latestReport?.id,
-        scheduledOfficer: scheduledOfficerName,
-        isCurrentUserAssigned: Boolean(
-          schedule &&
-            currentUser &&
-            (currentUser.id === schedule.officerId ||
-              (assignedOfficer && currentUser.id === assignedOfficer.id) ||
-              (schedule.officerName &&
-                currentUser.name.trim().toLowerCase() === schedule.officerName.trim().toLowerCase()))
-        ),
-      };
     });
 
-    const reportedCount = items.filter((i) => i.isReported).length;
-    const unreportedCount = totalTarget - reportedCount;
+    const items = displayRoomNames
+      .map((areaName) => {
+        const cleanArea = areaName.trim().toUpperCase();
+        const areaReps = activeTargetReports.filter((r) => (r.area || '').trim().toUpperCase() === cleanArea);
+        const isReported = areaReps.length > 0;
+        const latestReport = areaReps[0];
+        const isTargetToday = scheduledTargetSet.has(cleanArea);
+        const isMandatoryRoom = mandatorySet.has(cleanArea);
+
+        const scheduleEntry = getRoomScheduleEntry(areaName, roomSchedules);
+        const hasOfficer = hasAssignedOfficer(scheduleEntry);
+        const isScheduleActive = Boolean(scheduleEntry && scheduleEntry.isActive !== false);
+        const isScheduledDay = Boolean(
+          scheduleEntry &&
+            isScheduleActive &&
+            hasOfficer &&
+            Array.isArray(scheduleEntry.daysOfWeek) &&
+            scheduleEntry.daysOfWeek.includes(inspectedDayIndex)
+        );
+
+        const assignedOfficer =
+          scheduleEntry && hasOfficer
+            ? (allUsers || officers || []).find(
+                (u) =>
+                  u.role === 'petugas' &&
+                  u.isActive !== false &&
+                  ((scheduleEntry.officerId && u.id === scheduleEntry.officerId) ||
+                    (scheduleEntry.officerName &&
+                      u.name.trim().toLowerCase() === scheduleEntry.officerName.trim().toLowerCase()))
+              )
+            : undefined;
+
+        const scheduledOfficerName = isScheduledDay
+          ? assignedOfficer?.name || scheduleEntry?.officerName || 'Petugas Terjadwal'
+          : 'Tidak dijadwalkan';
+
+        let unscheduledReason = '';
+        if (!isTargetToday) {
+          if (!isMandatoryRoom) {
+            unscheduledReason = 'Opsional (non-target harian)';
+          } else if (!scheduleEntry || !hasOfficer) {
+            unscheduledReason = 'Belum ada petugas dijadwalkan';
+          } else if (!isScheduleActive) {
+            unscheduledReason = 'Jadwal ruangan dijeda';
+          } else {
+            unscheduledReason = `Tidak dijadwalkan hari ${inspectedDayName}`;
+          }
+        }
+
+        return {
+          areaName,
+          isTargetToday,
+          isScheduledDay,
+          unscheduledReason,
+          isReported,
+          total: areaReps.length,
+          latestKondisi: latestReport?.kondisiAkhir as KondisiAkhir | undefined,
+          latestPetugas: latestReport?.namaPetugas,
+          latestWaktu: latestReport?.waktu,
+          latestReport,
+          reportId: latestReport?.id,
+          scheduledOfficer: scheduledOfficerName,
+          isCurrentUserAssigned: Boolean(
+            isScheduledDay &&
+              scheduleEntry &&
+              currentUser &&
+              (currentUser.id === scheduleEntry.officerId ||
+                (assignedOfficer && currentUser.id === assignedOfficer.id) ||
+                (scheduleEntry.officerName &&
+                  currentUser.name.trim().toLowerCase() === scheduleEntry.officerName.trim().toLowerCase()))
+          ),
+        };
+      })
+      .sort((a, b) => Number(b.isTargetToday) - Number(a.isTargetToday));
+
+    const totalTarget = scheduledTargets.length;
+    const reportedCount = items.filter((i) => i.isTargetToday && i.isReported).length;
+    const unreportedCount = Math.max(0, totalTarget - reportedCount);
     const percentage = totalTarget > 0 ? Math.round((reportedCount / totalTarget) * 100) : 100;
 
     return {
@@ -678,11 +754,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       reportedCount,
       unreportedCount,
       percentage,
-      isTargetAchieved: reportedCount === totalTarget,
+      isTargetAchieved: reportedCount >= totalTarget,
     };
-  }, [activeTargetReports, mandatoryRoomsList, roomSchedules, activeTargetDate, currentUser, allUsers, officers]);
+  }, [
+    activeTargetReports,
+    activeRoomsList,
+    mandatoryRoomsList,
+    masterRooms,
+    roomSchedules,
+    activeTargetDate,
+    currentUser,
+    allUsers,
+    officers,
+  ]);
 
-  // Weekly Target Fulfillment Chart (Senin s/d Sabtu)
+  // Weekly Target Fulfillment Chart (Senin s/d Sabtu — mengikuti jadwal tiap hari)
   const weeklyTargetStats = useMemo(() => {
     const now = new Date();
     const currentDayOfWeek = now.getDay();
@@ -701,7 +787,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     ];
 
     const todayDateString = getTodayDateString();
-    const target = mandatoryRoomsList.length || 1;
 
     const days = dayConfigs.map((config, index) => {
       const d = new Date(mondayDate);
@@ -711,12 +796,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const day = String(d.getDate()).padStart(2, '0');
       const dateStr = `${year}-${month}-${day}`;
 
+      const dayTargetRooms = getMandatoryTargetRoomsForDate(dateStr, masterRooms, roomSchedules);
+      const target = dayTargetRooms.length;
       const dayReps = reports.filter((r) => r.tanggal === dateStr);
-      const reportedAreas = mandatoryRoomsList.filter((areaName) =>
+      const reportedAreas = dayTargetRooms.filter((areaName) =>
         dayReps.some((r) => (r.area || '').trim().toUpperCase() === areaName.trim().toUpperCase())
       );
       const count = reportedAreas.length;
-      const percentage = Math.round((count / target) * 100);
+      const percentage = target > 0 ? Math.round((count / target) * 100) : 100;
 
       return {
         dayName: config.name,
@@ -726,31 +813,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         totalReports: dayReps.length,
         reportedCount: count,
         targetCount: target,
-        missingCount: target - count,
+        missingCount: Math.max(0, target - count),
         percentage,
         isToday: dateStr === todayDateString,
         isPast: dateStr < todayDateString,
         isFuture: dateStr > todayDateString,
-        isTargetMet: count >= target,
+        isTargetMet: target === 0 ? true : count >= target,
       };
     });
 
-    const elapsedDays = days.filter((d) => d.isPast || d.isToday);
+    const elapsedScheduledDays = days.filter((d) => (d.isPast || d.isToday) && d.targetCount > 0);
     const averageCompliance =
-      elapsedDays.length > 0
-        ? Math.round(elapsedDays.reduce((sum, d) => sum + d.percentage, 0) / elapsedDays.length)
-        : 0;
-    const targetMetDaysCount = elapsedDays.filter((d) => d.isTargetMet).length;
+      elapsedScheduledDays.length > 0
+        ? Math.round(elapsedScheduledDays.reduce((sum, d) => sum + d.percentage, 0) / elapsedScheduledDays.length)
+        : 100;
+    const targetMetDaysCount = elapsedScheduledDays.filter((d) => d.isTargetMet).length;
     const totalWeeklyReports = days.reduce((sum, d) => sum + d.totalReports, 0);
 
     return {
       days,
-      elapsedDaysCount: elapsedDays.length,
+      elapsedDaysCount: elapsedScheduledDays.length,
       averageCompliance,
       targetMetDaysCount,
       totalWeeklyReports,
     };
-  }, [reports, mandatoryRoomsList]);
+  }, [reports, masterRooms, roomSchedules]);
 
   // Available months
   const availableMonths = useMemo(() => {
@@ -779,7 +866,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const reviewReports = monthReports.filter((r) => r.kondisiAkhir === 'Perlu Pengecekan Ulang').length;
     const damageReports = monthReports.filter((r) => r.kondisiAkhir === 'Ada Kerusakan').length;
 
-    const target = mandatoryRoomsList.length || 1;
     const dailyBreakdown: Array<{
       dateStr: string;
       dayNum: number;
@@ -797,16 +883,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     for (let day = 1; day <= daysInMonth; day++) {
       const d = new Date(year, month - 1, day);
       const dayOfWeek = d.getDay();
-      const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6;
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
+      const dayTargetRooms = getMandatoryTargetRoomsForDate(dateStr, masterRooms, roomSchedules);
+      const target = dayTargetRooms.length;
+      const isWorkingDay = dayOfWeek >= 1 && dayOfWeek <= 6 && target > 0;
+
       const repsOnDay = monthReports.filter((r) => r.tanggal === dateStr);
-      const reportedAreas = mandatoryRoomsList.filter((areaName) =>
+      const reportedAreas = dayTargetRooms.filter((areaName) =>
         repsOnDay.some((r) => (r.area || '').trim().toUpperCase() === areaName.trim().toUpperCase())
       );
       const count = reportedAreas.length;
-      const percentage = Math.round((count / target) * 100);
-      const isTargetMet = count >= target;
+      const percentage = target > 0 ? Math.round((count / target) * 100) : 100;
+      const isTargetMet = target > 0 ? count >= target : true;
 
       if (isWorkingDay) {
         totalWorkingDays++;
@@ -867,7 +956,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
 
     const monthlyComplianceRate =
-      totalWorkingDays > 0 ? Math.round((fullComplianceDays / totalWorkingDays) * 100) : 0;
+      totalWorkingDays > 0 ? Math.round((fullComplianceDays / totalWorkingDays) * 100) : 100;
 
     return {
       targetMonth,
@@ -882,7 +971,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       monthlyComplianceRate,
       weeklyBuckets,
     };
-  }, [reports, selectedMonth, todayStr, mandatoryRoomsList]);
+  }, [reports, selectedMonth, todayStr, masterRooms, roomSchedules]);
 
   // Room Analytics Engine
   const roomAnalyticsData = useMemo(() => {
@@ -1310,8 +1399,60 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
+      {/* PENDING LOCAL REPORT SYNC OR LOCAL SESSION ACTION STRIP */}
+      {(pendingUnsyncedCount > 0 || (currentUser && isAuthReady && !isCloudSynced)) && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-3.5 sm:px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-2.5 text-amber-950">
+            <CloudOff className="w-5 h-5 text-amber-600 shrink-0 mt-0.5 sm:mt-0" />
+            <div className="text-xs leading-relaxed">
+              {pendingUnsyncedCount > 0 ? (
+                <>
+                  <strong className="text-amber-950">
+                    {pendingUnsyncedCount} laporan di perangkat ini belum terkirim ke Cloud.
+                  </strong>{' '}
+                  <span className="text-amber-900">
+                    Pengawas &amp; pengguna lain belum dapat melihat laporan tersebut sebelum disinkronkan.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <strong className="text-amber-950">Sesi Cloud Belum Aktif (Mode Lokal).</strong>{' '}
+                  <span className="text-amber-900">
+                    Masuk ulang menggunakan Email &amp; Kata Sandi Anda agar laporan yang dikirim langsung masuk ke Dashboard pusat.
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
+          {pendingUnsyncedCount > 0 && onSyncPendingReports ? (
+            <button
+              type="button"
+              onClick={() => onSyncPendingReports()}
+              className="self-start sm:self-center shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>{isCloudSynced ? 'Sinkronkan ke Cloud' : 'Login & Sinkronkan'}</span>
+            </button>
+          ) : onOpenLoginModal ? (
+            <button
+              type="button"
+              onClick={() =>
+                onOpenLoginModal(
+                  'Masuk dengan Email & Kata Sandi Anda agar laporan langsung terupdate ke Dashboard Cloud.'
+                )
+              }
+              className="self-start sm:self-center shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span>Hubungkan Cloud</span>
+            </button>
+          ) : null}
+        </div>
+      )}
+
       {/* UNIFIED OPERATIONAL ACTION STRIP (Single focused alert — zero banner stacking) */}
-      {operationalSchedule.isWorkingDay && todayRoomTargetStatus.unreportedCount > 0 ? (
+      {todayRoomTargetStatus.totalTarget > 0 && todayRoomTargetStatus.unreportedCount > 0 ? (
         <div className="bg-rose-50/80 border border-rose-200 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="flex items-start gap-3">
             <div className="w-9 h-9 rounded-lg bg-rose-600 text-white flex items-center justify-center shrink-0">
@@ -1320,7 +1461,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                 <h2 className="text-sm font-bold text-rose-950">
-                  {todayRoomTargetStatus.unreportedCount} ruangan belum dilaporkan hari ini
+                  {todayRoomTargetStatus.unreportedCount} ruangan terjadwal belum dilaporkan hari ini
                 </h2>
                 <span className="text-xs text-rose-700 font-medium tabular-nums">
                   ({todayRoomTargetStatus.reportedCount}/{todayRoomTargetStatus.totalTarget} terpenuhi)
@@ -1376,9 +1517,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {unresolvedIssuesList.length} temuan kendala atau kerusakan menunggu tindak lanjut
               </h2>
               <p className="text-xs text-slate-600 mt-0.5">
-                {operationalSchedule.isWorkingDay
-                  ? `Target harian ${todayRoomTargetStatus.reportedCount}/${todayRoomTargetStatus.totalTarget} ruangan telah terpenuhi. Klik untuk meninjau temuan.`
-                  : 'Hari Ahad adalah jadwal libur rutin; sistem tetap mencatat laporan insidental.'}
+                {todayRoomTargetStatus.totalTarget > 0
+                  ? `Target harian ${todayRoomTargetStatus.reportedCount}/${todayRoomTargetStatus.totalTarget} ruangan terjadwal telah terpenuhi. Klik untuk meninjau temuan.`
+                  : 'Tidak ada jadwal target wajib hari ini; sistem tetap mencatat laporan dan tindak lanjut temuan.'}
               </p>
             </div>
           </div>
@@ -1397,14 +1538,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       ) : (
         <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-2.5 text-emerald-950">
-            {operationalSchedule.isWorkingDay ? (
+            {todayRoomTargetStatus.totalTarget > 0 ? (
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             ) : (
               <CalendarDays className="w-4 h-4 text-blue-600 shrink-0" />
             )}
             <span className="font-semibold">
-              {operationalSchedule.isWorkingDay
-                ? `Seluruh ${todayRoomTargetStatus.totalTarget} ruangan wajib sudah dilaporkan hari ini dan tidak ada kerusakan tertunda.`
+              {todayRoomTargetStatus.totalTarget > 0
+                ? `Seluruh ${todayRoomTargetStatus.totalTarget} ruangan terjadwal sudah dilaporkan hari ini dan tidak ada kerusakan tertunda.`
+                : operationalSchedule.isWorkingDay
+                ? 'Tidak ada ruangan wajib yang dijadwalkan hari ini · Semua fasilitas terpantau aman.'
                 : 'Hari Ahad (Libur Rutin Operasional Senin–Sabtu) · Semua fasilitas terpantau aman.'}
             </span>
           </div>
@@ -1430,7 +1573,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span className="text-base font-bold text-slate-400">/{todayRoomTargetStatus.totalTarget}</span>
             </div>
             <span className="text-sm font-bold text-emerald-700 tabular-nums">
-              {todayRoomTargetStatus.percentage}%
+              {todayRoomTargetStatus.totalTarget > 0 ? `${todayRoomTargetStatus.percentage}%` : '–'}
             </span>
           </div>
           <div className="mt-2.5 space-y-1.5">
@@ -1443,7 +1586,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               />
             </div>
             <p className="text-[11px] text-slate-500">
-              {operationalSchedule.dayName} · {stats.totalToday} laporan masuk
+              {todayRoomTargetStatus.totalTarget > 0
+                ? `${operationalSchedule.dayName} · ${stats.totalToday} laporan masuk`
+                : `${operationalSchedule.dayName} · Tidak ada target terjadwal`}
             </p>
           </div>
         </div>
@@ -1547,7 +1692,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
                   {isInspectingToday ? `Hari Ini (${operationalSchedule.dayName}, ${todayStr})` : `Tanggal Terpilih: ${activeTargetDate}`} ·{' '}
-                  {activeRoomTargetStatus.reportedCount} dari {activeRoomTargetStatus.totalTarget} titik terlaporkan
+                  {activeRoomTargetStatus.totalTarget > 0
+                    ? `${activeRoomTargetStatus.reportedCount} dari ${activeRoomTargetStatus.totalTarget} ruangan terjadwal terlaporkan`
+                    : 'Tidak ada jadwal target wajib pada tanggal ini'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -1563,84 +1710,104 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
 
             {/* Clean 2-column grid of Room Status Items */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
-              {activeRoomTargetStatus.items.map((room) => (
-                <div
-                  key={room.areaName}
-                  className={`p-3.5 rounded-xl border transition-colors flex flex-col justify-between gap-3 ${
-                    room.isReported
-                      ? 'border-slate-200 bg-white hover:bg-slate-50/70'
-                      : 'border-rose-200 bg-rose-50/30 hover:bg-rose-50/50'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <h3 className="text-sm font-bold text-slate-900 truncate">{room.areaName}</h3>
-                      <p className="text-xs text-slate-500 truncate mt-0.5">
-                        Jadwal: <span className="font-medium text-slate-700">{room.scheduledOfficer}</span>
-                      </p>
+            {activeRoomTargetStatus.items.length === 0 ? (
+              <div className="mt-4 py-8 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                Belum ada ruangan aktif di Master Ruangan.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+                {activeRoomTargetStatus.items.map((room) => (
+                  <div
+                    key={room.areaName}
+                    className={`p-3.5 rounded-xl border transition-colors flex flex-col justify-between gap-3 ${
+                      room.isReported
+                        ? 'border-slate-200 bg-white hover:bg-slate-50/70'
+                        : room.isTargetToday
+                        ? 'border-rose-200 bg-rose-50/30 hover:bg-rose-50/50'
+                        : 'border-slate-200/80 bg-slate-50/60'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-bold text-slate-900 truncate">{room.areaName}</h3>
+                        <p className="text-xs text-slate-500 truncate mt-0.5">
+                          Jadwal: <span className="font-medium text-slate-700">{room.scheduledOfficer}</span>
+                        </p>
+                      </div>
+
+                      {room.isReported ? (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold shrink-0 whitespace-nowrap ${
+                            room.latestKondisi === 'Bersih'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : room.latestKondisi === 'Ada Kerusakan'
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                              : 'bg-amber-50 text-amber-800 border border-amber-200'
+                          }`}
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>{room.latestKondisi === 'Ada Kerusakan' ? 'Rusak' : room.latestKondisi === 'Bersih' ? 'Bersih' : 'Cek Ulang'}</span>
+                        </span>
+                      ) : room.isTargetToday ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[11px] font-bold shrink-0 whitespace-nowrap">
+                          <AlertTriangle className="w-3 h-3" />
+                          <span>Belum Lapor</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-200/80 text-slate-600 text-[11px] font-semibold shrink-0 whitespace-nowrap">
+                          <Calendar className="w-3 h-3" />
+                          <span>Tidak Dijadwalkan</span>
+                        </span>
+                      )}
                     </div>
 
-                    {room.isReported ? (
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold shrink-0 whitespace-nowrap ${
-                          room.latestKondisi === 'Bersih'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : room.latestKondisi === 'Ada Kerusakan'
-                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                            : 'bg-amber-50 text-amber-800 border border-amber-200'
-                        }`}
-                      >
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>{room.latestKondisi === 'Ada Kerusakan' ? 'Rusak' : room.latestKondisi === 'Bersih' ? 'Bersih' : 'Cek Ulang'}</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[11px] font-bold shrink-0 whitespace-nowrap">
-                        <AlertTriangle className="w-3 h-3" />
-                        <span>Belum Lapor</span>
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
-                    {room.isReported ? (
-                      <>
-                        <span className="text-slate-600 truncate tabular-nums">
-                          {room.latestPetugas} · {room.latestWaktu} WIB ({room.total}x)
-                        </span>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {room.latestReport && (
+                    <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
+                      {room.isReported ? (
+                        <>
+                          <span className="text-slate-600 truncate tabular-nums">
+                            {room.latestPetugas} · {room.latestWaktu} WIB ({room.total}x)
+                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {room.latestReport && (
+                              <button
+                                onClick={() => handleOpenDetail(room.latestReport!)}
+                                className="text-emerald-700 hover:text-emerald-900 font-semibold hover:underline cursor-pointer whitespace-nowrap"
+                              >
+                                Detail
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      ) : room.isTargetToday ? (
+                        <>
+                          <span className="text-rose-700 font-medium truncate">
+                            {room.isCurrentUserAssigned ? 'Tugas Anda hari ini' : 'Menunggu laporan petugas'}
+                          </span>
+                          {currentUser?.role === 'petugas' && !room.isCurrentUserAssigned ? (
+                            <span className="text-[11px] text-slate-400 font-medium shrink-0">Bukan jadwal</span>
+                          ) : (
                             <button
-                              onClick={() => handleOpenDetail(room.latestReport!)}
-                              className="text-emerald-700 hover:text-emerald-900 font-semibold hover:underline cursor-pointer whitespace-nowrap"
+                              onClick={() => onAddNewReport(room.areaName)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors shrink-0 cursor-pointer whitespace-nowrap"
                             >
-                              Detail
+                              <Plus className="w-3 h-3" />
+                              <span>Laporkan</span>
                             </button>
                           )}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-rose-700 font-medium truncate">
-                          {room.isCurrentUserAssigned ? 'Tugas Anda hari ini' : 'Menunggu laporan petugas'}
-                        </span>
-                        {currentUser?.role === 'petugas' && !room.isCurrentUserAssigned ? (
-                          <span className="text-[11px] text-slate-400 font-medium shrink-0">Bukan jadwal</span>
-                        ) : (
-                          <button
-                            onClick={() => onAddNewReport(room.areaName)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors shrink-0 cursor-pointer whitespace-nowrap"
-                          >
-                            <Plus className="w-3 h-3" />
-                            <span>Laporkan</span>
-                          </button>
-                        )}
-                      </>
-                    )}
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-slate-500 truncate" title={room.unscheduledReason}>
+                            {room.unscheduledReason}
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-medium shrink-0">Non-Target</span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -2013,7 +2180,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           /* WEEKLY BAR CHART */
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
-              <span>Jadwal wajib Senin–Sabtu ({mandatoryRoomsList.length} ruangan per hari)</span>
+              <span>Jadwal target wajib Senin–Sabtu (mengikuti jadwal aktif per hari)</span>
               <span className="font-bold text-emerald-700 tabular-nums">
                 Rata-rata minggu ini: {weeklyTargetStats.averageCompliance}% ({weeklyTargetStats.targetMetDaysCount}/{weeklyTargetStats.elapsedDaysCount} hari 100%)
               </span>
@@ -2038,15 +2205,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       className={`flex flex-col items-center justify-end h-full cursor-pointer group p-2 rounded-xl transition-colors ${
                         isSelected ? 'bg-emerald-50 ring-1 ring-emerald-500' : 'hover:bg-slate-50'
                       }`}
-                      title={`${day.dayName} (${day.dateStr}): ${day.reportedCount}/${day.targetCount} ruangan`}
+                      title={
+                        day.targetCount === 0
+                          ? `${day.dayName} (${day.dateStr}): Tidak ada target terjadwal`
+                          : `${day.dayName} (${day.dateStr}): ${day.reportedCount}/${day.targetCount} ruangan`
+                      }
                     >
                       <div className="text-xs font-bold text-slate-700 mb-1.5 tabular-nums">
-                        {day.isFuture ? '–' : `${day.reportedCount}/${day.targetCount}`}
+                        {day.isFuture ? '–' : day.targetCount === 0 ? 'Libur' : `${day.reportedCount}/${day.targetCount}`}
                       </div>
                       <div className="w-full max-w-[56px] bg-slate-100 rounded-t-lg overflow-hidden flex flex-col justify-end h-28">
                         <div
                           className={`w-full transition-all duration-500 rounded-t-lg ${
-                            day.isFuture
+                            day.isFuture || day.targetCount === 0
                               ? 'bg-slate-200 h-1'
                               : day.isTargetMet
                               ? 'bg-emerald-500 group-hover:bg-emerald-600'
@@ -2054,7 +2225,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               ? 'bg-amber-500 group-hover:bg-amber-600'
                               : 'bg-rose-400 group-hover:bg-rose-500'
                           }`}
-                          style={{ height: day.isFuture ? '4px' : `${Math.max(day.percentage, 8)}%` }}
+                          style={{ height: day.isFuture || day.targetCount === 0 ? '4px' : `${Math.max(day.percentage, 8)}%` }}
                         />
                       </div>
                       <div className="text-center mt-2 w-full">

@@ -151,7 +151,9 @@ export function getTodayDateString(): string {
 
 export function getCurrentTimeString(): string {
   const d = new Date();
-  return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 export const INITIAL_REPORTS: CleaningReport[] = [];

@@ -30,7 +30,7 @@ import {
   ChevronRight,
   ArrowRight
 } from 'lucide-react';
-import { getIndonesianDayName, getDayIndex } from '../utils/formStorage';
+import { getIndonesianDayName, hasAssignedOfficer } from '../utils/formStorage';
 import { getTodayDateString } from '../utils/storage';
 
 interface FormManagementProps {
@@ -184,11 +184,11 @@ export const FormManagement: React.FC<FormManagementProps> = ({
       };
       onSaveRooms([...rooms, newRoom]);
 
-      // Automatically create a default schedule entry if not already present
+      // Automatically create a default schedule entry for active rooms if not already present
       const hasExistingSchedule = schedules.some(
         (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanName
       );
-      if (officers.length > 0 && !hasExistingSchedule) {
+      if (newRoom.isActive && officers.length > 0 && !hasExistingSchedule) {
         const defaultOfficer = officers[rooms.length % officers.length];
         const newSchedule: RoomSchedule = {
           id: `sch-${newRoom.id}`,
@@ -310,6 +310,9 @@ export const FormManagement: React.FC<FormManagementProps> = ({
   // =====================
   // SCHEDULE HANDLERS
   // =====================
+  const activeRooms = rooms.filter((r) => r.isActive !== false);
+  const activeRoomNamesSet = new Set(activeRooms.map((r) => (r.name || '').trim().toUpperCase()));
+
   const handleAssignOfficer = (roomName: string, officerId: string) => {
     const officer = (allUsers || officers).find((o) => o.id === officerId) || officers.find((o) => o.id === officerId);
     if (!officer && officerId !== '') return;
@@ -318,7 +321,8 @@ export const FormManagement: React.FC<FormManagementProps> = ({
     const existing = schedules.find(
       (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
     );
-    const daysOfWeek = existing && Array.isArray(existing.daysOfWeek) ? existing.daysOfWeek : [1, 2, 3, 4, 5, 6];
+    const existingDays = existing && Array.isArray(existing.daysOfWeek) ? existing.daysOfWeek : [1, 2, 3, 4, 5, 6];
+    const daysOfWeek = officer && existingDays.length === 0 ? [1, 2, 3, 4, 5, 6] : existingDays;
 
     const newSch: RoomSchedule = {
       id: existing?.id || `sch-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -327,7 +331,7 @@ export const FormManagement: React.FC<FormManagementProps> = ({
       officerName: officer ? officer.name : '',
       daysOfWeek,
       shift: existing?.shift || 'Harian',
-      isActive: true,
+      isActive: Boolean(officer) && daysOfWeek.length > 0,
       updatedAt: getTodayDateString(),
     };
 
@@ -339,9 +343,9 @@ export const FormManagement: React.FC<FormManagementProps> = ({
 
     onSaveSchedules(updated);
     if (officer) {
-      onShowToast(`Penugasan "${roomName}" dialihkan ke ${officer.name}.`, 'success');
+      onShowToast(`Penugasan "${roomName}" dialihkan ke ${officer.name} & masuk target jadwal.`, 'success');
     } else {
-      onShowToast(`Penugasan "${roomName}" dikosongkan.`, 'info');
+      onShowToast(`"${roomName}" dikosongkan dan tidak masuk target warning Dashboard.`, 'info');
     }
   };
 
@@ -356,10 +360,6 @@ export const FormManagement: React.FC<FormManagementProps> = ({
     let newDays: number[];
     if (currentDays.includes(dayNumber)) {
       newDays = currentDays.filter((d) => d !== dayNumber);
-      if (newDays.length === 0) {
-        onShowToast('Minimal 1 hari penugasan harus aktif.', 'error');
-        return;
-      }
     } else {
       newDays = [...currentDays, dayNumber].sort();
     }
@@ -374,19 +374,67 @@ export const FormManagement: React.FC<FormManagementProps> = ({
         officerName: '',
         daysOfWeek: newDays,
         shift: 'Harian',
-        isActive: true,
+        isActive: false,
         updatedAt: getTodayDateString(),
       };
       onSaveSchedules([...schedules, newSch]);
     } else {
+      const hasOfficer = hasAssignedOfficer(existing);
       const updated = schedules.map((s) =>
         s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
-          ? { ...s, daysOfWeek: newDays, updatedAt: getTodayDateString() }
+          ? {
+              ...s,
+              daysOfWeek: newDays,
+              isActive: newDays.length === 0 ? false : hasOfficer ? true : s.isActive,
+              updatedAt: getTodayDateString(),
+            }
           : s
       );
       onSaveSchedules(updated);
     }
-    onShowToast(`Jadwal hari untuk ${roomName} diperbarui.`, 'success');
+
+    if (newDays.length === 0) {
+      onShowToast(`Seluruh hari penugasan "${roomName}" dinonaktifkan.`, 'info');
+    } else {
+      onShowToast(`Jadwal hari untuk ${roomName} diperbarui.`, 'success');
+    }
+  };
+
+  const handleToggleScheduleActive = (roomName: string) => {
+    const cleanRoomName = roomName.trim().toUpperCase();
+    const existing = schedules.find(
+      (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+    );
+    if (!existing) {
+      onShowToast('Pilih petugas terlebih dahulu untuk mengaktifkan jadwal ruangan ini.', 'info');
+      return;
+    }
+    const nextActive = existing.isActive === false;
+    if (nextActive && !hasAssignedOfficer(existing)) {
+      onShowToast('Pilih petugas terlebih dahulu sebelum mengaktifkan jadwal.', 'info');
+      return;
+    }
+
+    const updated = schedules.map((s) =>
+      s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+        ? {
+            ...s,
+            isActive: nextActive,
+            daysOfWeek:
+              nextActive && (!Array.isArray(s.daysOfWeek) || s.daysOfWeek.length === 0)
+                ? [1, 2, 3, 4, 5, 6]
+                : s.daysOfWeek,
+            updatedAt: getTodayDateString(),
+          }
+        : s
+    );
+    onSaveSchedules(updated);
+    onShowToast(
+      nextActive
+        ? `Jadwal "${roomName}" diaktifkan kembali.`
+        : `Jadwal "${roomName}" dijeda (tidak memicu target warning Dashboard).`,
+      nextActive ? 'success' : 'info'
+    );
   };
 
   const handleAutoDistribute = () => {
@@ -394,8 +442,12 @@ export const FormManagement: React.FC<FormManagementProps> = ({
       onShowToast('Belum ada petugas aktif yang terdaftar.', 'error');
       return;
     }
+    if (activeRooms.length === 0) {
+      onShowToast('Belum ada ruangan aktif di Master Ruangan.', 'error');
+      return;
+    }
 
-    const newSchedules: RoomSchedule[] = rooms.map((room, idx) => {
+    const newSchedules: RoomSchedule[] = activeRooms.map((room, idx) => {
       const assignedOfficer = officers[idx % officers.length];
       return {
         id: `sch-${room.id}-${Date.now()}`,
@@ -411,7 +463,7 @@ export const FormManagement: React.FC<FormManagementProps> = ({
     });
 
     onSaveSchedules(newSchedules);
-    onShowToast(`Berhasil membagi rata ${rooms.length} ruangan ke ${officers.length} petugas!`, 'success');
+    onShowToast(`Berhasil membagi rata ${activeRooms.length} ruangan aktif ke ${officers.length} petugas!`, 'success');
   };
 
   // =====================
@@ -567,7 +619,14 @@ export const FormManagement: React.FC<FormManagementProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {officers.map((officer) => {
               const assignedRoomsCount = schedules.filter(
-                (s) => s.officerId === officer.id || s.officerName.toLowerCase() === officer.name.toLowerCase()
+                (s) =>
+                  s.isActive !== false &&
+                  hasAssignedOfficer(s) &&
+                  Array.isArray(s.daysOfWeek) &&
+                  s.daysOfWeek.length > 0 &&
+                  activeRoomNamesSet.has((s.roomName || '').trim().toUpperCase()) &&
+                  (s.officerId === officer.id ||
+                    (s.officerName || '').trim().toLowerCase() === officer.name.trim().toLowerCase())
               ).length;
 
               return (
@@ -595,14 +654,15 @@ export const FormManagement: React.FC<FormManagementProps> = ({
               <div>
                 <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                   <CalendarDays className="w-4 h-4 text-emerald-600" />
-                  Matriks Pembagian Ruangan & Jadwal Hari Kerja Petugas
+                  Matriks Pembagian Ruangan &amp; Jadwal Hari Kerja Petugas
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Tentukan petugas penanggung jawab dan hari operasional untuk setiap ruangan sanitasi.
+                  Hanya ruangan bertanda <strong>Target Wajib</strong> yang memiliki petugas aktif dan jadwal hari terpilih yang masuk ke target Dashboard.
                 </p>
               </div>
-              <span className="text-xs text-slate-500 font-medium">
-                Total {rooms.length} Ruangan Aktif
+              <span className="text-xs text-slate-500 font-medium shrink-0">
+                Total {activeRooms.length} Ruangan Aktif
+                {rooms.length > activeRooms.length ? ` (${rooms.length - activeRooms.length} non-aktif)` : ''}
               </span>
             </div>
 
@@ -613,113 +673,167 @@ export const FormManagement: React.FC<FormManagementProps> = ({
                     <th className="py-3 px-4">Nama Ruangan Kamar Mandi</th>
                     <th className="py-3 px-4">Petugas Terjadwal</th>
                     <th className="py-3 px-4">Hari Penugasan (Senin - Sabtu)</th>
-                    <th className="py-3 px-4">Hak Lapor Hari Ini ({todayName})</th>
+                    <th className="py-3 px-4">Status Target &amp; Hak Lapor ({todayName})</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {rooms.map((room) => {
-                    const cleanRoomName = (room.name || '').trim().toUpperCase();
-                    const currentSchedule = schedules.find(
-                      (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
-                    );
-                    const matchedOfficer = (allUsers || officers).find(
-                      (o) =>
-                        (currentSchedule?.officerId && o.id === currentSchedule.officerId) ||
-                        (currentSchedule?.officerName && o.name.trim().toLowerCase() === currentSchedule.officerName.trim().toLowerCase())
-                    );
-                    const selectedOfficerId = matchedOfficer?.id || currentSchedule?.officerId || '';
-                    const assignedOfficerName = matchedOfficer?.name || currentSchedule?.officerName || 'Belum Ditugaskan';
-                    const assignedDays = Array.isArray(currentSchedule?.daysOfWeek) ? currentSchedule.daysOfWeek : [1, 2, 3, 4, 5, 6];
-                    const isAssignedToday = assignedDays.includes(todayIndex);
+                  {activeRooms.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="py-8 px-4 text-center text-slate-400">
+                        Belum ada ruangan aktif di Master Ruangan.
+                      </td>
+                    </tr>
+                  ) : (
+                    activeRooms.map((room) => {
+                      const cleanRoomName = (room.name || '').trim().toUpperCase();
+                      const currentSchedule = schedules.find(
+                        (s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoomName
+                      );
+                      const hasOfficer = hasAssignedOfficer(currentSchedule);
+                      const matchedOfficer = hasOfficer
+                        ? (allUsers || officers).find(
+                            (o) =>
+                              (currentSchedule?.officerId && o.id === currentSchedule.officerId) ||
+                              (currentSchedule?.officerName &&
+                                o.name.trim().toLowerCase() === currentSchedule.officerName.trim().toLowerCase())
+                          )
+                        : undefined;
+                      const selectedOfficerId = matchedOfficer?.id || currentSchedule?.officerId || '';
+                      const assignedOfficerName = matchedOfficer?.name || currentSchedule?.officerName || '';
+                      const assignedDays = Array.isArray(currentSchedule?.daysOfWeek)
+                        ? currentSchedule.daysOfWeek
+                        : [1, 2, 3, 4, 5, 6];
+                      const isScheduleActive = Boolean(currentSchedule && currentSchedule.isActive !== false && hasOfficer);
+                      const isAssignedToday = isScheduleActive && assignedDays.includes(todayIndex);
+                      const entersDashboardTargetToday = isAssignedToday && room.isMandatoryDaily !== false;
 
-                    return (
-                      <tr key={room.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-2">
-                            <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                            <div>
-                              <p className="font-bold text-slate-900 text-xs">{room.name}</p>
-                              <div className="flex items-center gap-1.5 mt-0.5">
-                                <span className="text-[10px] text-slate-500">{room.zone || 'Area Umum'}</span>
-                                {room.isMandatoryDaily && (
-                                  <span className="text-[9px] px-1.5 py-0.2 bg-emerald-100 text-emerald-800 font-bold rounded">
-                                    Target Wajib
-                                  </span>
-                                )}
+                      return (
+                        <tr key={room.id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-2">
+                              <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                              <div>
+                                <p className="font-bold text-slate-900 text-xs">{room.name}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[10px] text-slate-500">{room.zone || 'Area Umum'}</span>
+                                  {room.isMandatoryDaily ? (
+                                    <span className="text-[9px] px-1.5 py-0.2 bg-emerald-100 text-emerald-800 font-bold rounded">
+                                      Target Wajib
+                                    </span>
+                                  ) : (
+                                    <span className="text-[9px] px-1.5 py-0.2 bg-slate-100 text-slate-600 font-semibold rounded">
+                                      Opsional
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </td>
+                          </td>
 
-                        <td className="py-3.5 px-4">
-                          <select
-                            value={selectedOfficerId}
-                            onChange={(e) => handleAssignOfficer(room.name, e.target.value)}
-                            className="text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 cursor-pointer"
-                          >
-                            <option value="">-- Kosong / Pilih Petugas --</option>
-                            {officers.map((off) => (
-                              <option key={off.id} value={off.id}>
-                                {off.name}
-                              </option>
-                            ))}
-                            {matchedOfficer && !officers.some((o) => o.id === matchedOfficer.id) && (
-                              <option key={matchedOfficer.id} value={matchedOfficer.id}>
-                                {matchedOfficer.name} ({matchedOfficer.role.toUpperCase()})
-                              </option>
-                            )}
-                          </select>
-                        </td>
+                          <td className="py-3.5 px-4">
+                            <select
+                              value={selectedOfficerId}
+                              onChange={(e) => handleAssignOfficer(room.name, e.target.value)}
+                              className="text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 cursor-pointer"
+                            >
+                              <option value="">-- Kosong / Tidak Dijadwalkan --</option>
+                              {officers.map((off) => (
+                                <option key={off.id} value={off.id}>
+                                  {off.name}
+                                </option>
+                              ))}
+                              {matchedOfficer && !officers.some((o) => o.id === matchedOfficer.id) && (
+                                <option key={matchedOfficer.id} value={matchedOfficer.id}>
+                                  {matchedOfficer.name} ({matchedOfficer.role.toUpperCase()})
+                                </option>
+                              )}
+                            </select>
+                          </td>
 
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-1">
-                            {[
-                              { num: 1, label: 'Sen' },
-                              { num: 2, label: 'Sel' },
-                              { num: 3, label: 'Rab' },
-                              { num: 4, label: 'Kam' },
-                              { num: 5, label: 'Jum' },
-                              { num: 6, label: 'Sab' },
-                            ].map((day) => {
-                              const isChecked = assignedDays.includes(day.num);
-                              const isToday = todayIndex === day.num;
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-1">
+                              {[
+                                { num: 1, label: 'Sen' },
+                                { num: 2, label: 'Sel' },
+                                { num: 3, label: 'Rab' },
+                                { num: 4, label: 'Kam' },
+                                { num: 5, label: 'Jum' },
+                                { num: 6, label: 'Sab' },
+                              ].map((day) => {
+                                const isChecked = assignedDays.includes(day.num);
+                                const isToday = todayIndex === day.num;
 
-                              return (
+                                return (
+                                  <button
+                                    key={day.num}
+                                    type="button"
+                                    onClick={() => handleToggleDayForRoom(room.name, day.num)}
+                                    className={`w-7 h-7 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center cursor-pointer ${
+                                      isChecked
+                                        ? isToday
+                                          ? 'bg-emerald-600 text-white ring-2 ring-emerald-400'
+                                          : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                                        : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                                    }`}
+                                    title={`${day.label} (${isChecked ? 'Aktif' : 'Non-aktif'})`}
+                                  >
+                                    {day.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              {entersDashboardTargetToday ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                  <CheckCircle2Icon className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>{assignedOfficerName} · Target Hari Ini</span>
+                                </span>
+                              ) : isAssignedToday ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-800 border border-blue-200">
+                                  <CheckCircle2Icon className="w-3.5 h-3.5 text-blue-600" />
+                                  <span>{assignedOfficerName} · Opsional</span>
+                                </span>
+                              ) : !hasOfficer ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500">
+                                  <span>Belum dijadwalkan (Non-Target)</span>
+                                </span>
+                              ) : currentSchedule?.isActive === false ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500">
+                                  <span>Jadwal dijeda (Non-Target)</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500">
+                                  <span>Libur hari ini (Non-Target)</span>
+                                </span>
+                              )}
+
+                              {hasOfficer && (
                                 <button
-                                  key={day.num}
                                   type="button"
-                                  onClick={() => handleToggleDayForRoom(room.name, day.num)}
-                                  className={`w-7 h-7 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center cursor-pointer ${
-                                    isChecked
-                                      ? isToday
-                                        ? 'bg-emerald-600 text-white ring-2 ring-emerald-400'
-                                        : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
-                                      : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                                  onClick={() => handleToggleScheduleActive(room.name)}
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
+                                    currentSchedule?.isActive === false
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                      : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'
                                   }`}
-                                  title={`${day.label} (${isChecked ? 'Aktif' : 'Non-aktif'})`}
+                                  title={
+                                    currentSchedule?.isActive === false
+                                      ? 'Aktifkan kembali jadwal ruangan'
+                                      : 'Jeda jadwal ruangan agar tidak masuk target harian'
+                                  }
                                 >
-                                  {day.label}
+                                  {currentSchedule?.isActive === false ? 'Aktifkan' : 'Jeda'}
                                 </button>
-                              );
-                            })}
-                          </div>
-                        </td>
-
-                        <td className="py-3.5 px-4 whitespace-nowrap">
-                          {isAssignedToday ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                              <CheckCircle2Icon className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>{assignedOfficerName}</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500">
-                              <span>Tidak dijadwalkan hari ini</span>
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -807,7 +921,11 @@ export const FormManagement: React.FC<FormManagementProps> = ({
                     <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-[11px] space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="text-slate-400">Petugas Penanggung Jawab:</span>
-                        <strong className="text-slate-700">{schedule?.officerName || 'Belum diatur'}</strong>
+                        <strong className="text-slate-700">
+                          {schedule && schedule.isActive !== false && hasAssignedOfficer(schedule)
+                            ? schedule.officerName
+                            : 'Tidak dijadwalkan'}
+                        </strong>
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="text-slate-400">Zona:</span>

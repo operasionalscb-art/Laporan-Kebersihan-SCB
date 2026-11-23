@@ -26,6 +26,7 @@ import {
   getDayIndex
 } from '../utils/formStorage';
 import { compressImage } from '../utils/imageCompressor';
+import { CloudSaveResult } from '../services/firestoreSync';
 import { 
   Camera, 
   Upload, 
@@ -46,7 +47,10 @@ import {
   Building2,
   ShieldCheck,
   UserCheck,
-  Info
+  Info,
+  CloudOff,
+  RefreshCw,
+  LogIn
 } from 'lucide-react';
 
 interface ReportFormProps {
@@ -57,7 +61,13 @@ interface ReportFormProps {
   formSettings?: FormSettings;
   roomSchedules?: RoomSchedule[];
   initialArea?: string | null;
-  onSubmitSuccess: (newReport: CleaningReport) => void;
+  isCloudSynced?: boolean;
+  isAuthReady?: boolean;
+  onOpenLoginModal?: (reason?: string) => void;
+  onRetryCloudSync?: (reportId: string) => Promise<CloudSaveResult>;
+  onSubmitSuccess: (
+    newReport: CleaningReport
+  ) => Promise<{ saved: CleaningReport; cloudResult: CloudSaveResult } | void> | void;
   onViewDashboard: () => void;
 }
 
@@ -69,6 +79,10 @@ export const ReportForm: React.FC<ReportFormProps> = ({
   formSettings: propFormSettings,
   roomSchedules: propRoomSchedules,
   initialArea,
+  isCloudSynced = false,
+  isAuthReady = false,
+  onOpenLoginModal,
+  onRetryCloudSync,
   onSubmitSuccess,
   onViewDashboard,
 }) => {
@@ -106,24 +120,23 @@ export const ReportForm: React.FC<ReportFormProps> = ({
     : (activeRooms[0]?.name || 'KM MASJID PUTRA');
 
   const [selectedArea, setSelectedArea] = useState<string>(defaultArea);
-
-  // Sync selected area when myAssignedRoomsToday changes
-  useEffect(() => {
-    if (isOfficer && myAssignedRoomsToday.length > 0 && !myAssignedRoomsToday.includes(selectedArea)) {
-      setSelectedArea(myAssignedRoomsToday[0]);
-    }
-  }, [isOfficer, myAssignedRoomsToday, selectedArea]);
   const [isAreaOther, setIsAreaOther] = useState<boolean>(false);
   const [customAreaText, setCustomAreaText] = useState<string>('');
 
+  // Sync selected area when myAssignedRoomsToday or initialArea changes
   useEffect(() => {
     if (initialArea) {
       setSelectedArea(initialArea);
       setIsAreaOther(false);
-    } else if (isOfficer && myAssignedRoomsToday.length > 0 && !myAssignedRoomsToday.includes(selectedArea)) {
+    } else if (
+      isOfficer &&
+      !isAreaOther &&
+      myAssignedRoomsToday.length > 0 &&
+      !myAssignedRoomsToday.some((r) => r.trim().toUpperCase() === selectedArea.trim().toUpperCase())
+    ) {
       setSelectedArea(myAssignedRoomsToday[0]);
     }
-  }, [initialArea, myAssignedRoomsToday.length]);
+  }, [initialArea, isOfficer, isAreaOther, myAssignedRoomsToday, selectedArea]);
 
   // 3. Checklist
   const defaultChecklistLabels = activeChecklists
@@ -148,11 +161,47 @@ export const ReportForm: React.FC<ReportFormProps> = ({
 
   // Status
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
   const [submitSuccess, setSubmitSuccess] = useState<CleaningReport | null>(null);
+  const [submitCloudResult, setSubmitCloudResult] = useState<CloudSaveResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  // Ensure currentUser officer is always available in the select options
+  const selectableOfficers = useMemo(() => {
+    if (
+      currentUser &&
+      currentUser.role === 'petugas' &&
+      !officers.some((o) => o.name === currentUser.name)
+    ) {
+      return [currentUser, ...officers];
+    }
+    return officers;
+  }, [officers, currentUser]);
+
+  // Auto-retry sync if officer logs in to Cloud while still viewing an unsynced confirmation card
+  useEffect(() => {
+    if (
+      isCloudSynced &&
+      submitSuccess &&
+      submitCloudResult &&
+      submitCloudResult.status !== 'synced' &&
+      onRetryCloudSync &&
+      !isRetryingSync
+    ) {
+      setIsRetryingSync(true);
+      onRetryCloudSync(submitSuccess.id)
+        .then((res) => {
+          setSubmitCloudResult(res);
+        })
+        .catch(() => {})
+        .finally(() => {
+          setIsRetryingSync(false);
+        });
+    }
+  }, [isCloudSynced, submitSuccess, submitCloudResult, onRetryCloudSync, isRetryingSync]);
 
   // Sync selected petugas when currentUser changes
   useEffect(() => {
@@ -161,7 +210,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
     } else if (!selectedPetugas && officers.length > 0) {
       setSelectedPetugas(officers[0].name);
     }
-  }, [currentUser, officers]);
+  }, [currentUser, officers, selectedPetugas]);
 
   // Toggle checklist item
   const toggleChecklistItem = (item: string) => {
@@ -233,8 +282,9 @@ export const ReportForm: React.FC<ReportFormProps> = ({
   // ACCESS VALIDATION & FORM SUBMISSION
   // Rule: "kegiatan hanya bisa dilaporkan oleh petugas terjadwal"
   // ==========================================
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg('');
 
     if (!currentUser) {
@@ -293,7 +343,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
       finalChecklist.push(customChecklistText.trim());
     }
 
-    const matchedOfficer = officers.find((o) => o.name === selectedPetugas);
+    const matchedOfficer = selectableOfficers.find((o) => o.name === selectedPetugas);
 
     const reportData: Omit<CleaningReport, 'id' | 'timestamp'> = {
       tanggal: todayStr,
@@ -311,26 +361,42 @@ export const ReportForm: React.FC<ReportFormProps> = ({
       statusVerifikasi: 'Menunggu',
     };
 
-    setTimeout(() => {
-      try {
-        const fullReport: CleaningReport = {
-          ...reportData,
-          id: `rep-${Date.now()}`,
-          timestamp: Date.now(),
-        };
-        onSubmitSuccess(fullReport);
-        setSubmitSuccess(fullReport);
-        setIsSubmitting(false);
-      } catch (err) {
-        console.error(err);
-        setErrorMsg('Terjadi kesalahan saat menyimpan laporan.');
-        setIsSubmitting(false);
-      }
-    }, 400);
+    const fullReport: CleaningReport = {
+      ...reportData,
+      id: `rep-${Date.now()}`,
+      timestamp: Date.now(),
+    };
+
+    try {
+      const result = await onSubmitSuccess(fullReport);
+      setSubmitSuccess(result?.saved || fullReport);
+      setSubmitCloudResult(result?.cloudResult || { status: 'synced' });
+    } catch (err: any) {
+      console.error('Submit error:', err);
+      setSubmitSuccess(fullReport);
+      setSubmitCloudResult({
+        status: 'local_error',
+        message: err?.message || 'Terjadi kesalahan saat menyinkronkan laporan ke Cloud.',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleManualRetrySync = async () => {
+    if (!submitSuccess || !onRetryCloudSync || isRetryingSync) return;
+    setIsRetryingSync(true);
+    try {
+      const res = await onRetryCloudSync(submitSuccess.id);
+      setSubmitCloudResult(res);
+    } finally {
+      setIsRetryingSync(false);
+    }
   };
 
   const handleResetForNew = () => {
     setSubmitSuccess(null);
+    setSubmitCloudResult(null);
     setPhotos([]);
     setKeterangan('');
     setHasCustomChecklist(false);
@@ -344,24 +410,88 @@ export const ReportForm: React.FC<ReportFormProps> = ({
     }
   };
 
-  // SUCCESS SCREEN
+  // SUBMISSION RESULT SCREEN (honest Cloud sync status)
   if (submitSuccess) {
+    const isSyncedToCloud = !submitCloudResult || submitCloudResult.status === 'synced';
+    const isAuthIssue = submitCloudResult?.status === 'local_unauthenticated';
+
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 animate-in fade-in zoom-in-95 duration-200">
-        <div className="bg-white rounded-3xl border border-slate-200 shadow-xl p-6 sm:p-10 text-center">
-          <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-inner">
-            <CheckCircle className="w-9 h-9" />
+      <div className="max-w-2xl mx-auto px-4 py-10 sm:py-12 animate-in fade-in zoom-in-95 duration-200">
+        <div className={`bg-white rounded-3xl border shadow-xl p-6 sm:p-10 text-center ${
+          isSyncedToCloud ? 'border-slate-200' : 'border-amber-300'
+        }`}>
+          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-inner ${
+            isSyncedToCloud
+              ? 'bg-emerald-100 text-emerald-600'
+              : 'bg-amber-100 text-amber-700'
+          }`}>
+            {isSyncedToCloud ? <CheckCircle className="w-9 h-9" /> : <CloudOff className="w-9 h-9" />}
           </div>
 
           <h2 className="text-xl sm:text-2xl font-black text-slate-900 mb-2">
-            Laporan Kebersihan Berhasil Disimpan!
+            {isSyncedToCloud
+              ? 'Laporan Kebersihan Berhasil Disimpan!'
+              : 'Tersimpan di Perangkat, Belum Terkirim ke Cloud!'}
           </h2>
-          <p className="text-slate-600 text-xs sm:text-sm max-w-md mx-auto mb-6 leading-relaxed">
-            Laporan untuk <strong>{submitSuccess.area}</strong> telah tersimpan di sistem dan disinkronkan secara realtime.
+          <p className="text-slate-600 text-xs sm:text-sm max-w-md mx-auto mb-5 leading-relaxed">
+            {isSyncedToCloud ? (
+              <>
+                Laporan untuk <strong>{submitSuccess.area}</strong> telah tersimpan dan disinkronkan secara realtime ke Dashboard pusat.
+              </>
+            ) : (
+              <>
+                Laporan untuk <strong>{submitSuccess.area}</strong> baru tersimpan di perangkat ini dan <strong>belum muncul</strong> di Dashboard pengawas/pengguna lain.
+              </>
+            )}
           </p>
+
+          {!isSyncedToCloud && submitCloudResult?.message && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-left max-w-md mx-auto mb-5 text-xs text-amber-950 space-y-2.5">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="leading-relaxed font-medium">{submitCloudResult.message}</p>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {isAuthIssue && onOpenLoginModal ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenLoginModal(
+                        'Masuk ulang dengan Email & Kata Sandi Anda agar laporan yang baru diisi langsung terkirim ke Dashboard Cloud.'
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>Hubungkan Cloud &amp; Kirim Sekarang</span>
+                  </button>
+                ) : onRetryCloudSync ? (
+                  <button
+                    type="button"
+                    disabled={isRetryingSync}
+                    onClick={handleManualRetrySync}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRetryingSync ? 'animate-spin' : ''}`} />
+                    <span>{isRetryingSync ? 'Mengirim ke Cloud...' : 'Coba Kirim ke Cloud Lagi'}</span>
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          )}
 
           {/* Report Summary Card */}
           <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-left max-w-md mx-auto mb-6 space-y-2.5 text-xs">
+            <div className="flex justify-between border-b border-slate-200 pb-2">
+              <span className="text-slate-500 font-medium">Status Sinkronisasi:</span>
+              <span className={`font-bold px-2 py-0.5 rounded text-[11px] ${
+                isSyncedToCloud
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : 'bg-amber-100 text-amber-800'
+              }`}>
+                {isSyncedToCloud ? 'Tersinkron ke Cloud' : 'Tertunda (Lokal Perangkat)'}
+              </span>
+            </div>
             <div className="flex justify-between border-b border-slate-200 pb-2">
               <span className="text-slate-500 font-medium">Petugas Terjadwal:</span>
               <span className="font-bold text-slate-800">{submitSuccess.namaPetugas}</span>
@@ -476,6 +606,35 @@ export const ReportForm: React.FC<ReportFormProps> = ({
         </div>
       </div>
 
+      {/* Pre-submit Cloud Connection Warning when in Local Mode */}
+      {isAuthReady && !isCloudSynced && (
+        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <CloudOff className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-bold text-amber-950">Sesi Cloud Belum Aktif (Mode Lokal)</p>
+              <p className="text-xs text-amber-900 leading-relaxed">
+                Akun ini baru tersimpan lokal di perangkat Anda. Hubungkan sesi Cloud terlebih dahulu agar laporan langsung masuk &amp; tampil di Dashboard pengawas.
+              </p>
+            </div>
+          </div>
+          {onOpenLoginModal && (
+            <button
+              type="button"
+              onClick={() =>
+                onOpenLoginModal(
+                  'Masuk dengan Email & Kata Sandi Anda agar sesi Cloud Firebase aktif sebelum mengirim laporan.'
+                )
+              }
+              className="self-start sm:self-center shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>Hubungkan Cloud</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {errorMsg && (
         <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs sm:text-sm flex items-start gap-3 animate-in fade-in">
           <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
@@ -508,7 +667,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
               }`}
             >
               <option value="" disabled>-- Pilih Nama Petugas --</option>
-              {officers.map((officer) => (
+              {selectableOfficers.map((officer) => (
                 <option key={officer.id} value={officer.name}>
                   {officer.name} ({officer.email})
                 </option>
@@ -544,16 +703,23 @@ export const ReportForm: React.FC<ReportFormProps> = ({
           <div className="space-y-2.5">
             {activeRooms.map((room) => {
               const schedule = getScheduledOfficerForRoom(room.name, todayStr, allSchedules);
-              const isAssignedToCurrentUser = !isOfficer || myAssignedRoomsToday.includes(room.name);
+              const cleanRoomName = room.name.trim().toUpperCase();
+              const isAssignedToCurrentUser =
+                !isOfficer ||
+                myAssignedRoomsToday.some((r) => r.trim().toUpperCase() === cleanRoomName);
               const isSelected = !isAreaOther && selectedArea === room.name;
-              const scheduledOfficerName = schedule?.officerName || 'Semua Petugas';
+              const scheduledOfficerName = schedule?.officerName || '';
 
               return (
                 <label
                   key={room.id}
                   onClick={() => {
                     if (!isAssignedToCurrentUser) {
-                      setErrorMsg(`⛔ Ruangan "${room.name}" hari ini ditugaskan kepada ${scheduledOfficerName}. Anda hanya dapat melaporkan ruangan tugas Anda.`);
+                      setErrorMsg(
+                        scheduledOfficerName
+                          ? `⛔ Ruangan "${room.name}" hari ini ditugaskan kepada ${scheduledOfficerName}. Anda hanya dapat melaporkan ruangan tugas Anda.`
+                          : `⛔ Ruangan "${room.name}" tidak dijadwalkan untuk dilaporkan pada hari ${todayDayName}.`
+                      );
                     }
                   }}
                   className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl border transition-all ${
@@ -593,12 +759,12 @@ export const ReportForm: React.FC<ReportFormProps> = ({
                     {isAssignedToCurrentUser ? (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                         <Check className="w-3 h-3 text-emerald-700" />
-                        <span>Tugas Anda Hari Ini</span>
+                        <span>{isOfficer ? 'Tugas Anda Hari Ini' : scheduledOfficerName ? `Jadwal: ${scheduledOfficerName}` : 'Belum Dijadwalkan'}</span>
                       </span>
                     ) : (
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-200/80 text-slate-600 flex items-center gap-1">
                         <Lock className="w-3 h-3 text-slate-400" />
-                        <span>Jadwal: {scheduledOfficerName}</span>
+                        <span>{scheduledOfficerName ? `Jadwal: ${scheduledOfficerName}` : 'Tidak Dijadwalkan Hari Ini'}</span>
                       </span>
                     )}
                   </div>
@@ -929,7 +1095,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
             {isSubmitting ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Menyimpan Laporan...</span>
+                <span>Mengirim &amp; Menyinkronkan Laporan...</span>
               </>
             ) : (
               <>

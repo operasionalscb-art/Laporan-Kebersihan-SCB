@@ -438,6 +438,7 @@ export function setRoomScheduleForRoom(
   const cleanRoom = roomName.trim().toUpperCase();
   const existing = schedules.find((s) => s.roomName && s.roomName.trim().toUpperCase() === cleanRoom);
   const otherSchedules = schedules.filter((s) => !s.roomName || s.roomName.trim().toUpperCase() !== cleanRoom);
+  const hasOfficer = Boolean((officerId || '').trim() || (officerName || '').trim());
 
   const newSch: RoomSchedule = {
     id: existing?.id || `sch-${Date.now()}`,
@@ -446,13 +447,32 @@ export function setRoomScheduleForRoom(
     officerName,
     daysOfWeek,
     shift: existing?.shift || 'Harian',
-    isActive: true,
+    isActive: hasOfficer && daysOfWeek.length > 0,
     updatedAt: getTodayDateString(),
   };
 
   const updated = [...otherSchedules, newSch];
   saveRoomSchedules(updated);
   return newSch;
+}
+
+export const isTestAreaName = (name?: string): boolean =>
+  /^(test|tes|testing|coba|dummy|sample|other)$/i.test((name || '').trim());
+
+export function hasAssignedOfficer(schedule?: RoomSchedule | null): boolean {
+  if (!schedule) return false;
+  return Boolean((schedule.officerId || '').trim() || (schedule.officerName || '').trim());
+}
+
+export function getRoomScheduleEntry(
+  roomName: string,
+  customSchedules?: RoomSchedule[]
+): RoomSchedule | undefined {
+  const schedules = customSchedules !== undefined ? customSchedules : getRoomSchedules();
+  const cleanRoom = (roomName || '').trim().toUpperCase();
+  return schedules.find(
+    (s) => s && typeof s.roomName === 'string' && s.roomName.trim().toUpperCase() === cleanRoom
+  );
 }
 
 /**
@@ -473,14 +493,15 @@ export function getIndonesianDayName(dayIndex: number): string {
 }
 
 /**
- * Gets the scheduled officer for a specific room on a specific day/date
+ * Gets the active scheduled officer for a specific room on a specific day/date.
+ * Ignores paused schedules (isActive === false) or schedules without an assigned officer.
  */
 export function getScheduledOfficerForRoom(
   roomName: string,
   dateStr?: string,
   customSchedules?: RoomSchedule[]
 ): RoomSchedule | undefined {
-  const schedules = customSchedules && customSchedules.length > 0 ? customSchedules : getRoomSchedules();
+  const schedules = customSchedules !== undefined ? customSchedules : getRoomSchedules();
   const targetDay = getDayIndex(dateStr);
   const cleanRoom = (roomName || '').trim().toUpperCase();
 
@@ -488,11 +509,58 @@ export function getScheduledOfficerForRoom(
     (s) =>
       s &&
       s.isActive !== false &&
+      hasAssignedOfficer(s) &&
       s.roomName &&
       typeof s.roomName === 'string' &&
       s.roomName.trim().toUpperCase() === cleanRoom &&
       Array.isArray(s.daysOfWeek) &&
       s.daysOfWeek.includes(targetDay)
+  );
+}
+
+/**
+ * Checks whether a room has an active assigned officer scheduled on the given date.
+ */
+export function isRoomScheduledOnDate(
+  roomName: string,
+  dateStr?: string,
+  customSchedules?: RoomSchedule[]
+): boolean {
+  return Boolean(getScheduledOfficerForRoom(roomName, dateStr, customSchedules));
+}
+
+/**
+ * Single source of truth for rooms that count as mandatory daily targets on a given date.
+ * A room is a target on `dateStr` ONLY IF:
+ *  1) It is active in Master Ruangan (`isActive !== false`) and marked mandatory (`isMandatoryDaily !== false`)
+ *  2) It is actively scheduled on `dateStr` in Jadwal Ruangan Petugas (`isActive !== false`, has assigned officer, and `daysOfWeek` includes that day)
+ */
+export function getMandatoryTargetRoomsForDate(
+  dateStr: string,
+  masterRooms?: MasterRoom[],
+  roomSchedules?: RoomSchedule[]
+): string[] {
+  const candidateSource: Array<{ name: string; isActive: boolean; isMandatoryDaily: boolean }> =
+    masterRooms && masterRooms.length > 0
+      ? masterRooms
+      : DEFAULT_MASTER_ROOMS;
+
+  const seen = new Set<string>();
+  const mandatoryActiveRooms: string[] = [];
+
+  candidateSource.forEach((r) => {
+    if (!r || !r.name || r.isActive === false || r.isMandatoryDaily === false) return;
+    const trimmed = r.name.trim();
+    if (!trimmed || isTestAreaName(trimmed)) return;
+    const upper = trimmed.toUpperCase();
+    if (seen.has(upper)) return;
+    seen.add(upper);
+    mandatoryActiveRooms.push(trimmed);
+  });
+
+  const schedules = roomSchedules !== undefined ? roomSchedules : getRoomSchedules();
+  return mandatoryActiveRooms.filter((roomName) =>
+    isRoomScheduledOnDate(roomName, dateStr, schedules)
   );
 }
 
@@ -525,8 +593,10 @@ export function isOfficerAllowedToReportRoom(
   const schedule = getScheduledOfficerForRoom(roomName, dateStr, customSchedules);
 
   if (!schedule) {
-    // If room is not scheduled to anyone today, allowed as fallback
-    return { allowed: true };
+    return {
+      allowed: false,
+      reason: `Ruangan "${roomName}" tidak dijadwalkan untuk dilaporkan pada hari ${dayName}.`,
+    };
   }
 
   const isMatched =
@@ -553,7 +623,7 @@ export function getOfficerScheduledRooms(
   dateStr?: string,
   customSchedules?: RoomSchedule[]
 ): string[] {
-  const schedules = customSchedules && customSchedules.length > 0 ? customSchedules : getRoomSchedules();
+  const schedules = customSchedules !== undefined ? customSchedules : getRoomSchedules();
   const targetDay = getDayIndex(dateStr);
   const cleanOfficerName = (officerName || '').trim().toLowerCase();
 
@@ -562,9 +632,11 @@ export function getOfficerScheduledRooms(
       (s) =>
         s &&
         s.isActive !== false &&
+        hasAssignedOfficer(s) &&
         Array.isArray(s.daysOfWeek) &&
         s.daysOfWeek.includes(targetDay) &&
-        (s.officerId === officerId || (s.officerName && s.officerName.trim().toLowerCase() === cleanOfficerName))
+        ((officerId && s.officerId === officerId) ||
+          (cleanOfficerName && s.officerName && s.officerName.trim().toLowerCase() === cleanOfficerName))
     )
     .map((s) => s.roomName)
     .filter(Boolean);

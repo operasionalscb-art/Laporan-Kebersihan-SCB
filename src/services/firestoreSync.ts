@@ -128,12 +128,14 @@ export interface CloudSaveResult {
 let isUsersSeeded = false;
 let lastBootstrappedAdminUid: string | null = null;
 let lastBackfilledAdminUid: string | null = null;
-let hasBackfilledLocalReports = false;
+let lastBackfillAttemptMs = 0;
 let olderCloudReportsLoaded = false;
+let inFlightPendingReportsSync: Promise<number> | null = null;
 const hydratedPhotoIds = new Set<string>();
 
 let isQuotaLimitedState = false;
 const quotaStatusListeners = new Set<(limited: boolean) => void>();
+const unsyncedCountListeners = new Set<(count: number) => void>();
 
 function notifyQuotaStatus(limited: boolean): void {
   if (isQuotaLimitedState !== limited) {
@@ -171,6 +173,29 @@ function getUnsyncedIdSet(storageKey: string): Set<string> {
   }
 }
 
+function notifyUnsyncedCount(): void {
+  const count = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY).size;
+  unsyncedCountListeners.forEach((cb) => {
+    try {
+      cb(count);
+    } catch {
+      // Ignore subscriber error
+    }
+  });
+}
+
+export function getPendingUnsyncedReportIds(): string[] {
+  return Array.from(getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY));
+}
+
+export function subscribePendingUnsyncedCount(callback: (count: number) => void): () => void {
+  unsyncedCountListeners.add(callback);
+  callback(getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY).size);
+  return () => {
+    unsyncedCountListeners.delete(callback);
+  };
+}
+
 function saveUnsyncedIdSet(storageKey: string, ids: Set<string>): void {
   try {
     if (ids.size === 0) {
@@ -180,6 +205,9 @@ function saveUnsyncedIdSet(storageKey: string, ids: Set<string>): void {
     }
   } catch {
     // Ignore storage quota errors on metadata tracking
+  }
+  if (storageKey === UNSYNCED_REPORT_IDS_KEY) {
+    notifyUnsyncedCount();
   }
 }
 
@@ -203,6 +231,7 @@ export function clearUnsyncedTrackers(): void {
     localStorage.removeItem(UNSYNCED_FORM_CONFIG_KEY);
     localStorage.removeItem(UNSYNCED_SCHEDULES_KEY);
   } catch {}
+  notifyUnsyncedCount();
 }
 
 function hasUnsyncedFlag(key: string): boolean {
@@ -227,7 +256,7 @@ export function resetCloudSyncSessionFlags(): void {
   isUsersSeeded = false;
   lastBootstrappedAdminUid = null;
   lastBackfilledAdminUid = null;
-  hasBackfilledLocalReports = false;
+  lastBackfillAttemptMs = 0;
 }
 
 export function isFirebaseCloudConnected(): boolean {
@@ -275,33 +304,37 @@ export function sanitizeForFirestore<T>(data: T): T {
   return data;
 }
 
-const MAX_FIRESTORE_PHOTOS_BYTES = 860_000;
+const MAX_FIRESTORE_PHOTOS_BYTES = 820_000;
 
 async function ensureReportPhotosFitLimit(rawPhotos: string[] = []): Promise<string[]> {
-  const capped = Array.isArray(rawPhotos) ? rawPhotos.slice(0, 5) : [];
+  const cleanPhotos = Array.isArray(rawPhotos)
+    ? rawPhotos.filter((p): p is string => typeof p === 'string' && p.trim().length > 0).slice(0, 5)
+    : [];
   const calcSize = (arr: string[]) => arr.reduce((sum, item) => sum + (item?.length || 0), 0);
 
-  if (calcSize(capped) <= MAX_FIRESTORE_PHOTOS_BYTES) {
-    return capped;
+  if (calcSize(cleanPhotos) <= MAX_FIRESTORE_PHOTOS_BYTES) {
+    return cleanPhotos;
   }
 
-  let current = await Promise.all(
-    capped.map((p) => recompressImageDataUrl(p, 1024, 1024, 0.64))
-  );
-  if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
-    return current;
+  const compressionSteps: Array<[number, number, number]> = [
+    [1024, 1024, 0.64],
+    [880, 880, 0.56],
+    [720, 720, 0.48],
+    [560, 560, 0.42],
+    [440, 440, 0.35],
+  ];
+
+  let current = cleanPhotos;
+  for (const [w, h, q] of compressionSteps) {
+    current = await Promise.all(
+      current.map((p) => recompressImageDataUrl(p, w, h, q))
+    );
+    if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
+      return current;
+    }
   }
 
-  current = await Promise.all(
-    current.map((p) => recompressImageDataUrl(p, 880, 880, 0.56))
-  );
-  if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
-    return current;
-  }
-
-  return Promise.all(
-    current.map((p) => recompressImageDataUrl(p, 720, 720, 0.5))
-  );
+  return current;
 }
 
 function getWindowCutoffMs(): number {
@@ -446,9 +479,13 @@ export function subscribeReports(
         const pendingRecent = sortedLocal.filter(
           (rep) => unsyncedIds.has(rep.id) || (rep.timestamp || 0) > windowCutoffMs
         );
-        if (isFirebaseCloudConnected() && !hasBackfilledLocalReports && pendingRecent.length > 0) {
-          hasBackfilledLocalReports = true;
-          Promise.all(pendingRecent.map((rep) => saveReportToCloud(rep).catch(() => {}))).catch(() => {});
+        if (pendingRecent.length > 0) {
+          pendingRecent.forEach((rep) => markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, rep.id));
+        }
+        const nowMs = Date.now();
+        if (isFirebaseCloudConnected() && pendingRecent.length > 0 && nowMs - lastBackfillAttemptMs > 15_000) {
+          lastBackfillAttemptMs = nowMs;
+          syncPendingLocalReportsToCloud().catch(() => {});
         }
         return;
       }
@@ -458,9 +495,10 @@ export function subscribeReports(
       onReportsChanged(merged);
 
       const pendingToSync = merged.filter((r) => unsyncedIds.has(r.id));
-      if (pendingToSync.length > 0 && isFirebaseCloudConnected() && !hasBackfilledLocalReports) {
-        hasBackfilledLocalReports = true;
-        Promise.all(pendingToSync.map((rep) => saveReportToCloud(rep).catch(() => {}))).catch(() => {});
+      const nowMs = Date.now();
+      if (pendingToSync.length > 0 && isFirebaseCloudConnected() && nowMs - lastBackfillAttemptMs > 15_000) {
+        lastBackfillAttemptMs = nowMs;
+        syncPendingLocalReportsToCloud().catch(() => {});
       }
     },
     (error) => {
@@ -772,33 +810,126 @@ export async function updateReportInCloud(
 
 /**
  * Syncs any locally created/updated reports waiting in UNSYNCED_REPORT_IDS_KEY to Cloud
- * whenever a verified user signs in.
+ * whenever a verified user is connected. Safely handles both new creates and updates.
  */
 export async function syncPendingLocalReportsToCloud(): Promise<number> {
   if (!isFirebaseCloudConnected()) return 0;
+  if (inFlightPendingReportsSync) {
+    return inFlightPendingReportsSync;
+  }
 
-  const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
-  if (unsyncedIds.size === 0) return 0;
+  inFlightPendingReportsSync = (async () => {
+    const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
+    if (unsyncedIds.size === 0) return 0;
+
+    const localReports = getReportsFromStorage();
+    const localById = new Map(localReports.map((r) => [r.id, r]));
+
+    // Prune orphan IDs that no longer exist locally
+    for (const id of Array.from(unsyncedIds)) {
+      if (!localById.has(id)) {
+        unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
+      }
+    }
+
+    const pendingReports = localReports.filter((r) => unsyncedIds.has(r.id));
+    if (pendingReports.length === 0) return 0;
+
+    let syncedCount = 0;
+    for (const rep of pendingReports) {
+      try {
+        const existingSnap = await getDoc(doc(db, REPORTS_COLLECTION, rep.id));
+        if (!existingSnap.exists()) {
+          const res = await saveReportToCloud({
+            ...rep,
+            authorUid: rep.authorUid || auth.currentUser?.uid || undefined,
+          });
+          if (res.status === 'synced') {
+            syncedCount++;
+          }
+        } else {
+          // Document already exists in Firestore: apply safe field update or mark synced
+          const cloudData = existingSnap.data() as CleaningReport;
+          const updates: Partial<CleaningReport> = {};
+          if (rep.drivePhotoLinks && rep.drivePhotoLinks.length > 0) {
+            updates.drivePhotoLinks = rep.drivePhotoLinks;
+          }
+          if (
+            rep.statusVerifikasi &&
+            rep.statusVerifikasi !== cloudData.statusVerifikasi &&
+            rep.statusVerifikasi !== 'Menunggu'
+          ) {
+            updates.statusVerifikasi = rep.statusVerifikasi;
+            updates.catatanSupervisor = rep.catatanSupervisor || '';
+            updates.diverifikasiOleh = rep.diverifikasiOleh;
+            updates.diverifikasiPada = rep.diverifikasiPada;
+          }
+          if (Object.keys(updates).length > 0) {
+            const res = await updateReportInCloud(rep.id, updates);
+            if (res.status === 'synced') {
+              syncedCount++;
+            }
+          } else {
+            unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, rep.id);
+            syncedCount++;
+          }
+        }
+      } catch (err) {
+        console.warn(`Pending report sync skipped for ${rep.id}:`, err);
+      }
+    }
+    return syncedCount;
+  })().finally(() => {
+    inFlightPendingReportsSync = null;
+  });
+
+  return inFlightPendingReportsSync;
+}
+
+/**
+ * Explicitly retries Cloud sync for a single report ID (used by Retry button after failure/re-auth).
+ */
+export async function retrySingleReportCloudSync(reportId: string): Promise<CloudSaveResult> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) {
+    return {
+      status: 'local_unauthenticated',
+      message: 'Sesi Cloud belum aktif. Masuk dengan Email & Kata Sandi Anda untuk mengirim laporan ke Dashboard pusat.',
+    };
+  }
 
   const localReports = getReportsFromStorage();
-  const pendingReports = localReports.filter((r) => unsyncedIds.has(r.id));
-  if (pendingReports.length === 0) return 0;
-
-  let syncedCount = 0;
-  for (const rep of pendingReports) {
-    try {
-      const res = await saveReportToCloud({
-        ...rep,
-        authorUid: rep.authorUid || auth.currentUser?.uid || undefined,
-      });
-      if (res.status === 'synced') {
-        syncedCount++;
-      }
-    } catch {
-      // Keep marked as unsynced for next attempt
-    }
+  const target = localReports.find((r) => r.id === reportId);
+  if (!target) {
+    unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, reportId);
+    return { status: 'synced' };
   }
-  return syncedCount;
+
+  try {
+    const existingSnap = await getDoc(doc(db, REPORTS_COLLECTION, reportId));
+    if (!existingSnap.exists()) {
+      return await saveReportToCloud({
+        ...target,
+        authorUid: target.authorUid || auth.currentUser.uid,
+      });
+    }
+    unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, reportId);
+    return { status: 'synced' };
+  } catch (err: any) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      return {
+        status: 'local_quota',
+        message: 'Kuota harian Firestore penuh. Laporan aman tersimpan di perangkat ini.',
+      };
+    }
+    const rawMsg = err?.message || String(err || '');
+    return {
+      status: 'local_error',
+      message: rawMsg.toLowerCase().includes('permission')
+        ? 'Izin tulis Firestore ditolak. Pastikan akun email Anda terverifikasi & aktif di daftar personel SCB.'
+        : `Gagal menyinkronkan ke Cloud (${rawMsg}).`,
+    };
+  }
 }
 
 /**

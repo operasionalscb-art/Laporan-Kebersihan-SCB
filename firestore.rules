@@ -36,6 +36,26 @@ service cloud.firestore {
       return request.auth.token.email.lower().replace('[^a-z0-9]', '_');
     }
 
+    function hasStaffRoleDoc() {
+      return exists(/databases/$(database)/documents/staff_roles/$(emailKey()));
+    }
+
+    function isBootstrapOfficialStaffEmail() {
+      return request.auth.token.email.lower() in [
+        'idaymuhamadyusup@gmail.com',
+        'aldbayu88@gmail.com',
+        'operasional.ga2022@gmail.com',
+        'it.labkomscb@gmail.com'
+      ];
+    }
+
+    function isBootstrapOfficialSupervisorEmail() {
+      return request.auth.token.email.lower() in [
+        'operasional.ga2022@gmail.com',
+        'it.labkomscb@gmail.com'
+      ];
+    }
+
     function isBootstrappedAdmin() {
       return isVerifiedEmail() && request.auth.token.email.lower() == 'operasional.scb@gmail.com';
     }
@@ -44,23 +64,30 @@ service cloud.firestore {
       return isBootstrappedAdmin()
         || (isVerifiedEmail() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)))
         || (isVerifiedEmail()
-            && exists(/databases/$(database)/documents/staff_roles/$(emailKey()))
+            && hasStaffRoleDoc()
             && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true
             && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.role == 'superadmin');
     }
 
     function isSupervisor() {
-      return isVerifiedEmail()
-        && exists(/databases/$(database)/documents/staff_roles/$(emailKey()))
-        && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true
-        && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.role in ['supervisor', 'superadmin'];
+      return isBootstrappedAdmin()
+        || (isVerifiedEmail()
+            && (
+              (hasStaffRoleDoc()
+                && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true
+                && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.role in ['supervisor', 'superadmin'])
+              || (!hasStaffRoleDoc() && isBootstrapOfficialSupervisorEmail())
+            ));
     }
 
     function isActiveStaff() {
       return isBootstrappedAdmin()
         || (isVerifiedEmail()
-            && exists(/databases/$(database)/documents/staff_roles/$(emailKey()))
-            && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true);
+            && (
+              (hasStaffRoleDoc()
+                && get(/databases/$(database)/documents/staff_roles/$(emailKey())).data.isActive == true)
+              || (!hasStaffRoleDoc() && isBootstrapOfficialStaffEmail())
+            ));
     }
 
     // =========================================================================
