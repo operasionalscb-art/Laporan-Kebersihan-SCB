@@ -275,7 +275,7 @@ export function sanitizeForFirestore<T>(data: T): T {
   return data;
 }
 
-const MAX_FIRESTORE_PHOTOS_BYTES = 760_000;
+const MAX_FIRESTORE_PHOTOS_BYTES = 860_000;
 
 async function ensureReportPhotosFitLimit(rawPhotos: string[] = []): Promise<string[]> {
   const capped = Array.isArray(rawPhotos) ? rawPhotos.slice(0, 5) : [];
@@ -286,21 +286,21 @@ async function ensureReportPhotosFitLimit(rawPhotos: string[] = []): Promise<str
   }
 
   let current = await Promise.all(
-    capped.map((p) => recompressImageDataUrl(p, 500, 500, 0.48))
+    capped.map((p) => recompressImageDataUrl(p, 1024, 1024, 0.64))
   );
   if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
     return current;
   }
 
   current = await Promise.all(
-    current.map((p) => recompressImageDataUrl(p, 400, 400, 0.42))
+    current.map((p) => recompressImageDataUrl(p, 880, 880, 0.56))
   );
   if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
     return current;
   }
 
   return Promise.all(
-    current.map((p) => recompressImageDataUrl(p, 320, 320, 0.35))
+    current.map((p) => recompressImageDataUrl(p, 720, 720, 0.5))
   );
 }
 
@@ -320,8 +320,15 @@ function hasFullLocalPhotos(localRep: CleaningReport | undefined, expectedCount:
       p.startsWith('http://') ||
       p.startsWith('https://') ||
       p.startsWith('data:image/svg+xml') ||
-      p.length > 12_000
+      p.length > 26_000
   );
+}
+
+export function doesReportNeedPhotoHydration(report: CleaningReport): boolean {
+  if (!report.photosOffloaded) return false;
+  if (hydratedPhotoIds.has(report.id)) return false;
+  const expectedCount = report.fotoCount ?? report.fotoBukti?.length ?? 0;
+  return !hasFullLocalPhotos(report, expectedCount);
 }
 
 function buildNormalizedCloudReport(docId: string, raw: CleaningReport): CleaningReport {

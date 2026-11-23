@@ -26,13 +26,22 @@ if (typeof window !== 'undefined') {
           .map((r) => {
             const fromIdb = idbMap.get(r.id);
             if (!fromIdb) return r;
-            const needsPhotos = (!r.fotoBukti || r.fotoBukti.length === 0) && fromIdb.fotoBukti && fromIdb.fotoBukti.length > 0;
+            const currentBytes = (r.fotoBukti || []).reduce((sum, f) => sum + (f?.length || 0), 0);
+            const idbBytes = (fromIdb.fotoBukti || []).reduce((sum, f) => sum + (f?.length || 0), 0);
+            const needsPhotos =
+              fromIdb.fotoBukti &&
+              fromIdb.fotoBukti.length > 0 &&
+              (!r.fotoBukti ||
+                r.fotoBukti.length === 0 ||
+                fromIdb.fotoBukti.length > r.fotoBukti.length ||
+                idbBytes > currentBytes + 5_000);
             const needsDrive = (!r.drivePhotoLinks || r.drivePhotoLinks.length === 0) && fromIdb.drivePhotoLinks && fromIdb.drivePhotoLinks.length > 0;
             if (needsPhotos || needsDrive) {
               restoredAny = true;
               return {
                 ...r,
                 fotoBukti: needsPhotos ? fromIdb.fotoBukti : r.fotoBukti,
+                fotoCount: needsPhotos ? (fromIdb.fotoCount ?? fromIdb.fotoBukti.length) : r.fotoCount,
                 drivePhotoLinks: needsDrive ? fromIdb.drivePhotoLinks : r.drivePhotoLinks,
               };
             }

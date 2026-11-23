@@ -4,6 +4,7 @@ import { INITIAL_AREAS, exportReportsToCsv, getTodayDateString } from '../utils/
 import { getDayIndex } from '../utils/formStorage';
 import { downloadReportsPdf } from '../utils/pdfExport';
 import { extractGoogleDriveFileId, getGoogleDriveImageCandidates } from '../utils/imageCompressor';
+import { doesReportNeedPhotoHydration } from '../services/firestoreSync';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -197,7 +198,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [activeReportDetail, reports]
   );
   const [supervisorNoteInput, setSupervisorNoteInput] = useState<string>('');
-  const [selectedImagePreview, setSelectedImagePreview] = useState<string | null>(null);
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [selectedModalSupervisorId, setSelectedModalSupervisorId] = useState<string>('');
   const [loadingPhotosReportId, setLoadingPhotosReportId] = useState<string | null>(null);
   const [isLoadingOlderReports, setIsLoadingOlderReports] = useState<boolean>(false);
@@ -1022,6 +1023,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [dateFilter, roomTimeRange, hasRequestedOlderReports, onLoadOlderReports]);
 
   const handleOpenDetail = (report: CleaningReport) => {
+    setSelectedImageIndex(null);
     setActiveReportDetail(report);
     setSupervisorNoteInput(report.catatanSupervisor || '');
     if (currentUser?.role === 'supervisor' || currentUser?.role === 'superadmin') {
@@ -1030,16 +1032,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setSelectedModalSupervisorId(registeredSupervisors[0].id);
     }
 
-    const expectedCount = report.fotoCount ?? report.fotoBukti?.length ?? 0;
     const needsPhotoHydration =
-      Boolean(onLoadReportPhotos) &&
-      Boolean(report.photosOffloaded) &&
-      (!report.fotoBukti ||
-        report.fotoBukti.length < expectedCount ||
-        (report.fotoBukti.length === 1 &&
-          !report.fotoBukti[0].startsWith('http') &&
-          !report.fotoBukti[0].startsWith('data:image/svg+xml') &&
-          report.fotoBukti[0].length <= 12_000));
+      Boolean(onLoadReportPhotos) && doesReportNeedPhotoHydration(report);
 
     if (needsPhotoHydration && onLoadReportPhotos) {
       setLoadingPhotosReportId(report.id);
@@ -2780,7 +2774,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     {currentDetailReport.fotoBukti.map((url, i) => (
                       <div
                         key={i}
-                        onClick={() => setSelectedImagePreview(url)}
+                        onClick={() => setSelectedImageIndex(i)}
                         className="aspect-4/3 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 cursor-pointer hover:opacity-90 transition-opacity relative group"
                       >
                         <ReportPhotoImage
@@ -2913,29 +2907,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {/* PHOTO LIGHTBOX MODAL */}
-      {selectedImagePreview && (
-        <div
-          className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setSelectedImagePreview(null)}
-        >
+      {selectedImageIndex !== null &&
+        currentDetailReport?.fotoBukti?.[selectedImageIndex] && (
           <div
-            className="relative max-w-3xl max-h-[90vh]"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-60 bg-black/85 flex items-center justify-center p-4"
+            onClick={() => setSelectedImageIndex(null)}
           >
-            <ReportPhotoImage
-              src={selectedImagePreview}
-              alt="Bukti foto resolusi tinggi"
-              className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl"
-            />
-            <button
-              onClick={() => setSelectedImagePreview(null)}
-              className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black cursor-pointer"
+            <div
+              className="relative max-w-5xl max-h-[92vh]"
+              onClick={(e) => e.stopPropagation()}
             >
-              <X className="w-5 h-5" />
-            </button>
+              <ReportPhotoImage
+                src={currentDetailReport.fotoBukti[selectedImageIndex]}
+                alt={`Bukti foto ${selectedImageIndex + 1} resolusi HD`}
+                className="max-w-full max-h-[88vh] object-contain rounded-xl shadow-2xl"
+              />
+              <button
+                onClick={() => setSelectedImageIndex(null)}
+                className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
     </div>
   );
 };

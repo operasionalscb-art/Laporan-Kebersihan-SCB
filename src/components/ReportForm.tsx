@@ -847,7 +847,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
             6. Upload Bukti Foto Kegiatan {activeSettings.requirePhoto && <span className="text-rose-600">*</span>}
           </label>
           <p className="text-xs text-slate-500 mb-3">
-            Ambil foto langsung dengan kamera ponsel atau pilih dari galeri dokumen (minimal {activeSettings.minPhotos || 1}, maks. 5 foto)
+            Ambil foto langsung dengan kamera ponsel atau pilih dari galeri dokumen (HD hingga 1280px, min. {activeSettings.minPhotos || 1}, maks. 5 foto)
           </p>
 
           {/* Action buttons */}
