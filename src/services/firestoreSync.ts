@@ -108,8 +108,15 @@ const SUPERADMIN_EMAIL = 'operasional.scb@gmail.com';
 const FORM_CONFIG_DOC_ID = 'config_form_configs';
 const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
 
-export const DEFAULT_REPORT_WINDOW_DAYS = 35;
-const CONFIG_CACHE_TTL_MS = 15 * 60 * 1000; // 15 menit cache untuk tamu
+export const LIVE_REPORT_WINDOW_DAYS = 7;
+export const MONTH_REPORT_WINDOW_DAYS = 35;
+export const DEFAULT_REPORT_WINDOW_DAYS = MONTH_REPORT_WINDOW_DAYS;
+const CONFIG_CACHE_TTL_MS = 30 * 60 * 1000; // 30 menit cache config & jadwal untuk non-superadmin
+const GUEST_REPORTS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 menit cache laporan 7 hari untuk tamu
+const MONTH_REPORTS_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 jam cache riwayat 8-35 hari
+const OLDER_REPORTS_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 jam cache riwayat >35 hari
+const SELF_USER_CACHE_TTL_MS = 60 * 60 * 1000; // 60 menit cache profil sendiri untuk non-superadmin
+const IDLE_LISTENER_PAUSE_MS = 5 * 60 * 1000; // Jeda listener live jika tab idle > 5 menit
 
 const UNSYNCED_REPORT_IDS_KEY = 'scb_unsynced_report_ids_v1';
 const UNSYNCED_USER_IDS_KEY = 'scb_unsynced_user_ids_v1';
@@ -119,6 +126,13 @@ const CLOUD_CANONICAL_USERS_KEY = 'scb_cloud_canonical_users_v2';
 const CLOUD_CANONICAL_SCHEDULES_KEY = 'scb_cloud_canonical_schedules_v2';
 const FORM_CONFIG_FETCHED_AT_KEY = 'scb_form_config_fetched_at_v1';
 const SCHEDULES_FETCHED_AT_KEY = 'scb_schedules_fetched_at_v1';
+const GUEST_REPORTS_FETCHED_AT_KEY = 'scb_guest_reports_fetched_at_v1';
+const MONTH_REPORTS_FETCHED_AT_KEY = 'scb_month_reports_fetched_at_v1';
+const OLDER_REPORTS_FETCHED_AT_KEY = 'scb_older_reports_fetched_at_v1';
+const SELF_USER_FETCHED_AT_KEY = 'scb_self_user_fetched_at_v1';
+const ADMIN_BOOTSTRAPPED_UID_KEY = 'scb_admin_bootstrapped_uid_v1';
+const LEGACY_MIGRATION_CHECKED_KEY = 'scb_legacy_config_migrated_v1';
+const STAFF_ROLES_HASH_KEY = 'scb_staff_roles_hash_v1';
 
 export interface CloudSaveResult {
   status: 'synced' | 'local_unauthenticated' | 'local_quota' | 'local_error';
@@ -131,6 +145,7 @@ let lastBackfilledAdminUid: string | null = null;
 let lastBackfillAttemptMs = 0;
 let olderCloudReportsLoaded = false;
 let inFlightPendingReportsSync: Promise<number> | null = null;
+let inFlightMonthReportsFetch: Promise<void> | null = null;
 const hydratedPhotoIds = new Set<string>();
 
 let isQuotaLimitedState = false;
@@ -337,8 +352,23 @@ async function ensureReportPhotosFitLimit(rawPhotos: string[] = []): Promise<str
   return current;
 }
 
+/**
+ * Snaps query cutoffs to local midnight (00:00:00.000) so query constraints remain identical
+ * across browser reloads on the same day, maximizing Firestore persistent cache & resume reuse.
+ */
+function getMidnightCutoffMs(daysAgo: number): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - Math.max(0, daysAgo));
+  return Math.max(1, d.getTime());
+}
+
+function getLiveWindowCutoffMs(): number {
+  return getMidnightCutoffMs(LIVE_REPORT_WINDOW_DAYS);
+}
+
 function getWindowCutoffMs(): number {
-  return Math.max(1, Date.now() - DEFAULT_REPORT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  return getMidnightCutoffMs(MONTH_REPORT_WINDOW_DAYS);
 }
 
 function hasFullLocalPhotos(localRep: CleaningReport | undefined, expectedCount: number): boolean {
@@ -440,89 +470,313 @@ function markCacheFetchedNow(storageKey: string): void {
   }
 }
 
+function processFetchedReportDocs(
+  docs: Array<{ id: string; data: () => unknown }>
+): CleaningReport[] {
+  const reportsList: CleaningReport[] = [];
+  docs.forEach((docSnap) => {
+    if (['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(docSnap.id)) {
+      if (isCurrentAuthSuperAdmin()) {
+        deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id)).catch(() => {});
+      }
+    } else {
+      const raw = docSnap.data() as CleaningReport;
+      reportsList.push(buildNormalizedCloudReport(docSnap.id, raw));
+    }
+  });
+  return reportsList;
+}
+
 /**
- * Subscribes to recent real-time reports from Firestore (default rolling window: 35 days)
- * to save Firestore read units. Older history is loaded on demand via loadOlderReportsFromCloud().
+ * Loads days 8..35 reports at most once per 6 hours (via localStorage TTL)
+ * so monthly compliance charts work without re-reading 35 days on every F5 or live listener.
+ */
+async function loadMonthReportsFromCloudIfStale(force = false): Promise<void> {
+  if (!force && isCacheFresh(MONTH_REPORTS_FETCHED_AT_KEY, MONTH_REPORTS_CACHE_TTL_MS)) {
+    return;
+  }
+  if (inFlightMonthReportsFetch) {
+    return inFlightMonthReportsFetch;
+  }
+
+  const liveCutoffMs = getLiveWindowCutoffMs();
+  const monthCutoffMs = getWindowCutoffMs();
+
+  inFlightMonthReportsFetch = (async () => {
+    try {
+      const q = query(
+        collection(db, REPORTS_COLLECTION),
+        where('timestamp', '>', monthCutoffMs),
+        where('timestamp', '<=', liveCutoffMs)
+      );
+      const snapshot = await getDocs(q);
+      notifyQuotaStatus(false);
+      markCacheFetchedNow(MONTH_REPORTS_FETCHED_AT_KEY);
+
+      const monthSliceList = processFetchedReportDocs(snapshot.docs);
+      const localReports = getReportsFromStorage();
+      const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
+      const existingRecentOrOlder = localReports.filter(
+        (r) => (r.timestamp || 0) > liveCutoffMs || (r.timestamp || 0) <= monthCutoffMs
+      );
+      const merged = mergeCloudWithLocalReports(
+        [...existingRecentOrOlder, ...monthSliceList],
+        localReports,
+        unsyncedIds,
+        monthCutoffMs
+      );
+      saveReportsToStorage(merged);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('scb_idb_reports_hydrated'));
+      }
+    } catch (err) {
+      if (isQuotaExceededError(err)) {
+        notifyQuotaStatus(true);
+        console.warn('Firestore quota exceeded while fetching monthly reports window, using local cache.');
+      } else {
+        console.warn('Background monthly report fetch skipped:', err);
+      }
+    }
+  })().finally(() => {
+    inFlightMonthReportsFetch = null;
+  });
+
+  return inFlightMonthReportsFetch;
+}
+
+/**
+ * Subscribes to reports with quota-efficient strategy:
+ * - Unauthenticated Guests: 10-minute local cache first (0 reads on repeat visits/F5),
+ *   then one-shot getDocs on a 7-day midnight-snapped window + 6h-cached monthly window.
+ * - Authenticated Staff: live onSnapshot ONLY on the 7-day midnight-snapped window
+ *   (backed by IndexedDB persistentLocalCache) + 6h-cached monthly history.
  */
 export function subscribeReports(
   onReportsChanged: (reports: CleaningReport[]) => void,
   onError?: (err: Error) => void
 ): () => void {
-  const windowCutoffMs = getWindowCutoffMs();
+  const liveCutoffMs = getLiveWindowCutoffMs();
   const reportsRef = collection(db, REPORTS_COLLECTION);
-  const q = query(reportsRef, where('timestamp', '>', windowCutoffMs));
+  const q = query(reportsRef, where('timestamp', '>', liveCutoffMs));
 
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      notifyQuotaStatus(false);
-      const reportsList: CleaningReport[] = [];
-      snapshot.forEach((docSnap) => {
-        if (['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(docSnap.id)) {
-          if (isCurrentAuthSuperAdmin()) {
-            deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id)).catch(() => {});
-          }
-        } else {
-          const raw = docSnap.data() as CleaningReport;
-          reportsList.push(buildNormalizedCloudReport(docSnap.id, raw));
-        }
-      });
+  const applyRecentCloudReports = (reportsList: CleaningReport[]) => {
+    const localReports = getReportsFromStorage();
+    const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
 
-      const localReports = getReportsFromStorage();
-      const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
+    if (reportsList.length === 0 && localReports.length > 0) {
+      const sortedLocal = [...localReports].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      onReportsChanged(sortedLocal);
 
-      // Protect local reports if Firestore returns empty inside active window
-      if (reportsList.length === 0 && localReports.length > 0) {
-        const sortedLocal = [...localReports].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-        onReportsChanged(sortedLocal);
-
-        const pendingRecent = sortedLocal.filter(
-          (rep) => unsyncedIds.has(rep.id) || (rep.timestamp || 0) > windowCutoffMs
-        );
-        if (pendingRecent.length > 0) {
-          pendingRecent.forEach((rep) => markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, rep.id));
-        }
-        const nowMs = Date.now();
-        if (isFirebaseCloudConnected() && pendingRecent.length > 0 && nowMs - lastBackfillAttemptMs > 15_000) {
-          lastBackfillAttemptMs = nowMs;
-          syncPendingLocalReportsToCloud().catch(() => {});
-        }
-        return;
+      const pendingRecent = sortedLocal.filter(
+        (rep) => unsyncedIds.has(rep.id) || (rep.timestamp || 0) > liveCutoffMs
+      );
+      if (pendingRecent.length > 0) {
+        pendingRecent.forEach((rep) => markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, rep.id));
       }
-
-      const merged = mergeCloudWithLocalReports(reportsList, localReports, unsyncedIds, windowCutoffMs);
-      saveReportsToStorage(merged);
-      onReportsChanged(merged);
-
-      const pendingToSync = merged.filter((r) => unsyncedIds.has(r.id));
       const nowMs = Date.now();
-      if (pendingToSync.length > 0 && isFirebaseCloudConnected() && nowMs - lastBackfillAttemptMs > 15_000) {
+      if (isFirebaseCloudConnected() && pendingRecent.length > 0 && nowMs - lastBackfillAttemptMs > 15_000) {
         lastBackfillAttemptMs = nowMs;
         syncPendingLocalReportsToCloud().catch(() => {});
       }
-    },
-    (error) => {
-      const fallback = getReportsFromStorage();
-      onReportsChanged(fallback);
-      if (onError) onError(error);
-      if (isQuotaExceededError(error)) {
-        notifyQuotaStatus(true);
-        console.warn('Firestore quota exceeded on reports listener, using local storage cache.');
-        return;
-      }
-      handleFirestoreError(error, OperationType.LIST, REPORTS_COLLECTION);
+      return;
     }
-  );
+
+    // Preserve older local/monthly reports <= liveCutoffMs
+    const merged = mergeCloudWithLocalReports(reportsList, localReports, unsyncedIds, liveCutoffMs);
+    saveReportsToStorage(merged);
+    onReportsChanged(merged);
+
+    const pendingToSync = merged.filter((r) => unsyncedIds.has(r.id));
+    const nowMs = Date.now();
+    if (pendingToSync.length > 0 && isFirebaseCloudConnected() && nowMs - lastBackfillAttemptMs > 15_000) {
+      lastBackfillAttemptMs = nowMs;
+      syncPendingLocalReportsToCloud().catch(() => {});
+    }
+  };
+
+  // Guest optimization: avoid opening live WebSocket onSnapshot listeners for public dashboard views
+  if (!isFirebaseCloudConnected()) {
+    const localReports = getReportsFromStorage();
+    if (localReports.length > 0 && isCacheFresh(GUEST_REPORTS_FETCHED_AT_KEY, GUEST_REPORTS_CACHE_TTL_MS)) {
+      const sortedLocal = [...localReports].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      onReportsChanged(sortedLocal);
+      loadMonthReportsFromCloudIfStale().catch(() => {});
+      return () => {};
+    }
+
+    let cancelled = false;
+    getDocs(q)
+      .then((snapshot) => {
+        if (cancelled) return;
+        notifyQuotaStatus(false);
+        markCacheFetchedNow(GUEST_REPORTS_FETCHED_AT_KEY);
+        const reportsList = processFetchedReportDocs(snapshot.docs);
+        applyRecentCloudReports(reportsList);
+        loadMonthReportsFromCloudIfStale().catch(() => {});
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const fallback = getReportsFromStorage();
+        onReportsChanged(fallback);
+        if (onError) onError(error);
+        if (isQuotaExceededError(error)) {
+          notifyQuotaStatus(true);
+          console.warn('Firestore quota exceeded on guest reports fetch, using local storage cache.');
+          return;
+        }
+        handleFirestoreError(error, OperationType.LIST, REPORTS_COLLECTION);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }
+
+  // Authenticated staff: 7-day live listener (pauses automatically when tab is hidden > 5 min) + 12h monthly cache
+  loadMonthReportsFromCloudIfStale().catch(() => {});
+
+  let disposed = false;
+  let activeSnapshotUnsub: (() => void) | null = null;
+  let idlePauseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const attachLiveListener = () => {
+    if (disposed || activeSnapshotUnsub) return;
+    activeSnapshotUnsub = onSnapshot(
+      q,
+      (snapshot) => {
+        notifyQuotaStatus(false);
+        markCacheFetchedNow(GUEST_REPORTS_FETCHED_AT_KEY);
+        const reportsList = processFetchedReportDocs(snapshot.docs);
+        applyRecentCloudReports(reportsList);
+      },
+      (error) => {
+        const fallback = getReportsFromStorage();
+        onReportsChanged(fallback);
+        if (onError) onError(error);
+        if (isQuotaExceededError(error)) {
+          notifyQuotaStatus(true);
+          console.warn('Firestore quota exceeded on reports listener, using local storage cache.');
+          return;
+        }
+        handleFirestoreError(error, OperationType.LIST, REPORTS_COLLECTION);
+      }
+    );
+  };
+
+  const handleVisibilityChange = () => {
+    if (disposed || typeof document === 'undefined') return;
+    if (document.visibilityState === 'hidden') {
+      if (!idlePauseTimer) {
+        idlePauseTimer = setTimeout(() => {
+          idlePauseTimer = null;
+          if (activeSnapshotUnsub) {
+            activeSnapshotUnsub();
+            activeSnapshotUnsub = null;
+          }
+        }, IDLE_LISTENER_PAUSE_MS);
+      }
+    } else if (document.visibilityState === 'visible') {
+      if (idlePauseTimer) {
+        clearTimeout(idlePauseTimer);
+        idlePauseTimer = null;
+      }
+      if (!activeSnapshotUnsub) {
+        attachLiveListener();
+      }
+    }
+  };
+
+  if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+    attachLiveListener();
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  }
+
+  return () => {
+    disposed = true;
+    if (idlePauseTimer) {
+      clearTimeout(idlePauseTimer);
+      idlePauseTimer = null;
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }
+    if (activeSnapshotUnsub) {
+      activeSnapshotUnsub();
+      activeSnapshotUnsub = null;
+    }
+  };
+}
+
+/**
+ * Manual on-demand refresh of the 7-day report window (plus stale monthly cache & configs),
+ * so users/guests can pull fresh updates without reloading the entire browser tab.
+ */
+export async function refreshReportsFromCloudNow(): Promise<{
+  syncedCount: number;
+  quotaExceeded?: boolean;
+}> {
+  const liveCutoffMs = getLiveWindowCutoffMs();
+  try {
+    const q = query(collection(db, REPORTS_COLLECTION), where('timestamp', '>', liveCutoffMs));
+    const snapshot = await getDocs(q);
+    notifyQuotaStatus(false);
+    markCacheFetchedNow(GUEST_REPORTS_FETCHED_AT_KEY);
+
+    const freshList = processFetchedReportDocs(snapshot.docs);
+    const localReports = getReportsFromStorage();
+    const unsyncedIds = getUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY);
+    const merged = mergeCloudWithLocalReports(freshList, localReports, unsyncedIds, liveCutoffMs);
+    saveReportsToStorage(merged);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('scb_idb_reports_hydrated'));
+    }
+
+    // Also pull latest form config & schedules once on explicit manual refresh
+    if (!hasUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY)) {
+      const formSnap = await getDoc(doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID)).catch(() => null);
+      if (formSnap?.exists()) {
+        const data = formSnap.data();
+        if (Array.isArray(data?.rooms)) saveMasterRooms(data.rooms);
+        if (Array.isArray(data?.checklists)) saveMasterChecklists(data.checklists);
+        if (data?.settings) saveFormSettings(data.settings);
+        markCacheFetchedNow(FORM_CONFIG_FETCHED_AT_KEY);
+      }
+    }
+    if (!hasUnsyncedFlag(UNSYNCED_SCHEDULES_KEY)) {
+      const schedSnap = await getDoc(doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID)).catch(() => null);
+      if (schedSnap?.exists() && Array.isArray(schedSnap.data()?.schedules)) {
+        saveRoomSchedules(sanitizeSchedulesToOfficial(schedSnap.data().schedules));
+        markCacheFetchedNow(SCHEDULES_FETCHED_AT_KEY);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('scb_config_hydrated'));
+    }
+
+    await loadMonthReportsFromCloudIfStale(false);
+    return { syncedCount: freshList.length };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      return { syncedCount: 0, quotaExceeded: true };
+    }
+    console.warn('Manual cloud reports refresh failed:', err);
+    return { syncedCount: 0 };
+  }
 }
 
 /**
  * Loads older reports (> 35 days old) on demand when the user selects "Semua" or an older month filter.
+ * Cached in localStorage for 6 hours so page reloads don't re-scan archived reports.
  */
 export async function loadOlderReportsFromCloud(): Promise<{
   loadedCount: number;
   quotaExceeded?: boolean;
 }> {
-  if (olderCloudReportsLoaded) {
+  if (olderCloudReportsLoaded || isCacheFresh(OLDER_REPORTS_FETCHED_AT_KEY, OLDER_REPORTS_CACHE_TTL_MS)) {
+    olderCloudReportsLoaded = true;
     return { loadedCount: 0 };
   }
 
@@ -536,6 +790,7 @@ export async function loadOlderReportsFromCloud(): Promise<{
     const snapshot = await getDocs(q);
     notifyQuotaStatus(false);
     olderCloudReportsLoaded = true;
+    markCacheFetchedNow(OLDER_REPORTS_FETCHED_AT_KEY);
 
     const olderCloudList: CleaningReport[] = [];
     snapshot.forEach((docSnap) => {
@@ -1055,7 +1310,14 @@ async function syncStaffRoleToCloud(user: User): Promise<void> {
 let hasCheckedLegacyMigration = false;
 
 export async function migrateLegacyConfigsIfNeeded(): Promise<void> {
-  if (hasCheckedLegacyMigration || !isCurrentAuthSuperAdmin()) return;
+  if (
+    hasCheckedLegacyMigration ||
+    !isCurrentAuthSuperAdmin() ||
+    localStorage.getItem(LEGACY_MIGRATION_CHECKED_KEY) === 'true'
+  ) {
+    hasCheckedLegacyMigration = true;
+    return;
+  }
   hasCheckedLegacyMigration = true;
 
   try {
@@ -1092,6 +1354,9 @@ export async function migrateLegacyConfigsIfNeeded(): Promise<void> {
         }
       }
     }
+    try {
+      localStorage.setItem(LEGACY_MIGRATION_CHECKED_KEY, 'true');
+    } catch {}
   } catch (err) {
     console.warn('Legacy config migration check note:', err);
   }
@@ -1155,20 +1420,91 @@ export function subscribeUsers(
   }
 
   const isAdmin = isCurrentAuthSuperAdmin();
-  const usersQuery = isAdmin
-    ? query(collection(db, USERS_COLLECTION))
-    : query(collection(db, USERS_COLLECTION), where('email', '==', fbUser.email.trim().toLowerCase()));
+  const cleanSelfEmail = fbUser.email.trim().toLowerCase();
+
+  // Quota optimization for Petugas/Supervisor: do NOT keep a permanent onSnapshot on /users.
+  // Serve from local roster when cached within 60 minutes, otherwise run a single 1-doc getDocs.
+  if (!isAdmin) {
+    const existingLocal = getUsersFromStorage();
+    const hasSelfLocally = existingLocal.some(
+      (u) => (u.email || '').trim().toLowerCase() === cleanSelfEmail
+    );
+    if (hasSelfLocally && isCacheFresh(SELF_USER_FETCHED_AT_KEY, SELF_USER_CACHE_TTL_MS)) {
+      onUsersChanged(existingLocal);
+      return () => {};
+    }
+
+    let cancelled = false;
+    const selfQuery = query(
+      collection(db, USERS_COLLECTION),
+      where('email', '==', cleanSelfEmail)
+    );
+    getDocs(selfQuery)
+      .then((snapshot) => {
+        if (cancelled) return;
+        notifyQuotaStatus(false);
+        markCacheFetchedNow(SELF_USER_FETCHED_AT_KEY);
+        if (snapshot.empty) {
+          onUsersChanged(getUsersFromStorage());
+          return;
+        }
+        const selfDoc = snapshot.docs[0].data() as User;
+        const selfEmailLower = (selfDoc.email || '').trim().toLowerCase();
+        const latestLocal = getUsersFromStorage();
+        const merged = latestLocal.some(
+          (u) =>
+            u.id === selfDoc.id ||
+            (selfEmailLower && (u.email || '').trim().toLowerCase() === selfEmailLower)
+        )
+          ? latestLocal.map((u) =>
+              u.id === selfDoc.id ||
+              (selfEmailLower && (u.email || '').trim().toLowerCase() === selfEmailLower)
+                ? selfDoc
+                : u
+            )
+          : [...latestLocal, selfDoc];
+        saveUsersToStorage(merged);
+        onUsersChanged(merged);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        onUsersChanged(getUsersFromStorage());
+        if (onError) onError(error);
+        if (isQuotaExceededError(error)) {
+          notifyQuotaStatus(true);
+          console.warn('Firestore quota exceeded on staff self profile fetch, using local cache.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }
+
+  const usersQuery = query(collection(db, USERS_COLLECTION));
 
   return onSnapshot(
     usersQuery,
     async (snapshot) => {
-      if (isAdmin && lastBootstrappedAdminUid !== fbUser.uid) {
+      let persistedAdminUid: string | null = null;
+      try {
+        persistedAdminUid = localStorage.getItem(ADMIN_BOOTSTRAPPED_UID_KEY);
+      } catch {}
+      if (isAdmin && lastBootstrappedAdminUid !== fbUser.uid && persistedAdminUid !== fbUser.uid) {
         lastBootstrappedAdminUid = fbUser.uid;
-        await ensureSuperAdminRecord().catch((err) => {
-          if (!isQuotaExceededError(err)) {
-            console.warn('Admin bootstrap note:', err);
-          }
-        });
+        ensureSuperAdminRecord()
+          .then(() => {
+            try {
+              localStorage.setItem(ADMIN_BOOTSTRAPPED_UID_KEY, fbUser.uid);
+            } catch {}
+          })
+          .catch((err) => {
+            if (!isQuotaExceededError(err)) {
+              console.warn('Admin bootstrap note:', err);
+            }
+          });
+      } else if (isAdmin) {
+        lastBootstrappedAdminUid = fbUser.uid;
       }
 
       if (snapshot.empty && isAdmin && !isUsersSeeded) {
@@ -1262,14 +1598,33 @@ export function subscribeUsers(
           Promise.all(pendingUsers.map((u) => saveUserToCloud(u))).catch(() => {});
         }
 
-        // Backfill staff_roles directory once per authenticated admin session (never on every snapshot)
+        // Sync staff_roles ONLY when user roles/emails/status actually change (avoid redundant writes per reload)
         if (lastBackfilledAdminUid !== fbUser.uid) {
           lastBackfilledAdminUid = fbUser.uid;
-          Promise.all(mergedUsers.map((u) => syncStaffRoleToCloud(u))).catch((err) => {
-            if (!isQuotaExceededError(err)) {
-              console.warn('Staff role backfill note:', err);
-            }
-          });
+          const rolesHash = mergedUsers
+            .map(
+              (u) =>
+                `${u.id}:${(u.email || '').trim().toLowerCase()}:${u.role}:${u.isActive !== false}`
+            )
+            .sort()
+            .join('|');
+          let storedRolesHash: string | null = null;
+          try {
+            storedRolesHash = localStorage.getItem(STAFF_ROLES_HASH_KEY);
+          } catch {}
+          if (storedRolesHash !== rolesHash) {
+            Promise.all(mergedUsers.map((u) => syncStaffRoleToCloud(u)))
+              .then(() => {
+                try {
+                  localStorage.setItem(STAFF_ROLES_HASH_KEY, rolesHash);
+                } catch {}
+              })
+              .catch((err) => {
+                if (!isQuotaExceededError(err)) {
+                  console.warn('Staff role backfill note:', err);
+                }
+              });
+          }
         }
       } else if (usersList.length > 0) {
         // Merge own synced user profile into existing roster without overwriting non-PII list
@@ -1384,8 +1739,9 @@ export function subscribeFormConfig(
   const path = `${FORM_CONFIGS_COLLECTION}/${FORM_CONFIG_DOC_ID}`;
   const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
 
-  // Guest optimization: use 15-min local cache or single one-shot getDoc instead of live onSnapshot
-  if (!isFirebaseCloudConnected()) {
+  // Quota optimization: non-superadmin (Guests, Petugas, Supervisors) use 30-min cache + one-shot getDoc
+  // instead of holding an extra live onSnapshot listener open on every device.
+  if (!isCurrentAuthSuperAdmin()) {
     const hasLocalRooms = Boolean(localStorage.getItem('scb_master_rooms_v1'));
     if (hasLocalRooms && isCacheFresh(FORM_CONFIG_FETCHED_AT_KEY, CONFIG_CACHE_TTL_MS)) {
       onConfigChanged({
@@ -1602,8 +1958,9 @@ export function subscribeRoomSchedules(
   const path = `${ROOM_SCHEDULES_COLLECTION}/${ROOM_SCHEDULE_DOC_ID}`;
   const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
 
-  // Guest optimization: use 15-min local cache or single one-shot getDoc instead of live onSnapshot
-  if (!isFirebaseCloudConnected()) {
+  // Quota optimization: non-superadmin (Guests, Petugas, Supervisors) use 30-min cache + one-shot getDoc
+  // instead of holding an extra live onSnapshot listener open on every device.
+  if (!isCurrentAuthSuperAdmin()) {
     const hasLocalSchedules = Boolean(localStorage.getItem('scb_room_schedules_v1'));
     if (hasLocalSchedules && isCacheFresh(SCHEDULES_FETCHED_AT_KEY, CONFIG_CACHE_TTL_MS)) {
       onSchedulesChanged(getRoomSchedules());

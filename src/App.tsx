@@ -70,6 +70,7 @@ import {
   subscribeQuotaStatus,
   loadOlderReportsFromCloud,
   fetchReportPhotosFromCloud,
+  refreshReportsFromCloudNow,
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -251,42 +252,43 @@ export default function App() {
       setPendingUnsyncedCount(count);
     });
 
-    auth.authStateReady()
-      .then(() => {
-        setIsAuthReady(true);
-      })
-      .catch(() => {
-        setIsAuthReady(true);
-      });
-
-    // 2. Subscribe to Live Firestore Reports (35-day window, auto-falls back to local cache)
-    const unsubscribeReports = subscribeReports((cloudReports) => {
-      setReports(cloudReports);
-    });
-
-    // 3. Form Config & Schedules (15-min one-shot cache for guests; live onSnapshot for verified staff)
-    let unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
-      setMasterRooms(rooms);
-      setMasterChecklists(checklists);
-      setFormSettings(settings);
-    });
-    let unsubscribeSchedules = subscribeRoomSchedules((schedules) => {
-      setRoomSchedules(schedules);
-    });
-
-    // 4. Subscribe to Live Firestore Users ONLY when Firebase Auth email is verified
+    // 2. Defer cloud subscriptions until Firebase Auth state resolves so authenticated
+    // reloads do NOT open & immediately tear down duplicate Guest subscriptions.
+    let unsubscribeReports: (() => void) | null = null;
+    let unsubscribeFormConfig: (() => void) | null = null;
+    let unsubscribeSchedules: (() => void) | null = null;
     let unsubscribeUsers: (() => void) | null = null;
+    let currentSubscriptionKey: string | null = null;
+
+    const cleanupCloudSubscriptions = () => {
+      if (unsubscribeReports) {
+        unsubscribeReports();
+        unsubscribeReports = null;
+      }
+      if (unsubscribeFormConfig) {
+        unsubscribeFormConfig();
+        unsubscribeFormConfig = null;
+      }
+      if (unsubscribeSchedules) {
+        unsubscribeSchedules();
+        unsubscribeSchedules = null;
+      }
+      if (unsubscribeUsers) {
+        unsubscribeUsers();
+        unsubscribeUsers = null;
+      }
+    };
+
     const unsubscribeAuth = onAuthStateChanged(auth, async (fbUser) => {
       const verifiedEmail = fbUser?.email && fbUser.emailVerified ? fbUser.email : null;
       setCloudUserEmail(verifiedEmail);
       setIsAuthReady(true);
 
-      if (unsubscribeUsers) {
-        unsubscribeUsers();
-        unsubscribeUsers = null;
-      }
-      if (fbUser && fbUser.email && fbUser.emailVerified) {
-        const cleanEmail = fbUser.email.trim().toLowerCase();
+      const nextSubscriptionKey = verifiedEmail ? `auth:${fbUser!.uid}` : 'guest';
+      const needsResubscribe = currentSubscriptionKey !== nextSubscriptionKey;
+
+      if (verifiedEmail && fbUser) {
+        const cleanEmail = verifiedEmail.trim().toLowerCase();
         // Restore or align local currentUser with verified Firebase Auth session
         const existingLocalSession = getCurrentUser();
         if (!existingLocalSession || (existingLocalSession.email || '').trim().toLowerCase() !== cleanEmail) {
@@ -300,9 +302,17 @@ export default function App() {
             setCurrentUserState(matched);
           }
         }
+      } else {
+        resetCloudSyncSessionFlags();
+      }
 
-        unsubscribeFormConfig();
-        unsubscribeSchedules();
+      if (needsResubscribe) {
+        cleanupCloudSubscriptions();
+        currentSubscriptionKey = nextSubscriptionKey;
+
+        unsubscribeReports = subscribeReports((cloudReports) => {
+          setReports(cloudReports);
+        });
         unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
           setMasterRooms(rooms);
           setMasterChecklists(checklists);
@@ -312,9 +322,15 @@ export default function App() {
           setRoomSchedules(schedules);
         });
 
-        unsubscribeUsers = subscribeUsers((cloudUsers) => {
-          setUsers(cloudUsers);
-        });
+        if (verifiedEmail) {
+          unsubscribeUsers = subscribeUsers((cloudUsers) => {
+            setUsers(cloudUsers);
+          });
+        }
+      }
+
+      if (verifiedEmail) {
+        const cleanEmail = verifiedEmail.trim().toLowerCase();
         syncPendingLocalReportsToCloud()
           .then((count) => {
             if (count > 0) {
@@ -332,12 +348,18 @@ export default function App() {
             })
             .catch(() => {});
         }
-      } else {
-        resetCloudSyncSessionFlags();
       }
     });
 
-    // 5. Auto-sync pending reports when network connection recovers
+    auth.authStateReady()
+      .then(() => {
+        setIsAuthReady(true);
+      })
+      .catch(() => {
+        setIsAuthReady(true);
+      });
+
+    // 3. Auto-sync pending reports when network connection recovers
     const handleOnlineReconnect = () => {
       if (auth.currentUser?.email && auth.currentUser.emailVerified) {
         syncPendingLocalReportsToCloud()
@@ -351,7 +373,7 @@ export default function App() {
       }
     };
 
-    // 6. Cross-tab localStorage sync on the same browser
+    // 4. Cross-tab localStorage sync on the same browser
     const handleStorageChange = (event: StorageEvent) => {
       if (!event.key) return;
       if (event.key === 'scb_cleaning_users_v2') {
@@ -378,23 +400,26 @@ export default function App() {
     const handleIdbHydrated = () => {
       setReports(getReports());
     };
+    const handleConfigHydrated = () => {
+      setMasterRooms(getMasterRooms());
+      setMasterChecklists(getMasterChecklists());
+      setFormSettings(getFormSettings());
+      setRoomSchedules(getRoomSchedules());
+    };
     window.addEventListener('online', handleOnlineReconnect);
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
+    window.addEventListener('scb_config_hydrated', handleConfigHydrated);
 
     return () => {
       unsubscribeQuota();
       unsubscribeUnsynced();
-      unsubscribeReports();
       unsubscribeAuth();
-      if (unsubscribeUsers) {
-        unsubscribeUsers();
-      }
-      unsubscribeFormConfig();
-      unsubscribeSchedules();
+      cleanupCloudSubscriptions();
       window.removeEventListener('online', handleOnlineReconnect);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
+      window.removeEventListener('scb_config_hydrated', handleConfigHydrated);
     };
   }, []);
 
@@ -962,8 +987,10 @@ export default function App() {
             isFirestoreQuotaLimited={isFirestoreQuotaLimited}
             isCloudSynced={Boolean(cloudUserEmail)}
             isAuthReady={isAuthReady}
+            isGuestMode={!currentUser && !cloudUserEmail}
             pendingUnsyncedCount={pendingUnsyncedCount}
             onSyncPendingReports={handleSyncPendingReportsNow}
+            onRefreshCloudReports={refreshReportsFromCloudNow}
             onLoadOlderReports={loadOlderReportsFromCloud}
             onLoadReportPhotos={fetchReportPhotosFromCloud}
           />

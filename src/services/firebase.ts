@@ -3,6 +3,8 @@ import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
   initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   memoryLocalCache,
   doc,
   getDocFromServer,
@@ -37,32 +39,61 @@ function initDb(): Firestore {
     return initializeFirestore(
       app,
       {
-        localCache: memoryLocalCache(),
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
       },
       FIRESTORE_DATABASE_ID
     );
   } catch {
-    return getFirestore(app, FIRESTORE_DATABASE_ID);
+    try {
+      return initializeFirestore(
+        app,
+        {
+          localCache: memoryLocalCache(),
+        },
+        FIRESTORE_DATABASE_ID
+      );
+    } catch {
+      return getFirestore(app, FIRESTORE_DATABASE_ID);
+    }
   }
 }
 
 export const db: Firestore = initDb();
 
 let hasTestedConnection = false;
+const CONN_TESTED_SESSION_KEY = 'scb_firestore_conn_tested_v1';
 
-// Connection test on initial boot to validate Firestore reachability
+// Connection test on initial boot to validate Firestore reachability (once per session to save reads)
 export async function testFirestoreConnection(): Promise<boolean> {
   if (hasTestedConnection) return true;
   hasTestedConnection = true;
 
   try {
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(CONN_TESTED_SESSION_KEY) === 'true') {
+      return true;
+    }
+  } catch {}
+
+  try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(CONN_TESTED_SESSION_KEY, 'true');
+      }
+    } catch {}
     return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration. Firestore client is offline.');
       return false;
     }
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(CONN_TESTED_SESSION_KEY, 'true');
+      }
+    } catch {}
     // Permission error, quota check, or missing test doc still confirms live network reachability to Firestore
     return true;
   }

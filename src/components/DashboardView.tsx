@@ -163,8 +163,10 @@ interface DashboardViewProps {
   isFirestoreQuotaLimited?: boolean;
   isCloudSynced?: boolean;
   isAuthReady?: boolean;
+  isGuestMode?: boolean;
   pendingUnsyncedCount?: number;
   onSyncPendingReports?: () => Promise<void> | void;
+  onRefreshCloudReports?: () => Promise<{ syncedCount: number; quotaExceeded?: boolean }>;
   onLoadOlderReports?: () => Promise<{ loadedCount: number; quotaExceeded?: boolean }>;
   onLoadReportPhotos?: (reportId: string) => Promise<string[] | null>;
 }
@@ -184,8 +186,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   isFirestoreQuotaLimited = false,
   isCloudSynced = false,
   isAuthReady = false,
+  isGuestMode = false,
   pendingUnsyncedCount = 0,
   onSyncPendingReports,
+  onRefreshCloudReports,
   onLoadOlderReports,
   onLoadReportPhotos,
 }) => {
@@ -219,6 +223,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [loadingPhotosReportId, setLoadingPhotosReportId] = useState<string | null>(null);
   const [isLoadingOlderReports, setIsLoadingOlderReports] = useState<boolean>(false);
   const [hasRequestedOlderReports, setHasRequestedOlderReports] = useState<boolean>(false);
+  const [isRefreshingCloud, setIsRefreshingCloud] = useState<boolean>(false);
 
   // Target chart inspected date (null = today)
   const [inspectedTargetDate, setInspectedTargetDate] = useState<string | null>(null);
@@ -231,6 +236,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setTimeout(() => {
       setApprovalToast(null);
     }, 3500);
+  };
+
+  const handleManualCloudRefresh = async () => {
+    if (!onRefreshCloudReports || isRefreshingCloud) return;
+    setIsRefreshingCloud(true);
+    try {
+      const res = await onRefreshCloudReports();
+      if (res.quotaExceeded) {
+        showApprovalToast('Kuota Cloud harian sedang penuh. Data lokal perangkat tetap aman.', 'info');
+      } else {
+        showApprovalToast('Data 7 hari terbaru berhasil diperbarui dari Cloud.', 'success');
+      }
+    } catch {
+      showApprovalToast('Gagal memuat pembaruan Cloud, menampilkan data lokal.', 'info');
+    } finally {
+      setIsRefreshingCloud(false);
+    }
   };
 
   const todayStr = getTodayDateString();
@@ -2374,14 +2396,67 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     Memuat riwayat lama...
                   </span>
                 )}
+                {onRefreshCloudReports && (
+                  <button
+                    type="button"
+                    onClick={handleManualCloudRefresh}
+                    disabled={isRefreshingCloud}
+                    title={
+                      isGuestMode
+                        ? 'Ambil laporan terbaru dari Cloud tanpa reload halaman (hemat kuota)'
+                        : 'Tarik sinkronisasi laporan terbaru dari Cloud'
+                    }
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 text-[11px] font-semibold transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isRefreshingCloud ? 'animate-spin text-emerald-600' : ''}`} />
+                    <span>{isRefreshingCloud ? 'Memuat...' : 'Perbarui Data'}</span>
+                  </button>
+                )}
               </div>
-              <p className="text-xs text-slate-500 tabular-nums">
+              <p className="text-xs text-slate-500 tabular-nums mt-0.5">
                 Menampilkan {filteredReports.length} dari {reports.length} laporan tersimpan
               </p>
               {isFirestoreQuotaLimited && (
-                <p className="text-[11px] text-amber-700 mt-1">
-                  Kuota baca harian Firestore sedang mencapai batas gratis; menampilkan data cache lokal perangkat.
-                </p>
+                <div className="mt-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-amber-900">
+                      Kuota Gratis Harian Cloud Firestore Tercapai — Mode Cache Lokal Aktif
+                    </span>
+                    {onRefreshCloudReports && (
+                      <button
+                        type="button"
+                        onClick={handleManualCloudRefresh}
+                        disabled={isRefreshingCloud}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isRefreshingCloud ? 'animate-spin' : ''}`} />
+                        <span>Coba Sinkron Ulang</span>
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-amber-900 leading-relaxed">
+                    Data riwayat yang sudah tersimpan tetap tampil dan laporan baru petugas tetap aman disimpan di perangkat (otomatis terkirim saat kuota reset harian ~pukul 14:00–15:00 WIB).
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3 text-[11px] pt-0.5">
+                    <a
+                      href="https://console.firebase.google.com/project/gen-lang-client-0457083120/firestore/databases/ai-studio-laporankebersiha-b837dc60-6c60-4a56-9829-2068c57227dc/data?openUpgradeDialog=true"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 font-bold text-amber-800 hover:text-amber-950 underline"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Upgrade Paket Database (Blaze)</span>
+                    </a>
+                    <a
+                      href="https://firebase.google.com/pricing#cloud-firestore"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-semibold text-amber-800 hover:text-amber-950 underline"
+                    >
+                      Detail Batas Kuota Gratis Firestore
+                    </a>
+                  </div>
+                </div>
               )}
             </div>
 
