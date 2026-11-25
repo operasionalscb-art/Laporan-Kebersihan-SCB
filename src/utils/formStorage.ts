@@ -362,13 +362,16 @@ export function saveFormSettings(settings: FormSettings): void {
 const STORAGE_CANONICAL_SCHEDULES_KEY = 'scb_canonical_schedules_reset_v2';
 
 export function sanitizeSchedulesToOfficial(schedules: RoomSchedule[]): RoomSchedule[] {
-  const validOfficerIds = new Set(['user-officer-1', 'user-officer-3']);
-  const validOfficerNames = new Set(['iday m yusuf', 'wahyudin']);
+  const legacyDummyNames = new Set(['ahmad', 'budi', 'siti', 'petugas 1', 'petugas 2']);
 
   return (schedules || []).map((sch) => {
+    const idLower = (sch.officerId || '').trim().toLowerCase();
     const nameLower = (sch.officerName || '').trim().toLowerCase();
-    const isValid = validOfficerIds.has(sch.officerId) || validOfficerNames.has(nameLower);
-    if (isValid) return sch;
+    const isLegacyDummy =
+      idLower === 'user-officer-2' ||
+      idLower.startsWith('user-demo') ||
+      legacyDummyNames.has(nameLower);
+    if (!isLegacyDummy) return sch;
 
     const cleanRoom = (sch.roomName || '').trim().toUpperCase();
     const fallback =

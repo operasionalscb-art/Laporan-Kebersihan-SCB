@@ -277,18 +277,57 @@ export async function sendPasswordResetForIdentifier(
 }
 
 /**
+ * Generates a readable random password (>= 10 chars) using Web Crypto when available
+ * so Superadmin can provision new Email/Password staff accounts safely.
+ */
+export function generateStrongTempPassword(length = 10): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const all = upper + lower + digits;
+
+  const getRandomInt = (max: number): number => {
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const arr = new Uint32Array(1);
+      crypto.getRandomValues(arr);
+      return arr[0] % max;
+    }
+    return Math.floor(Math.random() * max);
+  };
+
+  const chars: string[] = [
+    upper[getRandomInt(upper.length)],
+    lower[getRandomInt(lower.length)],
+    digits[getRandomInt(digits.length)],
+  ];
+  for (let i = chars.length; i < Math.max(8, length); i++) {
+    chars.push(all[getRandomInt(all.length)]);
+  }
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = getRandomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+/**
  * Provisions a new staff Email/Password Firebase Auth account in the background
  * using a secondary Firebase App instance so the Superadmin stays signed in.
  */
 export async function provisionStaffFirebaseAuthAccount(
   email: string,
   password: string
-): Promise<{ status: 'created' | 'already_exists' | 'error'; message: string }> {
+): Promise<{
+  status: 'created' | 'already_exists' | 'error';
+  message: string;
+  emailSent?: boolean;
+  uid?: string;
+}> {
   const cleanEmail = email.trim().toLowerCase();
   const cleanPassword = password.trim();
 
-  if (!cleanEmail || !cleanEmail.includes('@')) {
-    return { status: 'error', message: 'Alamat email petugas tidak valid.' };
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    return { status: 'error', message: 'Format alamat email tidak valid.' };
   }
   if (cleanPassword.length < 6) {
     return {
@@ -314,6 +353,8 @@ export async function provisionStaffFirebaseAuthAccount(
 
     return {
       status: 'created',
+      emailSent,
+      uid: userCred.user.uid,
       message: emailSent
         ? `Akun login & link verifikasi 1x dikirim ke ${cleanEmail}.`
         : `Akun login ${cleanEmail} dibuat di Firebase Auth.`,
@@ -322,7 +363,8 @@ export async function provisionStaffFirebaseAuthAccount(
     if (err?.code === 'auth/email-already-in-use') {
       return {
         status: 'already_exists',
-        message: `Email ${cleanEmail} sudah terdaftar di Firebase Auth.`,
+        emailSent: false,
+        message: `Email ${cleanEmail} sudah terdaftar di Firebase Auth. Pengguna dapat masuk dengan kata sandi sebelumnya atau gunakan "Kirim Reset Sandi".`,
       };
     }
     const parsed = parseFirebaseEmailAuthError(err);

@@ -76,8 +76,9 @@ import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
 import { ReportForm } from './components/ReportForm';
 import { FormManagement } from './components/FormManagement';
-import { AccountManagement } from './components/AccountManagement';
+import { AccountManagement, UserRegistrationResult } from './components/AccountManagement';
 import { LoginModal } from './components/LoginModal';
+import { GuestLandingPage } from './components/GuestLandingPage';
 import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
 import { FullBackupPayload } from './components/StorageBackupManager';
@@ -310,19 +311,20 @@ export default function App() {
         cleanupCloudSubscriptions();
         currentSubscriptionKey = nextSubscriptionKey;
 
-        unsubscribeReports = subscribeReports((cloudReports) => {
-          setReports(cloudReports);
-        });
-        unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
-          setMasterRooms(rooms);
-          setMasterChecklists(checklists);
-          setFormSettings(settings);
-        });
-        unsubscribeSchedules = subscribeRoomSchedules((schedules) => {
-          setRoomSchedules(schedules);
-        });
-
+        // Hemat kuota Firebase: non-login visitor hanya membaca 1 dokumen ringkasan notifikasi di GuestLandingPage.
+        // Listener laporan penuh, konfigurasi, jadwal, dan akun hanya aktif setelah user login terverifikasi.
         if (verifiedEmail) {
+          unsubscribeReports = subscribeReports((cloudReports) => {
+            setReports(cloudReports);
+          });
+          unsubscribeFormConfig = subscribeFormConfig(({ rooms, checklists, settings }) => {
+            setMasterRooms(rooms);
+            setMasterChecklists(checklists);
+            setFormSettings(settings);
+          });
+          unsubscribeSchedules = subscribeRoomSchedules((schedules) => {
+            setRoomSchedules(schedules);
+          });
           unsubscribeUsers = subscribeUsers((cloudUsers) => {
             setUsers(cloudUsers);
           });
@@ -668,8 +670,15 @@ export default function App() {
   };
 
   // Handlers for Users
-  const handleAddUser = async (userData: Omit<User, 'id' | 'createdAt'>) => {
-    const created = addUser(userData);
+  const handleAddUser = async (
+    userData: Omit<User, 'id' | 'createdAt'>,
+    initialPassword: string
+  ): Promise<UserRegistrationResult> => {
+    const cleanPassword = (initialPassword || userData.password || '123456').trim();
+    const created = addUser({
+      ...userData,
+      password: cleanPassword,
+    });
     setUsers((prev) => [...prev.filter((u) => u.id !== created.id), created]);
 
     let cloudSaved = false;
@@ -682,7 +691,7 @@ export default function App() {
 
     const authProvision = await provisionStaffFirebaseAuthAccount(
       created.email,
-      created.password || '123456'
+      cleanPassword
     );
 
     if (authProvision.status === 'created') {
@@ -701,6 +710,15 @@ export default function App() {
         'info'
       );
     }
+
+    return {
+      success: authProvision.status !== 'error',
+      user: created,
+      authStatus: authProvision.status,
+      emailSent: authProvision.emailSent,
+      cloudSynced: cloudSaved,
+      message: authProvision.message,
+    };
   };
 
   const handleSendPasswordReset = async (email: string) => {
@@ -913,11 +931,47 @@ export default function App() {
       googleSignOut().catch(() => {});
     }
     setIsLoginModalOpen(false);
-    showToast('Anda telah keluar. Sistem beralih ke Mode Tamu (Hanya Melihat Dashboard).', 'info');
+    showToast('Anda telah keluar. Sistem beralih ke halaman notifikasi publik.', 'info');
   };
 
   const officers = users.filter((u) => u.role === 'petugas' && u.isActive !== false);
   const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
+
+  if (!currentUser) {
+    return (
+      <>
+        {toast && (
+          <div className="fixed top-5 right-5 z-60 animate-in fade-in slide-in-from-top-4 duration-200">
+            <div
+              className={`flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border text-xs sm:text-sm font-semibold ${
+                toast.type === 'success'
+                  ? 'bg-emerald-800 text-white border-emerald-700'
+                  : toast.type === 'error'
+                  ? 'bg-rose-800 text-white border-rose-700'
+                  : 'bg-slate-800 text-white border-slate-700'
+              }`}
+            >
+              {toast.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-300" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-amber-300" />
+              )}
+              <span>{toast.message}</span>
+            </div>
+          </div>
+        )}
+        <GuestLandingPage
+          users={users}
+          onLoginSuccess={(loggedInUser) => {
+            setLoginModalPrompt('');
+            handleLoginSuccess(loggedInUser);
+          }}
+          isFirestoreQuotaLimited={isFirestoreQuotaLimited}
+          loginPromptNotice={loginModalPrompt}
+        />
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans">

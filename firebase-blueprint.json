@@ -315,6 +315,54 @@
         }
       },
       "required": ["id", "photos"]
+    },
+    "PublicSummary": {
+      "title": "PublicSummary",
+      "description": "Single lightweight non-PII daily reporting notification summary document for non-logged-in visitors",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^daily_notifications$"
+        },
+        "date": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 20
+        },
+        "totalScheduledToday": {
+          "type": "integer"
+        },
+        "reportedAreaCount": {
+          "type": "integer"
+        },
+        "pendingAreas": {
+          "type": "array",
+          "description": "List of scheduled area names not yet reported today (max 100)"
+        },
+        "notifications": {
+          "type": "array",
+          "description": "Compact list of recent daily reporting notifications without photos (max 20)"
+        },
+        "updatedAtMs": {
+          "type": "number"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "id",
+        "date",
+        "totalScheduledToday",
+        "reportedAreaCount",
+        "pendingAreas",
+        "notifications",
+        "updatedAtMs"
+      ]
     }
   },
   "firestore": {
@@ -345,6 +393,10 @@
     "/admins/{adminId}": {
       "schema": "AdminRole",
       "description": "Authoritative admin UID registry for privileged operations"
+    },
+    "/public_summary/{summaryId}": {
+      "schema": "PublicSummary",
+      "description": "Single-document daily cleaning notification summary for non-logged-in landing page"
     }
   }
 }

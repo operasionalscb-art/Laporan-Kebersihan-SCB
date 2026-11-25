@@ -466,11 +466,16 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </button>
 
             {/* Security Note */}
-            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-500 flex items-start gap-2">
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-600 flex items-start gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              <span className="leading-relaxed">
-                Login langsung memakai Email &amp; Kata Sandi tanpa pop-up Google. Data akun, jadwal, dan laporan tersinkron otomatis ke Cloud antar perangkat.
-              </span>
+              <div className="leading-relaxed space-y-1">
+                <p>
+                  Login memakai <strong>Email &amp; Kata Sandi</strong> resmi tanpa pop-up Google, tersinkron otomatis antar perangkat.
+                </p>
+                <p className="text-slate-500">
+                  Belum punya akun? Pendaftaran akun baru dikelola khusus oleh <strong>Superadmin</strong> (<code>operasional.scb@gmail.com</code>) dan tidak dibuka untuk pendaftaran publik.
+                </p>
+              </div>
             </div>
           </form>
         )}

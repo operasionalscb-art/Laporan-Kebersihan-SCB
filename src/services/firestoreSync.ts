@@ -9,13 +9,23 @@ import {
   getDocs,
   query,
   where,
+  limit,
   writeBatch,
   serverTimestamp,
   FieldValue,
   Timestamp,
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { CleaningReport, User, MasterRoom, MasterChecklist, FormSettings, RoomSchedule } from '../types';
+import {
+  CleaningReport,
+  User,
+  MasterRoom,
+  MasterChecklist,
+  FormSettings,
+  RoomSchedule,
+  PublicDailyNotificationSummary,
+  PublicNotificationItem,
+} from '../types';
 import {
   INITIAL_USERS,
   canonicalizeUsersToOfficial,
@@ -23,6 +33,7 @@ import {
   getReports as getReportsFromStorage,
   saveUsers as saveUsersToStorage,
   getUsers as getUsersFromStorage,
+  getTodayDateString,
 } from '../utils/storage';
 import {
   getMasterRooms,
@@ -34,6 +45,7 @@ import {
   getRoomSchedules,
   saveRoomSchedules,
   sanitizeSchedulesToOfficial,
+  getMandatoryTargetRoomsForDate,
   DEFAULT_MASTER_ROOMS,
   DEFAULT_MASTER_CHECKLISTS,
   DEFAULT_FORM_SETTINGS,
@@ -103,16 +115,19 @@ const FORM_CONFIGS_COLLECTION = 'form_configs';
 const ROOM_SCHEDULES_COLLECTION = 'room_schedules';
 const STAFF_ROLES_COLLECTION = 'staff_roles';
 const ADMINS_COLLECTION = 'admins';
+const PUBLIC_SUMMARY_COLLECTION = 'public_summary';
 
 const SUPERADMIN_EMAIL = 'operasional.scb@gmail.com';
 const FORM_CONFIG_DOC_ID = 'config_form_configs';
 const ROOM_SCHEDULE_DOC_ID = 'config_room_schedules';
+const PUBLIC_SUMMARY_DOC_ID = 'daily_notifications';
 
 export const LIVE_REPORT_WINDOW_DAYS = 7;
 export const MONTH_REPORT_WINDOW_DAYS = 35;
 export const DEFAULT_REPORT_WINDOW_DAYS = MONTH_REPORT_WINDOW_DAYS;
 const CONFIG_CACHE_TTL_MS = 30 * 60 * 1000; // 30 menit cache config & jadwal untuk non-superadmin
 const GUEST_REPORTS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 menit cache laporan 7 hari untuk tamu
+const PUBLIC_SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000; // 10 menit cache notifikasi tamu (0 read saat F5)
 const MONTH_REPORTS_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 jam cache riwayat 8-35 hari
 const OLDER_REPORTS_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 jam cache riwayat >35 hari
 const SELF_USER_CACHE_TTL_MS = 60 * 60 * 1000; // 60 menit cache profil sendiri untuk non-superadmin
@@ -127,6 +142,8 @@ const CLOUD_CANONICAL_SCHEDULES_KEY = 'scb_cloud_canonical_schedules_v2';
 const FORM_CONFIG_FETCHED_AT_KEY = 'scb_form_config_fetched_at_v1';
 const SCHEDULES_FETCHED_AT_KEY = 'scb_schedules_fetched_at_v1';
 const GUEST_REPORTS_FETCHED_AT_KEY = 'scb_guest_reports_fetched_at_v1';
+const PUBLIC_SUMMARY_CACHE_KEY = 'scb_public_summary_cache_v1';
+const PUBLIC_SUMMARY_HASH_KEY = 'scb_public_summary_hash_v1';
 const MONTH_REPORTS_FETCHED_AT_KEY = 'scb_month_reports_fetched_at_v1';
 const OLDER_REPORTS_FETCHED_AT_KEY = 'scb_older_reports_fetched_at_v1';
 const SELF_USER_FETCHED_AT_KEY = 'scb_self_user_fetched_at_v1';
@@ -648,6 +665,7 @@ export function subscribeReports(
         markCacheFetchedNow(GUEST_REPORTS_FETCHED_AT_KEY);
         const reportsList = processFetchedReportDocs(snapshot.docs);
         applyRecentCloudReports(reportsList);
+        syncPublicDailyNotificationsToCloud().catch(() => {});
       },
       (error) => {
         const fallback = getReportsFromStorage();
@@ -957,6 +975,7 @@ export async function saveReportToCloud(report: CleaningReport): Promise<CloudSa
     await batch.commit();
     notifyQuotaStatus(false);
     unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, preparedLocalReport.id);
+    syncPublicDailyNotificationsToCloud(true).catch(() => {});
     return { status: 'synced' };
   } catch (err) {
     markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, preparedLocalReport.id);
@@ -1048,6 +1067,7 @@ export async function updateReportInCloud(
 
     notifyQuotaStatus(false);
     unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
+    syncPublicDailyNotificationsToCloud(true).catch(() => {});
     return { status: 'synced' };
   } catch (err) {
     markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
@@ -1203,6 +1223,7 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, REPORTS_COLLECTION, id));
     await deleteDoc(doc(db, REPORT_PHOTOS_COLLECTION, id)).catch(() => {});
+    syncPublicDailyNotificationsToCloud(true).catch(() => {});
   } catch (err) {
     if (isQuotaExceededError(err)) {
       notifyQuotaStatus(true);
@@ -1366,17 +1387,26 @@ export async function ensureSuperAdminRecord(): Promise<void> {
   const currentUser = auth.currentUser;
   if (!currentUser || !isCurrentAuthSuperAdmin()) return;
   const path = `${ADMINS_COLLECTION}/${currentUser.uid}`;
+  const targetEmail = (currentUser.email || SUPERADMIN_EMAIL).toLowerCase();
   try {
-    await setDoc(
-      doc(db, ADMINS_COLLECTION, currentUser.uid),
-      {
+    const adminRef = doc(db, ADMINS_COLLECTION, currentUser.uid);
+    const existingSnap = await getDoc(adminRef);
+    if (!existingSnap.exists()) {
+      await setDoc(adminRef, {
         uid: currentUser.uid,
-        email: (currentUser.email || SUPERADMIN_EMAIL).toLowerCase(),
+        email: targetEmail,
         role: 'superadmin',
         createdAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+      });
+    } else {
+      const existingData = existingSnap.data();
+      if (existingData?.email !== targetEmail || existingData?.role !== 'superadmin') {
+        await updateDoc(adminRef, {
+          email: targetEmail,
+          role: 'superadmin',
+        });
+      }
+    }
     await migrateLegacyConfigsIfNeeded();
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
@@ -1517,6 +1547,8 @@ export function subscribeUsers(
             const cleanUser = sanitizeForFirestore({
               ...u,
               email: (u.email || `${u.username}@scb.sch.id`).trim().toLowerCase(),
+              isActive: u.isActive !== false,
+              createdAt: u.createdAt || getTodayDateString(),
             });
             batch.set(doc(db, USERS_COLLECTION, u.id), cleanUser);
             if (cleanUser.email) {
@@ -1665,6 +1697,8 @@ export async function saveUserToCloud(user: User): Promise<void> {
   const normalizedUser: User = {
     ...user,
     email: (user.email || `${user.username}@scb.sch.id`).trim().toLowerCase(),
+    isActive: user.isActive !== false,
+    createdAt: user.createdAt || getTodayDateString(),
   };
 
   const existingIdx = current.findIndex((u) => u.id === normalizedUser.id);
@@ -1683,7 +1717,19 @@ export async function saveUserToCloud(user: User): Promise<void> {
   const path = `${USERS_COLLECTION}/${normalizedUser.id}`;
   try {
     const docRef = doc(db, USERS_COLLECTION, normalizedUser.id);
-    await setDoc(docRef, sanitizeForFirestore(normalizedUser), { merge: true });
+    const existingSnap = await getDoc(docRef);
+    const existingCreatedAt = existingSnap.exists()
+      ? (existingSnap.data()?.createdAt as string | undefined)
+      : undefined;
+    const payloadToWrite = sanitizeForFirestore({
+      ...normalizedUser,
+      createdAt: existingCreatedAt || normalizedUser.createdAt,
+    });
+    if (existingSnap.exists()) {
+      await setDoc(docRef, payloadToWrite, { merge: true });
+    } else {
+      await setDoc(docRef, payloadToWrite);
+    }
     if (isCurrentAuthSuperAdmin()) {
       await syncStaffRoleToCloud(normalizedUser);
     }
@@ -1903,6 +1949,7 @@ async function writeFormConfigPayloadToCloud(payload: {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
     await setDoc(docRef, sanitizeForFirestore(payload));
     setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, false);
+    syncPublicDailyNotificationsToCloud(true).catch(() => {});
     return { status: 'synced' };
   } catch (err: any) {
     if (isQuotaExceededError(err)) {
@@ -2092,6 +2139,7 @@ export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promi
     const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
     await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) });
     setUnsyncedFlag(UNSYNCED_SCHEDULES_KEY, false);
+    syncPublicDailyNotificationsToCloud(true).catch(() => {});
     return { status: 'synced' };
   } catch (err: any) {
     if (isQuotaExceededError(err)) {
@@ -2161,9 +2209,16 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
     );
     const batch = writeBatch(db);
 
+    const existingCreatedAtMap = new Map<string, string>();
     existingSnap.forEach((docSnap) => {
-      if (!docSnap.id.startsWith('config_') && !docSnap.id.startsWith('sys_') && !desiredIds.has(docSnap.id)) {
-        batch.delete(docSnap.ref);
+      if (!docSnap.id.startsWith('config_') && !docSnap.id.startsWith('sys_')) {
+        const data = docSnap.data();
+        if (typeof data?.createdAt === 'string') {
+          existingCreatedAtMap.set(docSnap.id, data.createdAt);
+        }
+        if (!desiredIds.has(docSnap.id)) {
+          batch.delete(docSnap.ref);
+        }
       }
     });
 
@@ -2177,6 +2232,8 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
       const cleanUser = sanitizeForFirestore({
         ...u,
         email: (u.email || `${u.username}@scb.sch.id`).trim().toLowerCase(),
+        isActive: u.isActive !== false,
+        createdAt: existingCreatedAtMap.get(u.id) || u.createdAt || getTodayDateString(),
       });
       batch.set(doc(db, USERS_COLLECTION, cleanUser.id), cleanUser);
       if (cleanUser.email) {
@@ -2247,5 +2304,211 @@ export async function syncAllAppDataToCloud(payload: {
     for (const rep of payload.reports) {
       await saveReportToCloud(rep);
     }
+  }
+}
+
+// ==========================================
+// GUEST LANDING PAGE: ULTRA-LOW-QUOTA PUBLIC NOTIFICATIONS (1 DOC READ)
+// ==========================================
+
+export function buildLocalPublicDailyNotifications(
+  customReports?: CleaningReport[],
+  customRooms?: MasterRoom[],
+  customSchedules?: RoomSchedule[]
+): PublicDailyNotificationSummary {
+  const todayStr = getTodayDateString();
+  const reportsSource = customReports ?? getReportsFromStorage();
+  const roomsSource = customRooms ?? getMasterRooms();
+  const schedulesSource = customSchedules ?? getRoomSchedules();
+
+  const targetRooms = getMandatoryTargetRoomsForDate(todayStr, roomsSource, schedulesSource);
+  const todayReports = (reportsSource || [])
+    .filter((r) => r && r.tanggal === todayStr)
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  const reportedAreaSet = new Set(
+    todayReports.map((r) => (r.area || '').trim().toUpperCase()).filter(Boolean)
+  );
+  const pendingAreas = targetRooms
+    .filter((room) => !reportedAreaSet.has(room.trim().toUpperCase()))
+    .slice(0, 100);
+
+  const reportedAreaCount = targetRooms.filter((room) =>
+    reportedAreaSet.has(room.trim().toUpperCase())
+  ).length;
+
+  const notifications: PublicNotificationItem[] = todayReports.slice(0, 15).map((r) => ({
+    id: r.id,
+    area: r.isAreaOther && r.areaCustom ? r.areaCustom : r.area,
+    namaPetugas: r.namaPetugas || 'Petugas',
+    waktu: r.waktu || '00:00',
+    tanggal: r.tanggal || todayStr,
+    kondisiAkhir: r.kondisiAkhir || 'Bersih',
+    statusVerifikasi: r.statusVerifikasi || 'Menunggu',
+    timestamp: r.timestamp || Date.now(),
+  }));
+
+  return {
+    id: PUBLIC_SUMMARY_DOC_ID,
+    date: todayStr,
+    totalScheduledToday: targetRooms.length,
+    reportedAreaCount,
+    pendingAreas,
+    notifications,
+    updatedAtMs: Date.now(),
+  };
+}
+
+function getCachedPublicSummary(): {
+  summary: PublicDailyNotificationSummary;
+  fetchedAtMs: number;
+} | null {
+  try {
+    const raw = localStorage.getItem(PUBLIC_SUMMARY_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      parsed.summary &&
+      typeof parsed.fetchedAtMs === 'number' &&
+      parsed.summary.date === getTodayDateString()
+    ) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedPublicSummary(summary: PublicDailyNotificationSummary): void {
+  try {
+    localStorage.setItem(
+      PUBLIC_SUMMARY_CACHE_KEY,
+      JSON.stringify({ summary, fetchedAtMs: Date.now() })
+    );
+  } catch {
+    // Ignore localStorage quota noise
+  }
+}
+
+/**
+ * Keeps /public_summary/daily_notifications up to date when authenticated staff/admin
+ * submits, updates, or views today's reports. Uses a digest hash so repeated reloads perform 0 writes.
+ */
+export async function syncPublicDailyNotificationsToCloud(force = false): Promise<void> {
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.emailVerified) return;
+
+  const summary = buildLocalPublicDailyNotifications();
+  const digestHash = [
+    summary.date,
+    summary.totalScheduledToday,
+    summary.reportedAreaCount,
+    summary.pendingAreas.join(','),
+    summary.notifications.map((n) => `${n.id}:${n.statusVerifikasi}:${n.kondisiAkhir}`).join('|'),
+  ].join('::');
+
+  try {
+    if (!force && localStorage.getItem(PUBLIC_SUMMARY_HASH_KEY) === digestHash) {
+      return;
+    }
+  } catch {}
+
+  saveCachedPublicSummary(summary);
+
+  try {
+    await setDoc(
+      doc(db, PUBLIC_SUMMARY_COLLECTION, PUBLIC_SUMMARY_DOC_ID),
+      sanitizeForFirestore({
+        ...summary,
+        updatedByUid: fbUser.uid,
+      })
+    );
+    try {
+      localStorage.setItem(PUBLIC_SUMMARY_HASH_KEY, digestHash);
+    } catch {}
+  } catch (err) {
+    if (!isQuotaExceededError(err)) {
+      console.warn('Public notification summary sync note:', err);
+    }
+  }
+}
+
+/**
+ * Ultra-low-quota reader for non-logged-in Landing Page:
+ * - Serves 10-minute localStorage cache first (0 Firestore reads on refresh).
+ * - Otherwise reads 1 single document: /public_summary/daily_notifications (1 read total).
+ * - Only if that summary doc is missing or from a previous day, runs 1 capped today-only query (max 20 docs).
+ */
+export async function fetchPublicDailyNotificationsForGuest(forceRefresh = false): Promise<{
+  summary: PublicDailyNotificationSummary;
+  source: 'cache' | 'cloud_summary' | 'cloud_fallback' | 'local_offline';
+  quotaExceeded?: boolean;
+}> {
+  const todayStr = getTodayDateString();
+  const cached = getCachedPublicSummary();
+
+  if (
+    !forceRefresh &&
+    cached &&
+    Date.now() - cached.fetchedAtMs < PUBLIC_SUMMARY_CACHE_TTL_MS
+  ) {
+    return { summary: cached.summary, source: 'cache' };
+  }
+
+  try {
+    const summarySnap = await getDoc(
+      doc(db, PUBLIC_SUMMARY_COLLECTION, PUBLIC_SUMMARY_DOC_ID)
+    );
+    notifyQuotaStatus(false);
+
+    if (summarySnap.exists()) {
+      const data = summarySnap.data() as PublicDailyNotificationSummary;
+      if (data && data.date === todayStr && Array.isArray(data.notifications)) {
+        const normalized: PublicDailyNotificationSummary = {
+          id: PUBLIC_SUMMARY_DOC_ID,
+          date: data.date,
+          totalScheduledToday: Number(data.totalScheduledToday) || 0,
+          reportedAreaCount: Number(data.reportedAreaCount) || 0,
+          pendingAreas: Array.isArray(data.pendingAreas) ? data.pendingAreas : [],
+          notifications: data.notifications.slice(0, 15),
+          updatedAtMs: Number(data.updatedAtMs) || Date.now(),
+        };
+        saveCachedPublicSummary(normalized);
+        return { summary: normalized, source: 'cloud_summary' };
+      }
+    }
+
+    // Fallback ONLY when summary doc doesn't exist yet for today: 1 capped today-only query
+    const todayCutoffMs = getMidnightCutoffMs(0);
+    const fallbackQuery = query(
+      collection(db, REPORTS_COLLECTION),
+      where('timestamp', '>', todayCutoffMs),
+      limit(20)
+    );
+    const reportsSnap = await getDocs(fallbackQuery);
+    const todayReports = processFetchedReportDocs(reportsSnap.docs);
+    const fallbackSummary = buildLocalPublicDailyNotifications(
+      todayReports,
+      getMasterRooms(),
+      getRoomSchedules()
+    );
+    saveCachedPublicSummary(fallbackSummary);
+    return { summary: fallbackSummary, source: 'cloud_fallback' };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      return {
+        summary: cached?.summary || buildLocalPublicDailyNotifications(),
+        source: 'local_offline',
+        quotaExceeded: true,
+      };
+    }
+    console.warn('Guest public notification fetch note:', err);
+    return {
+      summary: cached?.summary || buildLocalPublicDailyNotifications(),
+      source: 'local_offline',
+    };
   }
 }

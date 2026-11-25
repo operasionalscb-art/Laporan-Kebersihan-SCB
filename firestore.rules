@@ -197,6 +197,27 @@ service cloud.firestore {
         && data.role is string && data.role == 'superadmin';
     }
 
+    function isValidPublicSummary(data) {
+      return data.keys().hasAll([
+          'id', 'date', 'totalScheduledToday', 'reportedAreaCount',
+          'pendingAreas', 'notifications', 'updatedAtMs'
+        ])
+        && data.keys().hasOnly([
+          'id', 'date', 'totalScheduledToday', 'reportedAreaCount',
+          'pendingAreas', 'notifications', 'updatedAtMs', 'updatedByUid'
+        ])
+        && data.id == 'daily_notifications'
+        && data.date is string && data.date.size() >= 8 && data.date.size() <= 20
+        && data.totalScheduledToday is int && data.totalScheduledToday >= 0 && data.totalScheduledToday <= 200
+        && data.reportedAreaCount is int && data.reportedAreaCount >= 0 && data.reportedAreaCount <= 200
+        && data.pendingAreas is list && data.pendingAreas.size() <= 100
+        && (data.pendingAreas.size() == 0 || data.pendingAreas[0] is string)
+        && data.notifications is list && data.notifications.size() <= 20
+        && (data.notifications.size() == 0 || data.notifications[0] is map)
+        && data.updatedAtMs is number && data.updatedAtMs > 0
+        && (!('updatedByUid' in data) || (data.updatedByUid is string && data.updatedByUid == request.auth.uid));
+    }
+
     // =========================================================================
     // Collections
     // =========================================================================
@@ -379,6 +400,20 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'role']);
       allow delete: if isBootstrappedAdmin() && isValidId(adminId);
+    }
+
+    // Single-doc non-PII daily reporting notification summary for non-logged-in landing page
+    match /public_summary/{summaryId} {
+      allow get: if isValidId(summaryId) && summaryId == 'daily_notifications';
+      allow list: if false;
+      allow create, update: if isVerifiedEmail()
+        && isValidId(summaryId)
+        && summaryId == 'daily_notifications'
+        && isValidPublicSummary(incoming())
+        && 'updatedByUid' in incoming()
+        && incoming().updatedByUid == request.auth.uid
+        && (isAdmin() || isActiveStaff());
+      allow delete: if isAdmin() && isValidId(summaryId);
     }
   }
 }

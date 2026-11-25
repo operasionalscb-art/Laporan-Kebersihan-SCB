@@ -109,3 +109,26 @@ export interface RoomSchedule {
   isActive: boolean;
   updatedAt?: string;
 }
+
+export interface PublicNotificationItem {
+  id: string;
+  area: string;
+  namaPetugas: string;
+  waktu: string;
+  tanggal: string;
+  kondisiAkhir: KondisiAkhir;
+  statusVerifikasi: 'Menunggu' | 'Disetujui' | 'Perlu Perbaikan';
+  timestamp: number;
+}
+
+export interface PublicDailyNotificationSummary {
+  id: string; // 'daily_notifications'
+  date: string; // YYYY-MM-DD
+  totalScheduledToday: number;
+  reportedAreaCount: number;
+  pendingAreas: string[];
+  notifications: PublicNotificationItem[];
+  updatedAtMs: number;
+  updatedByUid?: string;
+}
+

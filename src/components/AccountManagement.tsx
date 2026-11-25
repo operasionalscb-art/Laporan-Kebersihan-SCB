@@ -35,7 +35,9 @@ import {
   Upload,
   Loader2,
   KeyRound,
+  Copy,
 } from 'lucide-react';
+import { generateStrongTempPassword } from '../services/firebaseAuth';
 
 export interface RolePermissionFeature {
   id: string;
@@ -258,10 +260,22 @@ export const ROLE_PERMISSIONS_DATA: RolePermissionFeature[] = [
   },
 ];
 
+export interface UserRegistrationResult {
+  success: boolean;
+  user?: User;
+  authStatus: 'created' | 'already_exists' | 'error';
+  emailSent?: boolean;
+  cloudSynced: boolean;
+  message: string;
+}
+
 interface AccountManagementProps {
   users: User[];
   currentUser: User | null;
-  onAddUser: (user: Omit<User, 'id' | 'createdAt'>) => void;
+  onAddUser: (
+    user: Omit<User, 'id' | 'createdAt'>,
+    initialPassword: string
+  ) => Promise<UserRegistrationResult>;
   onUpdateUser: (id: string, updates: Partial<User>) => void;
   onDeleteUser: (id: string) => void;
   onSwitchUser?: (user: User) => void;
@@ -304,6 +318,21 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   const [searchFeature, setSearchFeature] = useState<string>('');
 
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
+  const [usernameEditedManually, setUsernameEditedManually] = useState<boolean>(false);
+  const [isSubmittingUser, setIsSubmittingUser] = useState<boolean>(false);
+  const [copiedCredentials, setCopiedCredentials] = useState<boolean>(false);
+  const [registeredReceipt, setRegisteredReceipt] = useState<{
+    name: string;
+    email: string;
+    username: string;
+    role: UserRole;
+    password: string;
+    authStatus: 'created' | 'already_exists' | 'error';
+    emailSent?: boolean;
+    cloudSynced: boolean;
+    message: string;
+  } | null>(null);
 
   // Form State for Add / Edit
   const [formData, setFormData] = useState({
@@ -317,9 +346,23 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
     isActive: true,
   });
 
+  const deriveUsernameFromEmailOrName = (emailVal: string, nameVal: string): string => {
+    const emailPrefix = emailVal.trim().toLowerCase().split('@')[0] || '';
+    const cleaned = (emailPrefix || nameVal.trim().toLowerCase())
+      .replace(/[^a-z0-9._-]/g, '')
+      .slice(0, 32);
+    return cleaned;
+  };
+
   const handleOpenAddModal = () => {
     setFormError('');
     setShowPassword(false);
+    setConfirmPassword('');
+    setUsernameEditedManually(false);
+    setIsSubmittingUser(false);
+    setRegisteredReceipt(null);
+    setCopiedCredentials(false);
+    setEditingUser(null);
     setFormData({
       name: '',
       email: '',
@@ -336,12 +379,17 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   const handleOpenEditModal = (user: User) => {
     setFormError('');
     setShowPassword(false);
+    setConfirmPassword('');
+    setUsernameEditedManually(true);
+    setIsSubmittingUser(false);
+    setRegisteredReceipt(null);
+    setIsAddModalOpen(false);
     setEditingUser(user);
     setFormData({
       name: user.name,
       email: user.email,
       username: user.username,
-      password: user.password || '',
+      password: '',
       pin: user.pin || '',
       role: user.role,
       phone: user.phone || '',
@@ -349,27 +397,79 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
     });
   };
 
-  const handleSaveUser = (e: React.FormEvent) => {
+  const handleGeneratePassword = () => {
+    const generated = generateStrongTempPassword(10);
+    setFormData((prev) => ({ ...prev, password: generated }));
+    setConfirmPassword(generated);
+    setShowPassword(true);
+    setFormError('');
+  };
+
+  const handleCopyRegisteredCredentials = async () => {
+    if (!registeredReceipt) return;
+    const roleLabel =
+      registeredReceipt.role === 'superadmin'
+        ? 'Super Admin'
+        : registeredReceipt.role === 'supervisor'
+        ? 'Supervisor'
+        : 'Petugas Kebersihan';
+    const loginUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    const text = [
+      `*Akun SIM-BERSIH SCB (${roleLabel})*`,
+      `Nama: ${registeredReceipt.name}`,
+      `Email Login: ${registeredReceipt.email}`,
+      `Kata Sandi: ${registeredReceipt.password}`,
+      loginUrl ? `Link Aplikasi: ${loginUrl}` : '',
+      '',
+      'Catatan: Silakan buka inbox/spam email Anda untuk klik link verifikasi 1x, lalu masuk menggunakan Email & Kata Sandi di atas.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedCredentials(true);
+      onShowToast?.('Kredensial akun berhasil disalin ke clipboard!', 'success');
+      setTimeout(() => setCopiedCredentials(false), 3000);
+    } catch {
+      onShowToast?.('Gagal menyalin otomatis. Silakan salin manual dari kartu konfirmasi.', 'error');
+    }
+  };
+
+  const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = formData.name.trim();
-    const cleanUsername = formData.username.trim().toLowerCase();
     const cleanEmail = formData.email.trim().toLowerCase();
-    const effectivePassword =
-      formData.password.trim() || (editingUser ? editingUser.password || '123456' : '123456');
+    const cleanUsername =
+      formData.username.trim().toLowerCase() || deriveUsernameFromEmailOrName(cleanEmail, cleanName);
+    const rawPassword = formData.password.trim();
 
-    if (!cleanName || !cleanUsername) {
-      setFormError('Nama Lengkap dan Username wajib diisi.');
+    if (!cleanName) {
+      setFormError('Nama Lengkap wajib diisi.');
       return;
     }
 
-    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setFormError('Alamat Email aktif wajib diisi dengan format valid (contoh: nama@gmail.com) agar bisa verifikasi & sinkron antar perangkat.');
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setFormError(
+        'Alamat Email aktif wajib diisi dengan format valid (contoh: nama@gmail.com) agar bisa menerima verifikasi & sinkron antar perangkat.'
+      );
       return;
     }
 
-    if (effectivePassword.length < 6) {
-      setFormError('Kata sandi minimal 6 karakter agar valid untuk sistem login Cloud.');
+    if (!cleanUsername) {
+      setFormError('Username login wajib diisi.');
       return;
+    }
+
+    if (!editingUser) {
+      if (rawPassword.length < 6) {
+        setFormError('Kata sandi pendaftaran wajib diisi minimal 6 karakter.');
+        return;
+      }
+      if (rawPassword !== confirmPassword.trim()) {
+        setFormError('Konfirmasi kata sandi tidak cocok. Periksa kembali kedua kolom kata sandi.');
+        return;
+      }
     }
 
     const duplicateUsername = users.some(
@@ -395,31 +495,54 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         name: cleanName.toUpperCase(),
         email: cleanEmail,
         username: cleanUsername,
-        password: effectivePassword,
         pin: formData.pin.trim() || undefined,
         role: formData.role,
         phone: formData.phone.trim(),
         isActive: formData.isActive,
       });
       setEditingUser(null);
-    } else {
-      onAddUser({
+      return;
+    }
+
+    setIsSubmittingUser(true);
+    try {
+      const result = await onAddUser(
+        {
+          name: cleanName.toUpperCase(),
+          email: cleanEmail,
+          username: cleanUsername,
+          pin: formData.pin.trim() || undefined,
+          role: formData.role,
+          phone: formData.phone.trim(),
+          isActive: formData.isActive,
+          avatarColor:
+            formData.role === 'superadmin'
+              ? 'from-amber-600 to-yellow-700'
+              : formData.role === 'supervisor'
+              ? 'from-blue-600 to-indigo-700'
+              : 'from-emerald-600 to-teal-700',
+        },
+        rawPassword
+      );
+
+      if (!result.success) {
+        setFormError(result.message);
+        return;
+      }
+
+      setRegisteredReceipt({
         name: cleanName.toUpperCase(),
         email: cleanEmail,
         username: cleanUsername,
-        password: effectivePassword,
-        pin: formData.pin.trim() || undefined,
         role: formData.role,
-        phone: formData.phone.trim(),
-        isActive: formData.isActive,
-        avatarColor:
-          formData.role === 'superadmin'
-            ? 'from-amber-600 to-yellow-700'
-            : formData.role === 'supervisor'
-            ? 'from-blue-600 to-indigo-700'
-            : 'from-emerald-600 to-teal-700',
+        password: rawPassword,
+        authStatus: result.authStatus,
+        emailSent: result.emailSent,
+        cloudSynced: result.cloudSynced,
+        message: result.message,
       });
-      setIsAddModalOpen(false);
+    } finally {
+      setIsSubmittingUser(false);
     }
   };
 
@@ -452,11 +575,12 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
 
   const handleExportUsersJson = () => {
     try {
+      const sanitizedUsers = users.map(({ password: _omittedPassword, ...safeUser }) => safeUser);
       const payload = {
         appName: 'SIM-BERSIH SCB',
         type: 'users_directory',
         exportDate: new Date().toISOString(),
-        users,
+        users: sanitizedUsers,
       };
       const dateStr = new Date().toISOString().slice(0, 10);
       const filename = `Akun_Petugas_SCB_${dateStr}.json`;
@@ -535,10 +659,10 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={handleOpenAddModal}
-            className="flex items-center space-x-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold rounded-xl shadow-sm transition-all"
+            className="flex items-center space-x-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold rounded-xl shadow-sm transition-all cursor-pointer"
           >
             <UserPlus className="w-4 h-4" />
-            <span>+ Tambah Petugas Baru</span>
+            <span>Daftarkan Akun Baru</span>
           </button>
         </div>
       </div>
@@ -587,12 +711,15 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-start gap-3">
               <Key className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <p className="font-bold text-emerald-950">
-                  Login Cloud Email &amp; Kata Sandi (Tanpa Pop-up Google)
+                  Pendaftaran Akun Email &amp; Kata Sandi Dikelola Superadmin
                 </p>
                 <p className="text-emerald-800 leading-relaxed">
-                  Personel login memakai <strong>Email &amp; Kata Sandi</strong> (min. 6 karakter). Saat akun baru ditambahkan, akun login Cloud dibuat otomatis dan link verifikasi 1 kali dikirim ke email petugas.
+                  Pendaftaran akun baru hanya dapat dilakukan oleh <strong>Superadmin</strong> melalui tombol <strong>Daftarkan Akun Baru</strong> (tidak ada pendaftaran mandiri publik). Kata sandi dikelola langsung oleh Firebase Authentication tanpa disimpan sebagai teks biasa di database.
+                </p>
+                <p className="text-[11px] text-emerald-700 font-medium">
+                  Alur: 1. Superadmin daftarkan Email &amp; Sandi → 2. Sistem kirim link verifikasi 1x ke email personel → 3. Personel klik verifikasi &amp; login.
                 </p>
               </div>
             </div>
@@ -797,7 +924,7 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                         <td className="py-3.5 px-4 whitespace-nowrap">
                           <span className="text-[11px] font-medium text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 inline-flex items-center gap-1">
                             <Key className="w-3 h-3 text-emerald-600" />
-                            {user.pin ? 'Sandi & PIN' : 'Akun Manual'}
+                            Email &amp; Sandi Cloud
                           </span>
                         </td>
 
@@ -1209,293 +1336,446 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
       {/* ADD / EDIT USER MODAL */}
       {(isAddModalOpen || editingUser) && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
             {/* Modal Header */}
             <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-                <Users className="w-5 h-5 text-emerald-600" />
-                {editingUser ? 'Edit Data Petugas' : 'Tambah Petugas Kebersihan Baru'}
+                <UserPlus className="w-5 h-5 text-emerald-600" />
+                <span>
+                  {editingUser
+                    ? 'Edit Profil Akun Personel'
+                    : registeredReceipt
+                    ? 'Akun Berhasil Didaftarkan'
+                    : 'Daftarkan Akun Baru (Email & Kata Sandi)'}
+                </span>
               </h3>
               <button
+                type="button"
                 onClick={() => {
                   setIsAddModalOpen(false);
                   setEditingUser(null);
+                  setRegisteredReceipt(null);
                 }}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg"
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Modal Form */}
-            <form onSubmit={handleSaveUser} className="p-5 space-y-4 text-xs sm:text-sm">
-              {formError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                  <span>{formError}</span>
-                </div>
-              )}
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Nama Lengkap Petugas <span className="text-rose-600">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Contoh: MUHAMMAD RIZKI"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl uppercase focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Username Login <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="contoh: rizki"
-                    value={formData.username}
-                    onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl lowercase focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
+            {registeredReceipt ? (
+              <div className="p-5 space-y-4 text-xs sm:text-sm">
+                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950 flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-emerald-900">
+                      Pendaftaran Akun Selesai ({registeredReceipt.name})
+                    </p>
+                    <p className="text-xs text-emerald-800 leading-relaxed">
+                      {registeredReceipt.message}
+                    </p>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Kata Sandi {editingUser ? '(Opsional)' : '(Default: 123456)'}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder={editingUser ? 'Kosongkan = tetap' : 'Default: 123456'}
-                      value={formData.password}
-                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                      className="w-full pl-3 pr-9 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                    <span className="font-bold text-slate-800">Rincian Kredensial Login</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800">
+                      {registeredReceipt.role}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <span className="text-slate-500">Email Login</span>
+                    <span className="col-span-2 font-mono font-bold text-slate-900 break-all">
+                      {registeredReceipt.email}
+                    </span>
+                    <span className="text-slate-500">Username</span>
+                    <span className="col-span-2 font-mono text-slate-800">
+                      @{registeredReceipt.username}
+                    </span>
+                    <span className="text-slate-500">Kata Sandi</span>
+                    <span className="col-span-2 font-mono font-bold text-emerald-700">
+                      {registeredReceipt.authStatus === 'already_exists'
+                        ? '(Sesuai akun Firebase sebelumnya / gunakan Reset Sandi)'
+                        : registeredReceipt.password}
+                    </span>
+                    <span className="text-slate-500">Email Verifikasi</span>
+                    <span className="col-span-2 text-slate-700">
+                      {registeredReceipt.emailSent
+                        ? 'Terkirim ke kotak masuk/spam personel (wajib klik 1x sebelum login)'
+                        : registeredReceipt.authStatus === 'already_exists'
+                        ? 'Akun sudah terdaftar sebelumnya di Firebase'
+                        : 'Tertunda — personel dapat minta kirim ulang saat login'}
+                    </span>
+                  </div>
+                </div>
+
+                {!registeredReceipt.cloudSynced && (
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+                    Profil personel tersimpan di perangkat ini dan menunggu Superadmin menghubungkan Cloud Sync untuk masuk ke daftar direktori pusat.
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={handleCopyRegisteredCredentials}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    {copiedCredentials ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                    <span>{copiedCredentials ? 'Tersalin!' : 'Salin Info Akun (WhatsApp)'}</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setShowPassword((prev) => !prev)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                      title={showPassword ? 'Sembunyikan' : 'Tampilkan'}
+                      onClick={handleOpenAddModal}
+                      className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
                     >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      Daftarkan Lagi
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRegisteredReceipt(null);
+                        setIsAddModalOpen(false);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Selesai
                     </button>
                   </div>
                 </div>
               </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Email Aktif <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    placeholder="nama@gmail.com"
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
+            ) : (
+              /* Modal Form */
+              <form onSubmit={handleSaveUser} className="p-5 space-y-4 text-xs sm:text-sm">
+                {formError && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span>{formError}</span>
+                  </div>
+                )}
 
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    PIN Cepat (Opsional)
+                    Nama Lengkap Personel <span className="text-rose-600">*</span>
                   </label>
                   <input
                     type="text"
-                    inputMode="numeric"
-                    maxLength={8}
-                    placeholder="Contoh: 1234"
-                    value={formData.pin}
-                    onChange={(e) => setFormData({ ...formData, pin: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    required
+                    placeholder="Contoh: MUHAMMAD RIZKI"
+                    value={formData.name}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFormData((prev) => ({
+                        ...prev,
+                        name: val,
+                        username:
+                          !usernameEditedManually && !prev.email
+                            ? deriveUsernameFromEmailOrName('', val)
+                            : prev.username,
+                      }));
+                    }}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl uppercase focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Peran (Role)
-                  </label>
-                  <select
-                    value={formData.role}
-                    onChange={(e) => setFormData({ ...formData, role: e.target.value as UserRole })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
-                  >
-                    <option value="petugas">Petugas Kebersihan</option>
-                    <option value="supervisor">Supervisor</option>
-                    <option value="superadmin">Super Admin</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    No. HP / WhatsApp
-                  </label>
-                  <input
-                    type="tel"
-                    placeholder="0812xxxxxxxx"
-                    value={formData.phone}
-                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-              </div>
-
-              {/* Dynamic Role Capability Checklist Preview */}
-              <div
-                className={`p-3.5 rounded-xl border text-xs space-y-2 ${
-                  formData.role === 'superadmin'
-                    ? 'bg-amber-50/80 border-amber-200 text-amber-950'
-                    : formData.role === 'supervisor'
-                    ? 'bg-blue-50/80 border-blue-200 text-blue-950'
-                    : 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
-                }`}
-              >
-                <div className="flex items-center justify-between font-bold">
-                  <span className="flex items-center gap-1.5">
-                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    <span>
-                      Ringkasan Hak Akses Peran:{' '}
-                      {formData.role === 'superadmin'
-                        ? 'Super Admin'
-                        : formData.role === 'supervisor'
-                        ? 'Supervisor'
-                        : 'Petugas Kebersihan'}
-                    </span>
-                  </span>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white border font-bold uppercase">
-                    {formData.role}
-                  </span>
-                </div>
-
-                <div className="space-y-1 text-[11px]">
-                  {formData.role === 'petugas' && (
-                    <>
-                      <div className="flex items-center gap-1.5 text-emerald-800">
-                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Input laporan kebersihan harian & foto bukti (kamera/file)</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-emerald-800">
-                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Login praktis menggunakan Username/Email + Sandi atau PIN</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-emerald-800">
-                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Revisi laporan pribadi jika berstatus "Perlu Perbaikan"</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-slate-500">
-                        <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span>Hanya dapat melaporkan ruangan yang ditugaskan dalam jadwal</span>
-                      </div>
-                    </>
-                  )}
-
-                  {formData.role === 'supervisor' && (
-                    <>
-                      <div className="flex items-center gap-1.5 text-blue-800">
-                        <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                        <span>Memiliki seluruh akses pelaporan dan supervisi ruangan</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-blue-800">
-                        <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                        <span>Verifikasi & validasi laporan petugas (Setujui / Perlu Perbaikan)</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-blue-800">
-                        <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                        <span>Memberi catatan evaluasi & cetak berita acara resmi</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-slate-500">
-                        <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span>Tidak memiliki akses hapus laporan atau kelola personil</span>
-                      </div>
-                    </>
-                  )}
-
-                  {formData.role === 'superadmin' && (
-                    <>
-                      <div className="flex items-center gap-1.5 text-amber-900 font-medium">
-                        <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>Hak akses penuh (Full Access) ke seluruh modul sistem</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-amber-900 font-medium">
-                        <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>Pengelolaan form (ruangan, checklist) & jadwal penugasan petugas</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-amber-900 font-medium">
-                        <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>Kontrol Cloud Database & folder penyimpanan Google Drive BAZNAS</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-amber-900 font-medium">
-                        <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>Hapus laporan keliru & pulihkan cadangan data JSON/CSV</span>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950 flex items-start justify-between gap-2">
-                <div className="flex items-start gap-2">
-                  <Key className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <p className="font-bold text-emerald-900">Autentikasi Cloud Email &amp; Kata Sandi</p>
-                    <p className="text-[11px] text-emerald-800 mt-0.5 leading-relaxed">
-                      {editingUser
-                        ? 'Perubahan data profil langsung tersinkron. Jika ingin mengganti kata sandi login Cloud personel, kirim link reset kata sandi ke emailnya.'
-                        : 'Akun login Cloud akan dibuat otomatis dengan email & kata sandi ini, dan link verifikasi 1 kali dikirim ke email petugas.'}
-                    </p>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Alamat Email Login <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="nama@gmail.com"
+                      value={formData.email}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setFormData((prev) => ({
+                          ...prev,
+                          email: val,
+                          username: !usernameEditedManually
+                            ? deriveUsernameFromEmailOrName(val, prev.name)
+                            : prev.username,
+                        }));
+                      }}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Username <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="contoh: rizki"
+                      value={formData.username}
+                      onChange={(e) => {
+                        setUsernameEditedManually(true);
+                        setFormData({ ...formData, username: e.target.value });
+                      }}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl lowercase focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
                   </div>
                 </div>
-                {editingUser && onSendPasswordReset && formData.email && (
-                  <button
-                    type="button"
-                    onClick={() => onSendPasswordReset(formData.email)}
-                    className="shrink-0 px-2.5 py-1.5 bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-[11px] font-bold cursor-pointer"
-                  >
-                    Kirim Reset Sandi
-                  </button>
+
+                {!editingUser && (
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <Lock className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Kata Sandi Akun Baru (Min. 6 Karakter)</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleGeneratePassword}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[11px] font-bold transition-colors cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Buat Sandi Acak</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Kata Sandi <span className="text-rose-600">*</span>
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            required
+                            minLength={6}
+                            autoComplete="new-password"
+                            placeholder="Minimal 6 karakter"
+                            value={formData.password}
+                            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                            className="w-full pl-3 pr-9 py-2 border border-slate-300 bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword((prev) => !prev)}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                            title={showPassword ? 'Sembunyikan' : 'Tampilkan'}
+                          >
+                            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Konfirmasi Kata Sandi <span className="text-rose-600">*</span>
+                        </label>
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          required
+                          minLength={6}
+                          autoComplete="new-password"
+                          placeholder="Ulangi kata sandi"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 )}
-              </div>
 
-              <div className="pt-2 flex items-center justify-between border-t border-slate-100">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.isActive}
-                    onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
-                    className="w-4 h-4 text-emerald-600 rounded"
-                  />
-                  <span className="font-semibold text-slate-700">Status Akun Aktif</span>
-                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Peran (Role)
+                    </label>
+                    <select
+                      value={formData.role}
+                      onChange={(e) => setFormData({ ...formData, role: e.target.value as UserRole })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                    >
+                      <option value="petugas">Petugas Kebersihan</option>
+                      <option value="supervisor">Supervisor</option>
+                      <option value="superadmin">Super Admin</option>
+                    </select>
+                  </div>
 
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAddModalOpen(false);
-                      setEditingUser(null);
-                    }}
-                    className="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl font-medium"
-                  >
-                    Batal
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-sm"
-                  >
-                    Simpan
-                  </button>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      No. HP / WhatsApp
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="0812xxxxxxxx"
+                      value={formData.phone}
+                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
                 </div>
-              </div>
-            </form>
+
+                {/* Dynamic Role Capability Checklist Preview */}
+                <div
+                  className={`p-3.5 rounded-xl border text-xs space-y-2 ${
+                    formData.role === 'superadmin'
+                      ? 'bg-amber-50/80 border-amber-200 text-amber-950'
+                      : formData.role === 'supervisor'
+                      ? 'bg-blue-50/80 border-blue-200 text-blue-950'
+                      : 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
+                  }`}
+                >
+                  <div className="flex items-center justify-between font-bold">
+                    <span className="flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      <span>
+                        Ringkasan Hak Akses Peran:{' '}
+                        {formData.role === 'superadmin'
+                          ? 'Super Admin'
+                          : formData.role === 'supervisor'
+                          ? 'Supervisor'
+                          : 'Petugas Kebersihan'}
+                      </span>
+                    </span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white border font-bold uppercase">
+                      {formData.role}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1 text-[11px]">
+                    {formData.role === 'petugas' && (
+                      <>
+                        <div className="flex items-center gap-1.5 text-emerald-800">
+                          <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>Input laporan kebersihan harian & foto bukti (kamera/file)</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-emerald-800">
+                          <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>Login menggunakan Email &amp; Kata Sandi terdaftar</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-emerald-800">
+                          <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>Revisi laporan pribadi jika berstatus "Perlu Perbaikan"</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-slate-500">
+                          <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span>Hanya dapat melaporkan ruangan yang ditugaskan dalam jadwal</span>
+                        </div>
+                      </>
+                    )}
+
+                    {formData.role === 'supervisor' && (
+                      <>
+                        <div className="flex items-center gap-1.5 text-blue-800">
+                          <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                          <span>Memiliki seluruh akses pelaporan dan supervisi ruangan</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-blue-800">
+                          <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                          <span>Verifikasi & validasi laporan petugas (Setujui / Perlu Perbaikan)</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-blue-800">
+                          <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                          <span>Memberi catatan evaluasi & cetak berita acara resmi</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-slate-500">
+                          <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span>Tidak memiliki akses hapus laporan atau kelola personil</span>
+                        </div>
+                      </>
+                    )}
+
+                    {formData.role === 'superadmin' && (
+                      <>
+                        <div className="flex items-center gap-1.5 text-amber-900 font-medium">
+                          <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>Hak akses penuh (Full Access) ke seluruh modul sistem</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-amber-900 font-medium">
+                          <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>Pengelolaan form (ruangan, checklist) & jadwal penugasan petugas</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-amber-900 font-medium">
+                          <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>Kontrol Cloud Database & folder penyimpanan Google Drive BAZNAS</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-amber-900 font-medium">
+                          <Check className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>Hapus laporan keliru & pulihkan cadangan data JSON/CSV</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950 flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    <Key className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-emerald-900">Autentikasi Cloud Email &amp; Kata Sandi</p>
+                      <p className="text-[11px] text-emerald-800 mt-0.5 leading-relaxed">
+                        {editingUser
+                          ? 'Perubahan data profil langsung tersinkron. Jika ingin mengganti kata sandi login Cloud personel, kirim link reset kata sandi ke emailnya.'
+                          : 'Akun login Firebase Auth akan didaftarkan dengan Email & Kata Sandi ini (tanpa menyimpan kata sandi di database), dan link verifikasi 1x dikirim ke email personel.'}
+                      </p>
+                    </div>
+                  </div>
+                  {editingUser && onSendPasswordReset && formData.email && (
+                    <button
+                      type="button"
+                      onClick={() => onSendPasswordReset(formData.email)}
+                      className="shrink-0 px-2.5 py-1.5 bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-[11px] font-bold cursor-pointer"
+                    >
+                      Kirim Reset Sandi
+                    </button>
+                  )}
+                </div>
+
+                <div className="pt-2 flex items-center justify-between border-t border-slate-100">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.isActive}
+                      onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
+                      className="w-4 h-4 text-emerald-600 rounded"
+                    />
+                    <span className="font-semibold text-slate-700">Status Akun Aktif</span>
+                  </label>
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={isSubmittingUser}
+                      onClick={() => {
+                        setIsAddModalOpen(false);
+                        setEditingUser(null);
+                      }}
+                      className="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl font-medium cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSubmittingUser}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                    >
+                      {isSubmittingUser && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>
+                        {isSubmittingUser
+                          ? 'Mendaftarkan...'
+                          : editingUser
+                          ? 'Simpan Perubahan'
+                          : 'Daftarkan Akun'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
