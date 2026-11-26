@@ -11,6 +11,7 @@ import {
   Firestore,
 } from 'firebase/firestore';
 import rawConfig from '../../firebase-applet-config.json';
+import { recordFirestoreRead } from './firestoreMeter';
 
 export const firebaseConfig = {
   apiKey: (rawConfig as any)?.apiKey || import.meta.env.VITE_FIREBASE_API_KEY || '',
@@ -78,6 +79,7 @@ export async function testFirestoreConnection(): Promise<boolean> {
 
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    recordFirestoreRead('public_summary', 1, false);
     try {
       if (typeof sessionStorage !== 'undefined') {
         sessionStorage.setItem(CONN_TESTED_SESSION_KEY, 'true');

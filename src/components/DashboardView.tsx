@@ -11,6 +11,7 @@ import {
 import { downloadReportsPdf } from '../utils/pdfExport';
 import { extractGoogleDriveFileId, getGoogleDriveImageCandidates } from '../utils/imageCompressor';
 import { doesReportNeedPhotoHydration } from '../services/firestoreSync';
+import { buildDriveDirectViewUrl, fetchDriveImageBlobUrl } from '../services/googleDriveService';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -51,7 +52,9 @@ import {
   ExternalLink,
   ImageOff,
   Camera,
+  Cloud,
   CloudOff,
+  Loader2,
   RefreshCw,
 } from 'lucide-react';
 
@@ -85,23 +88,94 @@ function formatLocalYmd(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function getEffectiveDisplayPhotos(report: CleaningReport): string[] {
+  const current = Array.isArray(report.fotoBukti) ? report.fotoBukti.filter(Boolean) : [];
+  const rawLinks = Array.isArray(report.drivePhotoLinks)
+    ? report.drivePhotoLinks.filter((l) => typeof l === 'string' && l.trim().length > 0)
+    : [];
+
+  if (rawLinks.length === 0) {
+    return current;
+  }
+
+  const driveUrls = rawLinks.map((link) => {
+    const fid = extractGoogleDriveFileId(link);
+    return fid ? buildDriveDirectViewUrl(fid) : link;
+  });
+
+  if (current.length === 0) {
+    return driveUrls;
+  }
+
+  const hasOnlyMicroThumbs = current.every(
+    (p) => !p.startsWith('http') && p.length <= 26_000
+  );
+  if (hasOnlyMicroThumbs || (current.length < driveUrls.length && !current.some((p) => p.length > 26_000))) {
+    return driveUrls;
+  }
+
+  return current;
+}
+
 const ReportPhotoImage: React.FC<{
   src: string;
   alt: string;
   className?: string;
   compact?: boolean;
-}> = ({ src, alt, className = '', compact = false }) => {
+  isGoogleDriveConnected?: boolean;
+  onConnectGoogleDrive?: () => Promise<void>;
+}> = ({ src, alt, className = '', compact = false, isGoogleDriveConnected = false, onConnectGoogleDrive }) => {
   const candidates = useMemo(() => getGoogleDriveImageCandidates(src), [src]);
   const [candidateIdx, setCandidateIdx] = useState(0);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [isFetchingBlob, setIsFetchingBlob] = useState(false);
   const [failed, setFailed] = useState(false);
+
+  const driveFileId = useMemo(() => extractGoogleDriveFileId(src), [src]);
 
   useEffect(() => {
     setCandidateIdx(0);
+    setBlobUrl(null);
+    setIsFetchingBlob(false);
     setFailed(false);
   }, [src]);
 
+  useEffect(() => {
+    if (failed && driveFileId && isGoogleDriveConnected && !blobUrl && !isFetchingBlob) {
+      let active = true;
+      setIsFetchingBlob(true);
+      fetchDriveImageBlobUrl(src)
+        .then((url) => {
+          if (!active) return;
+          if (url) {
+            setBlobUrl(url);
+            setFailed(false);
+          }
+        })
+        .finally(() => {
+          if (active) setIsFetchingBlob(false);
+        });
+      return () => {
+        active = false;
+      };
+    }
+  }, [failed, driveFileId, isGoogleDriveConnected, blobUrl, isFetchingBlob, src]);
+
+  if (blobUrl) {
+    return <img src={blobUrl} alt={alt} className={className} />;
+  }
+
+  if (isFetchingBlob) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-100 text-slate-500 gap-1.5 p-3">
+        <Loader2 className="w-5 h-5 animate-spin text-emerald-600" />
+        <span className="text-[11px] font-medium">Memuat foto dari Google Drive...</span>
+      </div>
+    );
+  }
+
   if (failed || candidates.length === 0) {
-    const isExternalUrl = !!extractGoogleDriveFileId(src) || src.startsWith('http');
+    const isExternalUrl = Boolean(driveFileId) || src.startsWith('http');
     return (
       <div
         className={`w-full h-full flex flex-col items-center justify-center bg-slate-100 text-slate-500 text-center ${
@@ -113,18 +187,33 @@ const ReportPhotoImage: React.FC<{
           {isExternalUrl ? 'Pratinjau foto Google Drive dibatasi' : 'Foto tidak dapat dimuat'}
         </span>
         {isExternalUrl && (
-          <a
-            href={src}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className={`inline-flex items-center gap-1 font-semibold underline ${
-              compact ? 'text-[11px] text-emerald-700 hover:text-emerald-900' : 'text-xs text-emerald-400 hover:text-emerald-300'
-            }`}
-          >
-            <ExternalLink className="w-3 h-3" />
-            <span>Buka Foto di Google Drive</span>
-          </a>
+          <div className="flex flex-col items-center gap-1.5">
+            {driveFileId && !isGoogleDriveConnected && onConnectGoogleDrive && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onConnectGoogleDrive().catch(() => {});
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold transition-colors cursor-pointer"
+              >
+                <Cloud className="w-3 h-3" />
+                <span>Hubungkan Drive untuk Muat</span>
+              </button>
+            )}
+            <a
+              href={driveFileId ? `https://drive.google.com/file/d/${driveFileId}/view` : src}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className={`inline-flex items-center gap-1 font-semibold underline ${
+                compact ? 'text-[11px] text-emerald-700 hover:text-emerald-900' : 'text-xs text-emerald-400 hover:text-emerald-300'
+              }`}
+            >
+              <ExternalLink className="w-3 h-3" />
+              <span>Buka Foto di Google Drive</span>
+            </a>
+          </div>
         )}
       </div>
     );
@@ -139,6 +228,19 @@ const ReportPhotoImage: React.FC<{
       onError={() => {
         if (candidateIdx < candidates.length - 1) {
           setCandidateIdx((prev) => prev + 1);
+        } else if (driveFileId && isGoogleDriveConnected) {
+          setIsFetchingBlob(true);
+          fetchDriveImageBlobUrl(src)
+            .then((url) => {
+              if (url) {
+                setBlobUrl(url);
+                setFailed(false);
+              } else {
+                setFailed(true);
+              }
+            })
+            .catch(() => setFailed(true))
+            .finally(() => setIsFetchingBlob(false));
         } else {
           setFailed(true);
         }
@@ -169,6 +271,12 @@ interface DashboardViewProps {
   onRefreshCloudReports?: () => Promise<{ syncedCount: number; quotaExceeded?: boolean }>;
   onLoadOlderReports?: () => Promise<{ loadedCount: number; quotaExceeded?: boolean }>;
   onLoadReportPhotos?: (reportId: string) => Promise<string[] | null>;
+  isGoogleDriveConnected?: boolean;
+  onConnectGoogleDrive?: () => Promise<void>;
+  onSyncReportsFromDrive?: () => Promise<{ totalLoaded: number; newlyAdded: number }>;
+  pendingDriveArchiveCount?: number;
+  isAutoArchivingDrive?: boolean;
+  onArchivePendingToDrive?: () => Promise<void> | void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -192,6 +300,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onRefreshCloudReports,
   onLoadOlderReports,
   onLoadReportPhotos,
+  isGoogleDriveConnected = false,
+  onConnectGoogleDrive,
+  onSyncReportsFromDrive,
+  pendingDriveArchiveCount = 0,
+  isAutoArchivingDrive = false,
+  onArchivePendingToDrive,
 }) => {
   // Filters state
   const [dateFilter, setDateFilter] = useState<'today' | '7days' | 'month' | 'specific_month' | 'all'>('today');
@@ -224,6 +338,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [isLoadingOlderReports, setIsLoadingOlderReports] = useState<boolean>(false);
   const [hasRequestedOlderReports, setHasRequestedOlderReports] = useState<boolean>(false);
   const [isRefreshingCloud, setIsRefreshingCloud] = useState<boolean>(false);
+  const [isSyncingDrive, setIsSyncingDrive] = useState<boolean>(false);
 
   // Target chart inspected date (null = today)
   const [inspectedTargetDate, setInspectedTargetDate] = useState<string | null>(null);
@@ -252,6 +367,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       showApprovalToast('Gagal memuat pembaruan Cloud, menampilkan data lokal.', 'info');
     } finally {
       setIsRefreshingCloud(false);
+    }
+  };
+
+  const handleManualDriveSync = async () => {
+    if (!onSyncReportsFromDrive || isSyncingDrive) return;
+    setIsSyncingDrive(true);
+    try {
+      const res = await onSyncReportsFromDrive();
+      showApprovalToast(
+        res.totalLoaded > 0
+          ? `Berhasil memuat ${res.totalLoaded} laporan dari Google Drive (${res.newlyAdded} baru).`
+          : 'Folder Google Drive sudah diperiksa, belum ada cadangan laporan baru.',
+        res.totalLoaded > 0 ? 'success' : 'info'
+      );
+    } catch {
+      showApprovalToast('Gagal memuat laporan dari Google Drive. Pastikan izin akun aktif.', 'info');
+    } finally {
+      setIsSyncingDrive(false);
     }
   };
 
@@ -2355,6 +2488,71 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* 5. REPORTS LOG & VERIFICATION SECTION */}
       <div id="report-history-table" className="space-y-4">
+        {/* Superadmin Google Drive Auto-Archival Strip for Officer Reports */}
+        {isSuperAdmin && pendingDriveArchiveCount > 0 && (
+          <div
+            className={`rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs border ${
+              isGoogleDriveConnected
+                ? 'bg-emerald-50/80 border-emerald-200'
+                : 'bg-amber-50/80 border-amber-200'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 text-slate-800">
+              <Cloud
+                className={`w-4 h-4 shrink-0 ${
+                  isGoogleDriveConnected ? 'text-emerald-600' : 'text-amber-600'
+                }`}
+              />
+              <div>
+                <span className="font-bold text-slate-900">
+                  Arsip Foto ke Google Drive Superadmin:
+                </span>{' '}
+                {isAutoArchivingDrive ? (
+                  <span>
+                    Sedang mengunggah {pendingDriveArchiveCount} laporan petugas ke Google Drive...
+                  </span>
+                ) : isGoogleDriveConnected ? (
+                  <span>
+                    <strong className="tabular-nums">{pendingDriveArchiveCount} laporan petugas</strong> siap dipindahkan ke folder Google Drive SCB.
+                  </span>
+                ) : (
+                  <span>
+                    <strong className="tabular-nums">{pendingDriveArchiveCount} laporan petugas</strong> menunggu diarsipkan ke Google Drive Superadmin (petugas upload via aplikasi).
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {!isGoogleDriveConnected && onConnectGoogleDrive ? (
+                <button
+                  type="button"
+                  onClick={() => onConnectGoogleDrive().catch(() => {})}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>Hubungkan GDrive Superadmin &amp; Arsipkan</span>
+                </button>
+              ) : onArchivePendingToDrive ? (
+                <button
+                  type="button"
+                  disabled={isAutoArchivingDrive}
+                  onClick={() => {
+                    Promise.resolve(onArchivePendingToDrive()).catch(() => {});
+                  }}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>
+                    {isAutoArchivingDrive
+                      ? 'Mengarsipkan ke Drive...'
+                      : `Arsipkan Sekarang (${pendingDriveArchiveCount})`}
+                  </span>
+                </button>
+              ) : null}
+            </div>
+          </div>
+        )}
+
         {/* Supervisor Action Bar when pending reports exist */}
         {isSupervisorOrAdmin && verificationCounts.pending > 0 && (
           <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
@@ -2410,6 +2608,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   >
                     <RefreshCw className={`w-3 h-3 ${isRefreshingCloud ? 'animate-spin text-emerald-600' : ''}`} />
                     <span>{isRefreshingCloud ? 'Memuat...' : 'Perbarui Data'}</span>
+                  </button>
+                )}
+                {isSupervisorOrAdmin && onSyncReportsFromDrive && (
+                  <button
+                    type="button"
+                    onClick={handleManualDriveSync}
+                    disabled={isSyncingDrive}
+                    title="Muat laporan & tautan foto bukti langsung dari folder Google Drive SCB"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200 disabled:opacity-60 text-blue-800 text-[11px] font-semibold transition-colors cursor-pointer"
+                  >
+                    {isSyncingDrive ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+                    ) : (
+                      <Cloud className="w-3 h-3 text-blue-600" />
+                    )}
+                    <span>{isSyncingDrive ? 'Memuat Drive...' : 'Muat dari GDrive'}</span>
                   </button>
                 )}
               </div>
@@ -2698,19 +2912,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     className="relative aspect-16/9 bg-slate-100 cursor-pointer group overflow-hidden"
                     onClick={() => handleOpenDetail(report)}
                   >
-                    {report.fotoBukti && report.fotoBukti.length > 0 ? (
-                      <ReportPhotoImage
-                        src={report.fotoBukti[0]}
-                        alt={`Bukti ${report.area}`}
-                        compact
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 text-xs gap-1">
-                        <Building2 className="w-5 h-5 text-slate-300" />
-                        <span>Tidak ada foto</span>
-                      </div>
-                    )}
+                    {(() => {
+                      const cardPhotos = getEffectiveDisplayPhotos(report);
+                      if (cardPhotos.length > 0) {
+                        return (
+                          <ReportPhotoImage
+                            src={cardPhotos[0]}
+                            alt={`Bukti ${report.area}`}
+                            compact
+                            isGoogleDriveConnected={isGoogleDriveConnected}
+                            onConnectGoogleDrive={onConnectGoogleDrive}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        );
+                      }
+                      return (
+                        <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 text-xs gap-1">
+                          <Building2 className="w-5 h-5 text-slate-300" />
+                          <span>Tidak ada foto</span>
+                        </div>
+                      );
+                    })()}
 
                     {/* Top Status Scrim Overlay */}
                     <div className="absolute inset-x-0 top-0 p-2.5 bg-gradient-to-b from-black/45 to-transparent flex items-center justify-between gap-2">
@@ -3006,57 +3228,76 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              <div>
-                <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
-                  <span>Foto Bukti Kegiatan</span>
-                  <span className="text-slate-400 font-normal normal-case">
-                    {loadingPhotosReportId === currentDetailReport.id
-                      ? 'Memuat foto resolusi penuh...'
-                      : 'Klik foto untuk perbesar'}
-                  </span>
-                </h4>
-                {currentDetailReport.fotoBukti && currentDetailReport.fotoBukti.length > 0 ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                    {currentDetailReport.fotoBukti.map((url, i) => (
-                      <div
-                        key={i}
-                        onClick={() => setSelectedImageIndex(i)}
-                        className="aspect-4/3 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 cursor-pointer hover:opacity-90 transition-opacity relative group"
-                      >
-                        <ReportPhotoImage
-                          src={url}
-                          alt={`Foto bukti ${i + 1}`}
-                          compact
-                          className="w-full h-full object-cover"
-                        />
-                        <div className="pointer-events-none absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-semibold transition-opacity">
-                          Perbesar Foto
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-400 italic">Tidak ada foto dilampirkan.</p>
-                )}
+              {(() => {
+                const detailPhotos = getEffectiveDisplayPhotos(currentDetailReport);
+                const isDriveBacked =
+                  detailPhotos.some((p) => Boolean(extractGoogleDriveFileId(p))) ||
+                  (currentDetailReport.drivePhotoLinks && currentDetailReport.drivePhotoLinks.length > 0);
 
-                {currentDetailReport.drivePhotoLinks && currentDetailReport.drivePhotoLinks.length > 0 && (
-                  <div className="mt-2.5 flex flex-wrap items-center gap-3 text-xs">
-                    <span className="text-slate-500 font-medium">Arsip Google Drive:</span>
-                    {currentDetailReport.drivePhotoLinks.map((driveUrl, idx) => (
-                      <a
-                        key={idx}
-                        href={driveUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-900 font-semibold underline"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>Foto {idx + 1}</span>
-                      </a>
-                    ))}
+                return (
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-2 flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <span>Foto Bukti Kegiatan</span>
+                        {isDriveBacked && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-800 border border-blue-200 text-[10px] font-semibold normal-case">
+                            <Cloud className="w-3 h-3 text-blue-600" />
+                            <span>Disimpan &amp; dimuat dari Google Drive</span>
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-slate-400 font-normal normal-case">
+                        {loadingPhotosReportId === currentDetailReport.id
+                          ? 'Memuat foto resolusi penuh...'
+                          : 'Klik foto untuk perbesar'}
+                      </span>
+                    </h4>
+                    {detailPhotos.length > 0 ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                        {detailPhotos.map((url, i) => (
+                          <div
+                            key={i}
+                            onClick={() => setSelectedImageIndex(i)}
+                            className="aspect-4/3 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 cursor-pointer hover:opacity-90 transition-opacity relative group"
+                          >
+                            <ReportPhotoImage
+                              src={url}
+                              alt={`Foto bukti ${i + 1}`}
+                              compact
+                              isGoogleDriveConnected={isGoogleDriveConnected}
+                              onConnectGoogleDrive={onConnectGoogleDrive}
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="pointer-events-none absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-semibold transition-opacity">
+                              Perbesar Foto
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 italic">Tidak ada foto dilampirkan.</p>
+                    )}
+
+                    {currentDetailReport.drivePhotoLinks && currentDetailReport.drivePhotoLinks.length > 0 && (
+                      <div className="mt-2.5 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="text-slate-500 font-medium">Arsip Google Drive:</span>
+                        {currentDetailReport.drivePhotoLinks.map((driveUrl, idx) => (
+                          <a
+                            key={idx}
+                            href={driveUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-900 font-semibold underline"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Foto {idx + 1}</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
 
               <div>
                 <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-2">
@@ -3154,29 +3395,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* PHOTO LIGHTBOX MODAL */}
       {selectedImageIndex !== null &&
-        currentDetailReport?.fotoBukti?.[selectedImageIndex] && (
-          <div
-            className="fixed inset-0 z-60 bg-black/85 flex items-center justify-center p-4"
-            onClick={() => setSelectedImageIndex(null)}
-          >
+        currentDetailReport &&
+        (() => {
+          const lightboxPhotos = getEffectiveDisplayPhotos(currentDetailReport);
+          const activePhotoSrc = lightboxPhotos[selectedImageIndex];
+          if (!activePhotoSrc) return null;
+          return (
             <div
-              className="relative max-w-5xl max-h-[92vh]"
-              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 z-60 bg-black/85 flex items-center justify-center p-4"
+              onClick={() => setSelectedImageIndex(null)}
             >
-              <ReportPhotoImage
-                src={currentDetailReport.fotoBukti[selectedImageIndex]}
-                alt={`Bukti foto ${selectedImageIndex + 1} resolusi HD`}
-                className="max-w-full max-h-[88vh] object-contain rounded-xl shadow-2xl"
-              />
-              <button
-                onClick={() => setSelectedImageIndex(null)}
-                className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black cursor-pointer"
+              <div
+                className="relative max-w-5xl max-h-[92vh]"
+                onClick={(e) => e.stopPropagation()}
               >
-                <X className="w-5 h-5" />
-              </button>
+                <ReportPhotoImage
+                  src={activePhotoSrc}
+                  alt={`Bukti foto ${selectedImageIndex + 1} resolusi HD`}
+                  isGoogleDriveConnected={isGoogleDriveConnected}
+                  onConnectGoogleDrive={onConnectGoogleDrive}
+                  className="max-w-full max-h-[88vh] object-contain rounded-xl shadow-2xl"
+                />
+                <button
+                  onClick={() => setSelectedImageIndex(null)}
+                  className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
     </div>
   );
 };

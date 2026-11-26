@@ -15,13 +15,20 @@ import {
   isAutoPhotosUploadEnabled,
   setAutoPhotosUploadEnabled,
   executeAutoBackupToDrive,
-  batchUploadAllReportsPhotosToDrive
+  batchUploadAllReportsPhotosToDrive,
+  listDriveFiles,
+  readJsonFromDrive,
+  deleteDriveFile,
+  fetchReportsFromGoogleDrive,
+  DriveFileItem
 } from '../services/googleDriveService';
-import { fetchReportPhotosFromCloud } from '../services/firestoreSync';
+import { fetchReportPhotosFromCloud, cleanupTemporaryReportPhotosInCloud } from '../services/firestoreSync';
+import { FirestoreMeterCard } from './FirestoreMeterCard';
 import { 
   googleSignIn, 
   getGoogleAccessToken,
   getSavedToken,
+  hasActiveDriveToken,
   getCurrentGoogleProfile,
   getActiveOAuthClientId,
   setActiveOAuthClientId,
@@ -78,7 +85,12 @@ interface StorageBackupManagerProps {
   onUpdateReport?: (id: string, updates: Partial<CleaningReport>) => void;
   onRestoreReports?: (reports: CleaningReport[]) => void;
   onRestoreFullBackup?: (payload: FullBackupPayload, mode: 'replace' | 'merge') => void;
+  onSyncReportsFromDrive?: (
+    customReportsFromDrive?: CleaningReport[],
+    filesScannedOverride?: number
+  ) => Promise<{ totalLoaded: number; newlyAdded: number }>;
   onResetData?: () => void;
+  isFirestoreQuotaLimited?: boolean;
 }
 
 export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
@@ -92,7 +104,9 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   onUpdateReport,
   onRestoreReports,
   onRestoreFullBackup,
+  onSyncReportsFromDrive,
   onResetData,
+  isFirestoreQuotaLimited = false,
 }) => {
   // Configured Cloud Folder (Permanently fixed to official SCB folder)
   const folderId = DEFAULT_DATABASE_FOLDER_ID;
@@ -128,12 +142,27 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => Boolean(getSavedToken()));
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
 
+  // Google Drive Browser & Fetch State
+  const [driveFiles, setDriveFiles] = useState<DriveFileItem[]>([]);
+  const [isLoadingDriveFiles, setIsLoadingDriveFiles] = useState(false);
+  const [isSyncingFromDrive, setIsSyncingFromDrive] = useState(false);
+  const [loadingRestoreFileId, setLoadingRestoreFileId] = useState<string | null>(null);
+  const [driveFilePendingDelete, setDriveFilePendingDelete] = useState<DriveFileItem | null>(null);
+  const [isDeletingDriveFile, setIsDeletingDriveFile] = useState(false);
+
   useEffect(() => {
+    const handleAuthUpdated = () => {
+      setIsGoogleConnected(hasActiveDriveToken());
+      const latestProf = getCurrentGoogleProfile();
+      if (latestProf) setGoogleProfile(latestProf);
+    };
     const handleAuthCleared = () => {
       setIsGoogleConnected(false);
     };
+    window.addEventListener('scb_gdrive_auth_updated', handleAuthUpdated);
     window.addEventListener('scb_gdrive_auth_cleared', handleAuthCleared);
     return () => {
+      window.removeEventListener('scb_gdrive_auth_updated', handleAuthUpdated);
       window.removeEventListener('scb_gdrive_auth_cleared', handleAuthCleared);
     };
   }, []);
@@ -514,10 +543,23 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       if (result.modifiedReports.length > 0) {
         if (onUpdateReport) {
           for (const mod of result.modifiedReports) {
-            onUpdateReport(mod.id, { drivePhotoLinks: mod.drivePhotoLinks });
+            onUpdateReport(mod.id, {
+              fotoBukti: mod.fotoBukti,
+              fotoCount: mod.fotoCount,
+              photosOffloaded: mod.photosOffloaded,
+              drivePhotoLinks: mod.drivePhotoLinks,
+            });
+            if (!mod.photosOffloaded) {
+              await cleanupTemporaryReportPhotosInCloud(mod.id).catch(() => {});
+            }
           }
         } else if (onRestoreReports && result.updatedReports) {
           onRestoreReports(result.updatedReports);
+          for (const mod of result.modifiedReports) {
+            if (!mod.photosOffloaded) {
+              await cleanupTemporaryReportPhotosInCloud(mod.id).catch(() => {});
+            }
+          }
         }
       }
 
@@ -529,6 +571,138 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
     } finally {
       setIsUploadingBatchPhotos(false);
       setBatchProgress(null);
+    }
+  };
+
+  // Load files list inside the configured SCB Google Drive folder
+  const handleRefreshDriveFiles = async () => {
+    setIsLoadingDriveFiles(true);
+    try {
+      let token = await getGoogleAccessToken();
+      if (!token) {
+        const loginRes = await googleSignIn('gis', undefined, 'drive');
+        token = loginRes?.accessToken;
+        setIsGoogleConnected(true);
+        setGoogleProfile(loginRes.profile);
+      }
+      const files = await listDriveFiles(folderId);
+      setDriveFiles(files);
+      setIsGoogleConnected(true);
+    } catch (err: any) {
+      const parsed = parseAuthError(err);
+      onShowToast(parsed.message || err?.message || 'Gagal memuat daftar file Google Drive.', 'error');
+    } finally {
+      setIsLoadingDriveFiles(false);
+    }
+  };
+
+  // Fetch & merge reports directly from Google Drive JSON backups & Laporan_*.json files
+  const handlePullReportsFromDrive = async () => {
+    setIsSyncingFromDrive(true);
+    try {
+      let token = await getGoogleAccessToken();
+      if (!token) {
+        const loginRes = await googleSignIn('gis', undefined, 'drive');
+        token = loginRes?.accessToken;
+        setIsGoogleConnected(true);
+        setGoogleProfile(loginRes.profile);
+      }
+      const res = await fetchReportsFromGoogleDrive(folderId);
+      if (onSyncReportsFromDrive) {
+        await onSyncReportsFromDrive(res.reports, res.filesScanned);
+      } else if (onRestoreReports && res.reports.length > 0) {
+        const existingIds = new Set(reports.map((r) => r.id));
+        const newOnes = res.reports.filter((r) => !existingIds.has(r.id));
+        onRestoreReports([...newOnes, ...reports]);
+        onShowToast(
+          `Berhasil memanggil ${res.reports.length} laporan dari Google Drive (${newOnes.length} baru).`,
+          'success'
+        );
+      } else {
+        onShowToast('Tidak ada file cadangan laporan yang ditemukan di Google Drive.', 'info');
+      }
+      const latestFiles = await listDriveFiles(folderId).catch(() => driveFiles);
+      setDriveFiles(latestFiles);
+      setIsGoogleConnected(true);
+    } catch (err: any) {
+      const parsed = parseAuthError(err);
+      onShowToast(parsed.message || err?.message || 'Gagal memuat laporan dari Google Drive.', 'error');
+    } finally {
+      setIsSyncingFromDrive(false);
+    }
+  };
+
+  // Read a JSON file from Drive into previewRestoreData confirmation banner
+  const handlePreviewDriveJsonFile = async (file: DriveFileItem) => {
+    setLoadingRestoreFileId(file.id);
+    try {
+      const parsed = await readJsonFromDrive<any>(file.id);
+      let reportsArray: CleaningReport[] = [];
+      let usersArray: User[] | undefined;
+      let parsedRooms: MasterRoom[] | undefined;
+      let parsedChecklists: MasterChecklist[] | undefined;
+      let parsedSettings: FormSettings | undefined;
+      let parsedSchedules: RoomSchedule[] | undefined;
+
+      if (Array.isArray(parsed)) {
+        reportsArray = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        if (parsed.report && parsed.report.id) {
+          reportsArray = [parsed.report];
+        } else if (Array.isArray(parsed.reports)) {
+          reportsArray = parsed.reports;
+        }
+        if (Array.isArray(parsed.users)) usersArray = parsed.users;
+        if (Array.isArray(parsed.masterRooms)) parsedRooms = parsed.masterRooms;
+        if (Array.isArray(parsed.masterChecklists)) parsedChecklists = parsed.masterChecklists;
+        if (parsed.formSettings && typeof parsed.formSettings === 'object') parsedSettings = parsed.formSettings;
+        if (Array.isArray(parsed.roomSchedules)) parsedSchedules = parsed.roomSchedules;
+      }
+
+      if (reportsArray.length === 0 && (!usersArray || usersArray.length === 0)) {
+        onShowToast(`Berkas "${file.name}" tidak memiliki data laporan yang valid.`, 'error');
+        return;
+      }
+
+      setRestoreMode(parsed?.type === 'single_cleaning_report' ? 'merge' : 'replace');
+      setPreviewRestoreData({
+        fileName: file.name,
+        totalReports: reportsArray.length,
+        totalUsers: usersArray?.length,
+        totalSchedules: parsedSchedules?.length,
+        backupTimestamp: parsed.exportDate || parsed.backupTimestamp || parsed.savedAt,
+        appName: parsed.appName || 'SIM-BERSIH SCB (Google Drive)',
+        reports: reportsArray,
+        users: usersArray,
+        masterRooms: parsedRooms,
+        masterChecklists: parsedChecklists,
+        formSettings: parsedSettings,
+        roomSchedules: parsedSchedules,
+      });
+      onShowToast(
+        `Berkas "${file.name}" (${reportsArray.length} laporan) siap ditinjau untuk dipulihkan.`,
+        'info'
+      );
+    } catch (err: any) {
+      onShowToast(err?.message || `Gagal membaca berkas ${file.name} dari Google Drive.`, 'error');
+    } finally {
+      setLoadingRestoreFileId(null);
+    }
+  };
+
+  // Delete a Google Drive file only after explicit React confirmation modal
+  const handleConfirmDeleteDriveFile = async () => {
+    if (!driveFilePendingDelete || isDeletingDriveFile) return;
+    setIsDeletingDriveFile(true);
+    try {
+      await deleteDriveFile(driveFilePendingDelete.id);
+      setDriveFiles((prev) => prev.filter((f) => f.id !== driveFilePendingDelete.id));
+      onShowToast(`Berkas "${driveFilePendingDelete.name}" dihapus dari Google Drive.`, 'info');
+      setDriveFilePendingDelete(null);
+    } catch (err: any) {
+      onShowToast(err?.message || 'Gagal menghapus file di Google Drive.', 'error');
+    } finally {
+      setIsDeletingDriveFile(false);
     }
   };
 
@@ -635,6 +809,15 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
           </div>
         </div>
       </div>
+
+      {/* METERAN KUOTA & PENYIMPANAN FIRESTORE */}
+      <FirestoreMeterCard
+        reports={reports}
+        usersCount={users.length}
+        isFirestoreQuotaLimited={isFirestoreQuotaLimited}
+        isUploadingBatchPhotos={isUploadingBatchPhotos}
+        onArchivePhotosToDrive={handleBatchUploadPhotos}
+      />
 
       {/* RESTORE PREVIEW MODAL / BANNER */}
       {previewRestoreData && (
@@ -1072,6 +1255,155 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
         </div>
       </div>
 
+      {/* SECTION 2B: PANGGIL & JELAJAH FILE GOOGLE DRIVE SCB */}
+      <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center shrink-0">
+              <FolderOpen className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-900 text-base">
+                Panggil Data &amp; Jelajah File Google Drive SCB
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Muat laporan petugas, tautan foto dokumentasi, dan berkas cadangan JSON langsung dari folder Google Drive resmi SCB.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handlePullReportsFromDrive}
+              disabled={isSyncingFromDrive}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              {isSyncingFromDrive ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Memanggil dari Drive...</span>
+                </>
+              ) : (
+                <>
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>Muat Laporan dari Google Drive</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRefreshDriveFiles}
+              disabled={isLoadingDriveFiles}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 font-semibold text-xs rounded-xl border border-slate-200 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDriveFiles ? 'animate-spin text-blue-600' : ''}`} />
+              <span>{isLoadingDriveFiles ? 'Memuat File...' : 'Tampilkan File Drive'}</span>
+            </button>
+          </div>
+        </div>
+
+        {driveFiles.length > 0 ? (
+          <div className="border border-slate-200 rounded-xl overflow-hidden">
+            <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 text-[11px] font-bold text-slate-600 flex items-center justify-between">
+              <span>{driveFiles.length} berkas ditemukan di Folder Google Drive SCB</span>
+              <span className="font-mono text-slate-400">Terbaru di atas</span>
+            </div>
+            <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+              {driveFiles.slice(0, 30).map((file) => {
+                const isJson =
+                  file.mimeType === 'application/json' ||
+                  file.name.toLowerCase().endsWith('.json');
+                const isImage = file.mimeType.startsWith('image/');
+                const sizeLabel = file.size
+                  ? `${Math.max(1, Math.round(Number(file.size) / 1024))} KB`
+                  : '';
+
+                return (
+                  <div
+                    key={file.id}
+                    className="px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/80 transition-colors text-xs"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                          isJson
+                            ? 'bg-blue-50 text-blue-700'
+                            : isImage
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {isJson ? (
+                          <FileJson className="w-4 h-4" />
+                        ) : isImage ? (
+                          <ImageIcon className="w-4 h-4" />
+                        ) : (
+                          <FileText className="w-4 h-4" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-800 truncate">{file.name}</p>
+                        <p className="text-[11px] text-slate-400">
+                          {file.modifiedTime
+                            ? new Date(file.modifiedTime).toLocaleString('id-ID')
+                            : 'Tersimpan di Drive'}
+                          {sizeLabel ? ` • ${sizeLabel}` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 pl-10 sm:pl-0">
+                      {isJson && (
+                        <button
+                          type="button"
+                          disabled={loadingRestoreFileId === file.id}
+                          onClick={() => handlePreviewDriveJsonFile(file)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                        >
+                          {loadingRestoreFileId === file.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Download className="w-3 h-3" />
+                          )}
+                          <span>Pulihkan</span>
+                        </button>
+                      )}
+                      {file.webViewLink && (
+                        <a
+                          href={file.webViewLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold transition-colors"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          <span>Buka</span>
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setDriveFilePendingDelete(file)}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
+                        title="Hapus file dari Google Drive"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 rounded-xl bg-slate-50 border border-dashed border-slate-200 text-center text-xs text-slate-500">
+            {isGoogleConnected
+              ? 'Klik "Tampilkan File Drive" untuk melihat berkas laporan & foto di Google Drive SCB, atau klik "Muat Laporan dari Google Drive" untuk langsung memanggil data laporan.'
+              : 'Hubungkan akun Google Drive di atas terlebih dahulu untuk melihat dan memanggil data langsung dari folder Google Drive SCB.'}
+          </div>
+        )}
+      </div>
+
       {/* SECTION 3: PERAWATAN DATABASE & BERSIHKAN DATA */}
       <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-start gap-3">
@@ -1094,6 +1426,53 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
           <span>Cadangkan & Reset Data</span>
         </button>
       </div>
+
+      {/* MODAL KONFIRMASI HAPUS FILE GOOGLE DRIVE */}
+      {driveFilePendingDelete && (
+        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold text-slate-900 text-base">
+                Hapus Berkas di Google Drive?
+              </h3>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Anda yakin ingin menghapus berkas <strong className="font-mono text-slate-900">{driveFilePendingDelete.name}</strong> dari folder Google Drive SCB?
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingDriveFile}
+                onClick={() => setDriveFilePendingDelete(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingDriveFile}
+                onClick={handleConfirmDeleteDriveFile}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-bold rounded-xl text-xs shadow-sm transition-colors flex items-center gap-1.5"
+              >
+                {isDeletingDriveFile ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Ya, Hapus dari Drive</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL RESET CONFIRMATION */}
       {isResetConfirmOpen && (

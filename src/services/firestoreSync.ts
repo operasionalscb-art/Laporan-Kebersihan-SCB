@@ -55,6 +55,12 @@ import {
   recompressImageDataUrl,
   createMicroThumbnail,
 } from '../utils/imageCompressor';
+import {
+  recordFirestoreRead,
+  recordFirestoreWrite,
+  recordFirestoreDelete,
+  setFirestoreActiveListener,
+} from './firestoreMeter';
 
 export enum OperationType {
   CREATE = 'create',
@@ -408,6 +414,14 @@ export function doesReportNeedPhotoHydration(report: CleaningReport): boolean {
   if (!report.photosOffloaded) return false;
   if (hydratedPhotoIds.has(report.id)) return false;
   const expectedCount = report.fotoCount ?? report.fotoBukti?.length ?? 0;
+  if (
+    expectedCount > 0 &&
+    Array.isArray(report.drivePhotoLinks) &&
+    report.drivePhotoLinks.length >= expectedCount &&
+    report.drivePhotoLinks.every((l) => typeof l === 'string' && l.startsWith('http'))
+  ) {
+    return false;
+  }
   return !hasFullLocalPhotos(report, expectedCount);
 }
 
@@ -494,7 +508,9 @@ function processFetchedReportDocs(
   docs.forEach((docSnap) => {
     if (['rep-1', 'rep-2', 'rep-3', 'rep-4'].includes(docSnap.id)) {
       if (isCurrentAuthSuperAdmin()) {
-        deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id)).catch(() => {});
+        deleteDoc(doc(db, REPORTS_COLLECTION, docSnap.id))
+          .then(() => recordFirestoreDelete('reports', 1))
+          .catch(() => {});
       }
     } else {
       const raw = docSnap.data() as CleaningReport;
@@ -527,6 +543,7 @@ async function loadMonthReportsFromCloudIfStale(force = false): Promise<void> {
         where('timestamp', '<=', liveCutoffMs)
       );
       const snapshot = await getDocs(q);
+      recordFirestoreRead('reports', Math.max(1, snapshot.size), snapshot.metadata?.fromCache);
       notifyQuotaStatus(false);
       markCacheFetchedNow(MONTH_REPORTS_FETCHED_AT_KEY);
 
@@ -625,6 +642,7 @@ export function subscribeReports(
     getDocs(q)
       .then((snapshot) => {
         if (cancelled) return;
+        recordFirestoreRead('reports', Math.max(1, snapshot.size), snapshot.metadata?.fromCache);
         notifyQuotaStatus(false);
         markCacheFetchedNow(GUEST_REPORTS_FETCHED_AT_KEY);
         const reportsList = processFetchedReportDocs(snapshot.docs);
@@ -658,9 +676,15 @@ export function subscribeReports(
 
   const attachLiveListener = () => {
     if (disposed || activeSnapshotUnsub) return;
+    let isInitialSnapshot = true;
+    setFirestoreActiveListener('Laporan 7 Hari', true);
     activeSnapshotUnsub = onSnapshot(
       q,
       (snapshot) => {
+        const changesCount = snapshot.docChanges().length;
+        const billedCount = changesCount > 0 ? changesCount : isInitialSnapshot ? 1 : 0;
+        isInitialSnapshot = false;
+        recordFirestoreRead('reports', billedCount, snapshot.metadata?.fromCache);
         notifyQuotaStatus(false);
         markCacheFetchedNow(GUEST_REPORTS_FETCHED_AT_KEY);
         const reportsList = processFetchedReportDocs(snapshot.docs);
@@ -690,6 +714,7 @@ export function subscribeReports(
           if (activeSnapshotUnsub) {
             activeSnapshotUnsub();
             activeSnapshotUnsub = null;
+            setFirestoreActiveListener('Laporan 7 Hari', false);
           }
         }, IDLE_LISTENER_PAUSE_MS);
       }
@@ -724,6 +749,7 @@ export function subscribeReports(
       activeSnapshotUnsub();
       activeSnapshotUnsub = null;
     }
+    setFirestoreActiveListener('Laporan 7 Hari', false);
   };
 }
 
@@ -739,6 +765,7 @@ export async function refreshReportsFromCloudNow(): Promise<{
   try {
     const q = query(collection(db, REPORTS_COLLECTION), where('timestamp', '>', liveCutoffMs));
     const snapshot = await getDocs(q);
+    recordFirestoreRead('reports', Math.max(1, snapshot.size), snapshot.metadata?.fromCache);
     notifyQuotaStatus(false);
     markCacheFetchedNow(GUEST_REPORTS_FETCHED_AT_KEY);
 
@@ -754,6 +781,9 @@ export async function refreshReportsFromCloudNow(): Promise<{
     // Also pull latest form config & schedules once on explicit manual refresh
     if (!hasUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY)) {
       const formSnap = await getDoc(doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID)).catch(() => null);
+      if (formSnap) {
+        recordFirestoreRead('configs', 1, formSnap.metadata?.fromCache);
+      }
       if (formSnap?.exists()) {
         const data = formSnap.data();
         if (Array.isArray(data?.rooms)) saveMasterRooms(data.rooms);
@@ -764,6 +794,9 @@ export async function refreshReportsFromCloudNow(): Promise<{
     }
     if (!hasUnsyncedFlag(UNSYNCED_SCHEDULES_KEY)) {
       const schedSnap = await getDoc(doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID)).catch(() => null);
+      if (schedSnap) {
+        recordFirestoreRead('configs', 1, schedSnap.metadata?.fromCache);
+      }
       if (schedSnap?.exists() && Array.isArray(schedSnap.data()?.schedules)) {
         saveRoomSchedules(sanitizeSchedulesToOfficial(schedSnap.data().schedules));
         markCacheFetchedNow(SCHEDULES_FETCHED_AT_KEY);
@@ -806,6 +839,7 @@ export async function loadOlderReportsFromCloud(): Promise<{
       where('timestamp', '<=', windowCutoffMs)
     );
     const snapshot = await getDocs(q);
+    recordFirestoreRead('reports', Math.max(1, snapshot.size), snapshot.metadata?.fromCache);
     notifyQuotaStatus(false);
     olderCloudReportsLoaded = true;
     markCacheFetchedNow(OLDER_REPORTS_FETCHED_AT_KEY);
@@ -864,6 +898,7 @@ export async function fetchReportPhotosFromCloud(reportId: string): Promise<stri
 
   try {
     const snap = await getDoc(doc(db, REPORT_PHOTOS_COLLECTION, reportId));
+    recordFirestoreRead('report_photos', 1, snap.metadata?.fromCache);
     notifyQuotaStatus(false);
     if (!snap.exists()) {
       return localRep?.fotoBukti || null;
@@ -905,13 +940,29 @@ export async function fetchReportPhotosFromCloud(reportId: string): Promise<stri
 }
 
 /**
+ * Deletes temporary base64 document in /report_photos/{reportId} once Superadmin
+ * has archived the full photos to Google Drive and updated /reports/{reportId} with Drive URLs.
+ */
+export async function cleanupTemporaryReportPhotosInCloud(reportId: string): Promise<void> {
+  if (!reportId || !isCurrentAuthSuperAdmin()) return;
+  try {
+    await deleteDoc(doc(db, REPORT_PHOTOS_COLLECTION, reportId));
+    recordFirestoreDelete('report_photos', 1);
+  } catch (err) {
+    console.warn(`Could not cleanup temporary report_photos/${reportId}:`, err);
+  }
+}
+
+/**
  * Create a new cleaning report in Firestore (summary + micro-thumbnail in /reports, full photos in /report_photos)
  * and keep full-resolution photos in local/IndexedDB storage.
  */
 export async function saveReportToCloud(report: CleaningReport): Promise<CloudSaveResult> {
   const safePhotos = await ensureReportPhotosFitLimit(report.fotoBukti);
   const resolvedAuthorUid = report.authorUid || auth.currentUser?.uid || undefined;
-  const isOffloaded = safePhotos.length > 0;
+  const isOffloaded = safePhotos.some(
+    (p) => p.startsWith('data:image/') && !p.startsWith('data:image/svg+xml')
+  );
 
   const preparedLocalReport: CleaningReport = {
     ...report,
@@ -923,7 +974,7 @@ export async function saveReportToCloud(report: CleaningReport): Promise<CloudSa
     authorUid: resolvedAuthorUid,
   };
 
-  if (isOffloaded) {
+  if (isOffloaded || safePhotos.length > 0) {
     hydratedPhotoIds.add(preparedLocalReport.id);
   }
 
@@ -946,10 +997,10 @@ export async function saveReportToCloud(report: CleaningReport): Promise<CloudSa
 
   const path = `${REPORTS_COLLECTION}/${preparedLocalReport.id}`;
   try {
-    const thumbList = isOffloaded ? [await createMicroThumbnail(safePhotos[0])] : [];
+    const cloudFotoBukti = isOffloaded ? [await createMicroThumbnail(safePhotos[0])] : safePhotos;
     const cloudSummaryReport: CleaningReport = {
       ...preparedLocalReport,
-      fotoBukti: thumbList,
+      fotoBukti: cloudFotoBukti,
       fotoCount: safePhotos.length,
       photosOffloaded: isOffloaded,
     };
@@ -973,6 +1024,10 @@ export async function saveReportToCloud(report: CleaningReport): Promise<CloudSa
     }
 
     await batch.commit();
+    recordFirestoreWrite('reports', 1);
+    if (isOffloaded) {
+      recordFirestoreWrite('report_photos', 1);
+    }
     notifyQuotaStatus(false);
     unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, preparedLocalReport.id);
     syncPublicDailyNotificationsToCloud(true).catch(() => {});
@@ -1000,11 +1055,15 @@ export async function updateReportInCloud(
 ): Promise<CloudSaveResult> {
   const preparedUpdates: Partial<CleaningReport> = { ...updates };
   let fullUpdatedPhotos: string[] | null = null;
+  let hasOffloadedPhotos = false;
   if (Array.isArray(preparedUpdates.fotoBukti)) {
     fullUpdatedPhotos = await ensureReportPhotosFitLimit(preparedUpdates.fotoBukti);
+    hasOffloadedPhotos = fullUpdatedPhotos.some(
+      (p) => p.startsWith('data:image/') && !p.startsWith('data:image/svg+xml')
+    );
     preparedUpdates.fotoBukti = fullUpdatedPhotos;
     preparedUpdates.fotoCount = fullUpdatedPhotos.length;
-    preparedUpdates.photosOffloaded = fullUpdatedPhotos.length > 0;
+    preparedUpdates.photosOffloaded = hasOffloadedPhotos;
     if (fullUpdatedPhotos.length > 0) {
       hydratedPhotoIds.add(id);
     }
@@ -1033,16 +1092,17 @@ export async function updateReportInCloud(
   try {
     const cloudUpdates: Partial<CleaningReport> = { ...preparedUpdates };
     if (fullUpdatedPhotos !== null) {
-      cloudUpdates.fotoBukti =
-        fullUpdatedPhotos.length > 0 ? [await createMicroThumbnail(fullUpdatedPhotos[0])] : [];
+      cloudUpdates.fotoBukti = hasOffloadedPhotos
+        ? [await createMicroThumbnail(fullUpdatedPhotos[0])]
+        : fullUpdatedPhotos;
       cloudUpdates.fotoCount = fullUpdatedPhotos.length;
-      cloudUpdates.photosOffloaded = fullUpdatedPhotos.length > 0;
+      cloudUpdates.photosOffloaded = hasOffloadedPhotos;
     }
 
     const docRef = doc(db, REPORTS_COLLECTION, id);
     const sanitizedUpdates = sanitizeForFirestore(cloudUpdates);
 
-    if (fullUpdatedPhotos !== null && fullUpdatedPhotos.length > 0) {
+    if (fullUpdatedPhotos !== null && hasOffloadedPhotos) {
       const batch = writeBatch(db);
       batch.update(docRef, {
         ...sanitizedUpdates,
@@ -1058,11 +1118,14 @@ export async function updateReportInCloud(
         })
       );
       await batch.commit();
+      recordFirestoreWrite('reports', 1);
+      recordFirestoreWrite('report_photos', 1);
     } else {
       await updateDoc(docRef, {
         ...sanitizedUpdates,
         updatedAt: serverTimestamp(),
       });
+      recordFirestoreWrite('reports', 1);
     }
 
     notifyQuotaStatus(false);
@@ -1114,6 +1177,7 @@ export async function syncPendingLocalReportsToCloud(): Promise<number> {
     for (const rep of pendingReports) {
       try {
         const existingSnap = await getDoc(doc(db, REPORTS_COLLECTION, rep.id));
+        recordFirestoreRead('reports', 1, existingSnap.metadata?.fromCache);
         if (!existingSnap.exists()) {
           const res = await saveReportToCloud({
             ...rep,
@@ -1181,6 +1245,7 @@ export async function retrySingleReportCloudSync(reportId: string): Promise<Clou
 
   try {
     const existingSnap = await getDoc(doc(db, REPORTS_COLLECTION, reportId));
+    recordFirestoreRead('reports', 1, existingSnap.metadata?.fromCache);
     if (!existingSnap.exists()) {
       return await saveReportToCloud({
         ...target,
@@ -1222,7 +1287,10 @@ export async function deleteReportFromCloud(id: string): Promise<void> {
   const path = `${REPORTS_COLLECTION}/${id}`;
   try {
     await deleteDoc(doc(db, REPORTS_COLLECTION, id));
-    await deleteDoc(doc(db, REPORT_PHOTOS_COLLECTION, id)).catch(() => {});
+    recordFirestoreDelete('reports', 1);
+    await deleteDoc(doc(db, REPORT_PHOTOS_COLLECTION, id))
+      .then(() => recordFirestoreDelete('report_photos', 1))
+      .catch(() => {});
     syncPublicDailyNotificationsToCloud(true).catch(() => {});
   } catch (err) {
     if (isQuotaExceededError(err)) {
@@ -1246,29 +1314,36 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
     const snapshot = await getDocs(
       query(collection(db, REPORTS_COLLECTION), where('timestamp', '>', 0))
     );
+    recordFirestoreRead('reports', Math.max(1, snapshot.size), snapshot.metadata?.fromCache);
     const chunkSize = 200;
     const existingDocs = snapshot.docs;
     for (let i = 0; i < existingDocs.length; i += chunkSize) {
+      const slice = existingDocs.slice(i, i + chunkSize);
       const deleteBatch = writeBatch(db);
-      for (const d of existingDocs.slice(i, i + chunkSize)) {
+      for (const d of slice) {
         deleteBatch.delete(d.ref);
         deleteBatch.delete(doc(db, REPORT_PHOTOS_COLLECTION, d.id));
       }
       await deleteBatch.commit();
+      recordFirestoreDelete('reports', slice.length);
+      recordFirestoreDelete('report_photos', slice.length);
     }
 
     for (let i = 0; i < reports.length; i += chunkSize) {
       const chunk = reports.slice(i, i + chunkSize);
       const batch = writeBatch(db);
+      let photoWritesInBatch = 0;
       for (const rep of chunk) {
         const safePhotos = await ensureReportPhotosFitLimit(rep.fotoBukti);
-        const isOffloaded = safePhotos.length > 0;
-        const thumbList = isOffloaded ? [await createMicroThumbnail(safePhotos[0])] : [];
+        const isOffloaded = safePhotos.some(
+          (p) => p.startsWith('data:image/') && !p.startsWith('data:image/svg+xml')
+        );
+        const cloudFotoBukti = isOffloaded ? [await createMicroThumbnail(safePhotos[0])] : safePhotos;
         const sanitized = sanitizeForFirestore({
           ...rep,
           checklist: Array.isArray(rep.checklist) ? rep.checklist : [],
           keteranganTambahan: rep.keteranganTambahan ?? '',
-          fotoBukti: thumbList,
+          fotoBukti: cloudFotoBukti,
           fotoCount: safePhotos.length,
           photosOffloaded: isOffloaded,
         });
@@ -1279,6 +1354,7 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
         });
         if (isOffloaded) {
           hydratedPhotoIds.add(rep.id);
+          photoWritesInBatch++;
           batch.set(
             doc(db, REPORT_PHOTOS_COLLECTION, rep.id),
             sanitizeForFirestore({
@@ -1291,6 +1367,10 @@ export async function batchRestoreReportsToCloud(reports: CleaningReport[]): Pro
         }
       }
       await batch.commit();
+      recordFirestoreWrite('reports', chunk.length);
+      if (photoWritesInBatch > 0) {
+        recordFirestoreWrite('report_photos', photoWritesInBatch);
+      }
     }
     notifyQuotaStatus(false);
     saveUnsyncedIdSet(UNSYNCED_REPORT_IDS_KEY, new Set());
@@ -1319,6 +1399,7 @@ async function syncStaffRoleToCloud(user: User): Promise<void> {
       userId: user.id,
       updatedAt: serverTimestamp(),
     });
+    recordFirestoreWrite('users', 1);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -1344,8 +1425,10 @@ export async function migrateLegacyConfigsIfNeeded(): Promise<void> {
   try {
     const newFormRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
     const newFormSnap = await getDoc(newFormRef);
+    recordFirestoreRead('configs', 1, newFormSnap.metadata?.fromCache);
     if (!newFormSnap.exists()) {
       const legacyFormSnap = await getDoc(doc(db, USERS_COLLECTION, FORM_CONFIG_DOC_ID));
+      recordFirestoreRead('configs', 1, legacyFormSnap.metadata?.fromCache);
       if (legacyFormSnap.exists()) {
         const legacyData = legacyFormSnap.data();
         await setDoc(
@@ -1358,13 +1441,16 @@ export async function migrateLegacyConfigsIfNeeded(): Promise<void> {
             settings: legacyData?.settings || DEFAULT_FORM_SETTINGS,
           })
         );
+        recordFirestoreWrite('configs', 1);
       }
     }
 
     const newSchedRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
     const newSchedSnap = await getDoc(newSchedRef);
+    recordFirestoreRead('configs', 1, newSchedSnap.metadata?.fromCache);
     if (!newSchedSnap.exists()) {
       const legacySchedSnap = await getDoc(doc(db, USERS_COLLECTION, ROOM_SCHEDULE_DOC_ID));
+      recordFirestoreRead('configs', 1, legacySchedSnap.metadata?.fromCache);
       if (legacySchedSnap.exists()) {
         const legacyData = legacySchedSnap.data();
         if (Array.isArray(legacyData?.schedules)) {
@@ -1372,6 +1458,7 @@ export async function migrateLegacyConfigsIfNeeded(): Promise<void> {
             newSchedRef,
             sanitizeForFirestore({ schedules: legacyData.schedules })
           );
+          recordFirestoreWrite('configs', 1);
         }
       }
     }
@@ -1391,6 +1478,7 @@ export async function ensureSuperAdminRecord(): Promise<void> {
   try {
     const adminRef = doc(db, ADMINS_COLLECTION, currentUser.uid);
     const existingSnap = await getDoc(adminRef);
+    recordFirestoreRead('public_summary', 1, existingSnap.metadata?.fromCache);
     if (!existingSnap.exists()) {
       await setDoc(adminRef, {
         uid: currentUser.uid,
@@ -1398,6 +1486,7 @@ export async function ensureSuperAdminRecord(): Promise<void> {
         role: 'superadmin',
         createdAt: serverTimestamp(),
       });
+      recordFirestoreWrite('public_summary', 1);
     } else {
       const existingData = existingSnap.data();
       if (existingData?.email !== targetEmail || existingData?.role !== 'superadmin') {
@@ -1405,6 +1494,7 @@ export async function ensureSuperAdminRecord(): Promise<void> {
           email: targetEmail,
           role: 'superadmin',
         });
+        recordFirestoreWrite('public_summary', 1);
       }
     }
     await migrateLegacyConfigsIfNeeded();
@@ -1424,6 +1514,7 @@ export async function fetchUserByEmailFromCloud(email: string): Promise<User | n
   try {
     const q = query(collection(db, USERS_COLLECTION), where('email', '==', cleanEmail));
     const snap = await getDocs(q);
+    recordFirestoreRead('users', Math.max(1, snap.size), snap.metadata?.fromCache);
     if (snap.empty) return null;
     return snap.docs[0].data() as User;
   } catch (err) {
@@ -1472,6 +1563,7 @@ export function subscribeUsers(
     getDocs(selfQuery)
       .then((snapshot) => {
         if (cancelled) return;
+        recordFirestoreRead('users', Math.max(1, snapshot.size), snapshot.metadata?.fromCache);
         notifyQuotaStatus(false);
         markCacheFetchedNow(SELF_USER_FETCHED_AT_KEY);
         if (snapshot.empty) {
@@ -1512,10 +1604,17 @@ export function subscribeUsers(
   }
 
   const usersQuery = query(collection(db, USERS_COLLECTION));
+  let isInitialUsersSnap = true;
+  setFirestoreActiveListener('Direktori Akun (users)', true);
 
-  return onSnapshot(
+  const unsub = onSnapshot(
     usersQuery,
     async (snapshot) => {
+      const changesCount = snapshot.docChanges().length;
+      const billedCount = changesCount > 0 ? changesCount : isInitialUsersSnap ? 1 : 0;
+      isInitialUsersSnap = false;
+      recordFirestoreRead('users', billedCount, snapshot.metadata?.fromCache);
+
       let persistedAdminUid: string | null = null;
       try {
         persistedAdminUid = localStorage.getItem(ADMIN_BOOTSTRAPPED_UID_KEY);
@@ -1543,6 +1642,7 @@ export function subscribeUsers(
         const initialToSeed = localUsers && localUsers.length > 0 ? localUsers : INITIAL_USERS;
         try {
           const batch = writeBatch(db);
+          let writeCount = 0;
           for (const u of initialToSeed) {
             const cleanUser = sanitizeForFirestore({
               ...u,
@@ -1551,6 +1651,7 @@ export function subscribeUsers(
               createdAt: u.createdAt || getTodayDateString(),
             });
             batch.set(doc(db, USERS_COLLECTION, u.id), cleanUser);
+            writeCount++;
             if (cleanUser.email) {
               batch.set(doc(db, STAFF_ROLES_COLLECTION, toEmailKey(cleanUser.email)), {
                 email: cleanUser.email,
@@ -1559,9 +1660,11 @@ export function subscribeUsers(
                 userId: cleanUser.id,
                 updatedAt: serverTimestamp(),
               });
+              writeCount++;
             }
           }
           await batch.commit();
+          recordFirestoreWrite('users', writeCount);
         } catch (err) {
           if (isQuotaExceededError(err)) {
             console.warn('Firestore quota exceeded while seeding users, using local storage.');
@@ -1687,6 +1790,10 @@ export function subscribeUsers(
       handleFirestoreError(error, OperationType.LIST, USERS_COLLECTION);
     }
   );
+  return () => {
+    setFirestoreActiveListener('Direktori Akun (users)', false);
+    unsub();
+  };
 }
 
 /**
@@ -1718,6 +1825,7 @@ export async function saveUserToCloud(user: User): Promise<void> {
   try {
     const docRef = doc(db, USERS_COLLECTION, normalizedUser.id);
     const existingSnap = await getDoc(docRef);
+    recordFirestoreRead('users', 1, existingSnap.metadata?.fromCache);
     const existingCreatedAt = existingSnap.exists()
       ? (existingSnap.data()?.createdAt as string | undefined)
       : undefined;
@@ -1730,6 +1838,7 @@ export async function saveUserToCloud(user: User): Promise<void> {
     } else {
       await setDoc(docRef, payloadToWrite);
     }
+    recordFirestoreWrite('users', 1);
     if (isCurrentAuthSuperAdmin()) {
       await syncStaffRoleToCloud(normalizedUser);
     }
@@ -1759,8 +1868,10 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
   const path = `${USERS_COLLECTION}/${id}`;
   try {
     await deleteDoc(doc(db, USERS_COLLECTION, id));
+    recordFirestoreDelete('users', 1);
     if (targetUser?.email && isCurrentAuthSuperAdmin()) {
       await deleteDoc(doc(db, STAFF_ROLES_COLLECTION, toEmailKey(targetUser.email)));
+      recordFirestoreDelete('users', 1);
     }
   } catch (err) {
     if (isQuotaExceededError(err)) {
@@ -1802,6 +1913,7 @@ export function subscribeFormConfig(
     getDoc(docRef)
       .then((snapshot) => {
         if (cancelled) return;
+        recordFirestoreRead('configs', 1, snapshot.metadata?.fromCache);
         notifyQuotaStatus(false);
         markCacheFetchedNow(FORM_CONFIG_FETCHED_AT_KEY);
         if (snapshot.exists()) {
@@ -1843,9 +1955,16 @@ export function subscribeFormConfig(
     };
   }
 
-  return onSnapshot(
+  let isInitialConfigSnap = true;
+  setFirestoreActiveListener('Master Form (form_configs)', true);
+
+  const unsub = onSnapshot(
     docRef,
     async (snapshot) => {
+      if (isInitialConfigSnap || !snapshot.metadata?.hasPendingWrites) {
+        recordFirestoreRead('configs', 1, snapshot.metadata?.fromCache);
+      }
+      isInitialConfigSnap = false;
       notifyQuotaStatus(false);
       markCacheFetchedNow(FORM_CONFIG_FETCHED_AT_KEY);
 
@@ -1860,6 +1979,7 @@ export function subscribeFormConfig(
         if (isCurrentAuthSuperAdmin()) {
           try {
             await setDoc(docRef, sanitizeForFirestore(localConfig));
+            recordFirestoreWrite('configs', 1);
             setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, false);
           } catch (err) {
             if (!isQuotaExceededError(err)) {
@@ -1929,6 +2049,10 @@ export function subscribeFormConfig(
       handleFirestoreError(err, OperationType.GET, path);
     }
   );
+  return () => {
+    setFirestoreActiveListener('Master Form (form_configs)', false);
+    unsub();
+  };
 }
 
 async function writeFormConfigPayloadToCloud(payload: {
@@ -1948,6 +2072,7 @@ async function writeFormConfigPayloadToCloud(payload: {
   try {
     const docRef = doc(db, FORM_CONFIGS_COLLECTION, FORM_CONFIG_DOC_ID);
     await setDoc(docRef, sanitizeForFirestore(payload));
+    recordFirestoreWrite('configs', 1);
     setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, false);
     syncPublicDailyNotificationsToCloud(true).catch(() => {});
     return { status: 'synced' };
@@ -2018,6 +2143,7 @@ export function subscribeRoomSchedules(
     getDoc(docRef)
       .then((snapshot) => {
         if (cancelled) return;
+        recordFirestoreRead('configs', 1, snapshot.metadata?.fromCache);
         notifyQuotaStatus(false);
         markCacheFetchedNow(SCHEDULES_FETCHED_AT_KEY);
         if (snapshot.exists()) {
@@ -2045,9 +2171,16 @@ export function subscribeRoomSchedules(
     };
   }
 
-  return onSnapshot(
+  let isInitialSchedSnap = true;
+  setFirestoreActiveListener('Jadwal Ruang (room_schedules)', true);
+
+  const unsub = onSnapshot(
     docRef,
     async (snapshot) => {
+      if (isInitialSchedSnap || !snapshot.metadata?.hasPendingWrites) {
+        recordFirestoreRead('configs', 1, snapshot.metadata?.fromCache);
+      }
+      isInitialSchedSnap = false;
       notifyQuotaStatus(false);
       markCacheFetchedNow(SCHEDULES_FETCHED_AT_KEY);
 
@@ -2058,6 +2191,7 @@ export function subscribeRoomSchedules(
         if (isCurrentAuthSuperAdmin()) {
           try {
             await setDoc(docRef, { schedules: sanitizeForFirestore(localSchedules) });
+            recordFirestoreWrite('configs', 1);
             setUnsyncedFlag(UNSYNCED_SCHEDULES_KEY, false);
           } catch (err) {
             if (!isQuotaExceededError(err)) {
@@ -2122,6 +2256,10 @@ export function subscribeRoomSchedules(
       handleFirestoreError(err, OperationType.GET, path);
     }
   );
+  return () => {
+    setFirestoreActiveListener('Jadwal Ruang (room_schedules)', false);
+    unsub();
+  };
 }
 
 export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promise<CloudSaveResult> {
@@ -2138,6 +2276,7 @@ export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promi
   try {
     const docRef = doc(db, ROOM_SCHEDULES_COLLECTION, ROOM_SCHEDULE_DOC_ID);
     await setDoc(docRef, { schedules: sanitizeForFirestore(schedules) });
+    recordFirestoreWrite('configs', 1);
     setUnsyncedFlag(UNSYNCED_SCHEDULES_KEY, false);
     syncPublicDailyNotificationsToCloud(true).catch(() => {});
     return { status: 'synced' };
@@ -2199,7 +2338,9 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
   try {
     await ensureSuperAdminRecord();
     const existingSnap = await getDocs(collection(db, USERS_COLLECTION));
+    recordFirestoreRead('users', Math.max(1, existingSnap.size), existingSnap.metadata?.fromCache);
     const existingRolesSnap = await getDocs(collection(db, STAFF_ROLES_COLLECTION));
+    recordFirestoreRead('users', Math.max(1, existingRolesSnap.size), existingRolesSnap.metadata?.fromCache);
     const desiredIds = new Set(users.map((u) => u.id));
     const desiredEmailKeys = new Set(
       users
@@ -2208,6 +2349,8 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
         .map((email) => toEmailKey(email))
     );
     const batch = writeBatch(db);
+    let deletesInBatch = 0;
+    let writesInBatch = 0;
 
     const existingCreatedAtMap = new Map<string, string>();
     existingSnap.forEach((docSnap) => {
@@ -2218,6 +2361,7 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
         }
         if (!desiredIds.has(docSnap.id)) {
           batch.delete(docSnap.ref);
+          deletesInBatch++;
         }
       }
     });
@@ -2225,6 +2369,7 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
     existingRolesSnap.forEach((roleSnap) => {
       if (!desiredEmailKeys.has(roleSnap.id)) {
         batch.delete(roleSnap.ref);
+        deletesInBatch++;
       }
     });
 
@@ -2236,6 +2381,7 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
         createdAt: existingCreatedAtMap.get(u.id) || u.createdAt || getTodayDateString(),
       });
       batch.set(doc(db, USERS_COLLECTION, cleanUser.id), cleanUser);
+      writesInBatch++;
       if (cleanUser.email) {
         batch.set(doc(db, STAFF_ROLES_COLLECTION, toEmailKey(cleanUser.email)), {
           email: cleanUser.email,
@@ -2244,10 +2390,13 @@ export async function syncAllUsersToCloud(users: User[]): Promise<void> {
           userId: cleanUser.id,
           updatedAt: serverTimestamp(),
         });
+        writesInBatch++;
       }
     }
 
     await batch.commit();
+    if (deletesInBatch > 0) recordFirestoreDelete('users', deletesInBatch);
+    if (writesInBatch > 0) recordFirestoreWrite('users', writesInBatch);
   } catch (err) {
     if (isQuotaExceededError(err)) {
       console.warn('Firestore quota exceeded while syncing users batch.');
@@ -2284,6 +2433,7 @@ export async function syncAllAppDataToCloud(payload: {
           settings: payload.formSettings || getFormSettings(),
         })
       );
+      recordFirestoreWrite('configs', 1);
       setUnsyncedFlag(UNSYNCED_FORM_CONFIG_KEY, false);
     } catch (err) {
       if (!isQuotaExceededError(err)) {
@@ -2425,6 +2575,7 @@ export async function syncPublicDailyNotificationsToCloud(force = false): Promis
         updatedByUid: fbUser.uid,
       })
     );
+    recordFirestoreWrite('public_summary', 1);
     try {
       localStorage.setItem(PUBLIC_SUMMARY_HASH_KEY, digestHash);
     } catch {}
@@ -2461,6 +2612,7 @@ export async function fetchPublicDailyNotificationsForGuest(forceRefresh = false
     const summarySnap = await getDoc(
       doc(db, PUBLIC_SUMMARY_COLLECTION, PUBLIC_SUMMARY_DOC_ID)
     );
+    recordFirestoreRead('public_summary', 1, summarySnap.metadata?.fromCache);
     notifyQuotaStatus(false);
 
     if (summarySnap.exists()) {
@@ -2488,6 +2640,7 @@ export async function fetchPublicDailyNotificationsForGuest(forceRefresh = false
       limit(20)
     );
     const reportsSnap = await getDocs(fallbackQuery);
+    recordFirestoreRead('reports', Math.max(1, reportsSnap.size), reportsSnap.metadata?.fromCache);
     const todayReports = processFetchedReportDocs(reportsSnap.docs);
     const fallbackSummary = buildLocalPublicDailyNotifications(
       todayReports,

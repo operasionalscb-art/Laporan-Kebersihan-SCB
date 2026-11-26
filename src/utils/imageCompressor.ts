@@ -234,8 +234,9 @@ export function getGoogleDriveImageCandidates(url: string): string[] {
   const fileId = extractGoogleDriveFileId(url);
   if (fileId) {
     return [
-      `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`,
-      `https://lh3.googleusercontent.com/d/${fileId}=w1000`,
+      `https://drive.google.com/thumbnail?id=${fileId}&sz=w1280`,
+      `https://lh3.googleusercontent.com/d/${fileId}=w1280`,
+      `https://drive.google.com/uc?export=view&id=${fileId}`,
     ];
   }
   return [url];

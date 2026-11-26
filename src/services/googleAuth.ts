@@ -26,9 +26,11 @@ export const LOGIN_SCOPES = [
   'profile',
 ];
 
-// App-created file scope for Google Drive Backup feature (avoids restricted full-drive scope)
+// App-created file & read scopes for Google Drive report storage & retrieval
 export const DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive.readonly',
+  'openid',
   'email',
   'profile',
 ];
@@ -37,9 +39,7 @@ export const SCOPES = DRIVE_SCOPES;
 
 export type AuthScopeMode = 'login' | 'drive';
 
-const STORAGE_ACCESS_TOKEN_KEY = 'scb_gdrive_access_token';
 const STORAGE_PROFILE_KEY = 'scb_gdrive_profile';
-const STORAGE_EXPIRY_KEY = 'scb_gdrive_token_expiry';
 export const STORAGE_KEEP_CONNECTED_KEY = 'scb_gdrive_keep_connected';
 
 export function getActiveOAuthClientId(): string {
@@ -70,7 +70,9 @@ DRIVE_SCOPES.forEach((scope) => driveProvider.addScope(scope));
 driveProvider.setCustomParameters({ prompt: 'select_account' });
 
 let isSigningIn = false;
+// Access tokens are kept strictly in memory (never localStorage/sessionStorage)
 let cachedAccessToken: string | null = null;
+let cachedTokenExpiryMs: number = 0;
 let currentProfile: GoogleUserProfile | null = null;
 
 /**
@@ -96,51 +98,46 @@ export function setGoogleDriveLinked(linked: boolean): void {
 }
 
 /**
- * Storage helpers to persist authentication across page refreshes
+ * Returns the active in-memory Google Drive access token if still valid.
  */
 export function getSavedToken(): string | null {
-  try {
-    const token = localStorage.getItem(STORAGE_ACCESS_TOKEN_KEY);
-    const expiryStr = localStorage.getItem(STORAGE_EXPIRY_KEY);
-    if (!token) return null;
-    if (expiryStr) {
-      const expiry = parseInt(expiryStr, 10);
-      if (Date.now() > expiry) {
-        // Clear only expired token, KEEP the linked profile and status!
-        localStorage.removeItem(STORAGE_ACCESS_TOKEN_KEY);
-        cachedAccessToken = null;
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new Event('scb_gdrive_auth_cleared'));
-        }
-        return null;
-      }
+  if (!cachedAccessToken) return null;
+  if (cachedTokenExpiryMs > 0 && Date.now() > cachedTokenExpiryMs) {
+    cachedAccessToken = null;
+    cachedTokenExpiryMs = 0;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('scb_gdrive_auth_cleared'));
     }
-    return token;
-  } catch {
     return null;
   }
+  return cachedAccessToken;
+}
+
+export function hasActiveDriveToken(): boolean {
+  return Boolean(getSavedToken());
 }
 
 export function saveGoogleAuth(token: string, profile: GoogleUserProfile, expiresInSeconds = 3500) {
   cachedAccessToken = token;
+  cachedTokenExpiryMs = Date.now() + expiresInSeconds * 1000;
   currentProfile = profile;
   try {
-    localStorage.setItem(STORAGE_ACCESS_TOKEN_KEY, token);
     localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(profile));
-    localStorage.setItem(STORAGE_EXPIRY_KEY, String(Date.now() + expiresInSeconds * 1000));
     localStorage.setItem(STORAGE_KEEP_CONNECTED_KEY, 'true');
   } catch (e) {
-    console.warn('Could not persist Google auth:', e);
+    console.warn('Could not persist Google profile metadata:', e);
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('scb_gdrive_auth_updated'));
   }
 }
 
 export function clearStoredGoogleAuth() {
   cachedAccessToken = null;
+  cachedTokenExpiryMs = 0;
   currentProfile = null;
   try {
-    localStorage.removeItem(STORAGE_ACCESS_TOKEN_KEY);
     localStorage.removeItem(STORAGE_PROFILE_KEY);
-    localStorage.removeItem(STORAGE_EXPIRY_KEY);
     localStorage.removeItem(STORAGE_KEEP_CONNECTED_KEY);
   } catch {}
   if (typeof window !== 'undefined') {
@@ -695,7 +692,11 @@ export const googleSignIn = async (
     ) {
       throw parseAuthError(gisErr);
     }
-    console.warn('GIS sign in attempt had error, falling back to Firebase...', gisErr);
+    console.warn('GIS sign in attempt had error:', gisErr);
+    if (auth?.currentUser) {
+      // Do not overwrite an already signed-in Firebase Email/Password user via signInWithPopup
+      throw parseAuthError(gisErr);
+    }
     try {
       return await signInWithFirebase(scopeMode, emailHint);
     } catch (firebaseErr: any) {
@@ -705,19 +706,7 @@ export const googleSignIn = async (
 };
 
 export const getGoogleAccessToken = async (): Promise<string | null> => {
-  if (cachedAccessToken) {
-    return cachedAccessToken;
-  }
-  const saved = getSavedToken();
-  if (saved) {
-    cachedAccessToken = saved;
-    return saved;
-  }
-
-  // IMPORTANT: NEVER call signInWithGIS or requestAccessToken automatically in background!
-  // Google Identity Services (GIS) opens a popup window / blank tab when requesting tokens.
-  // Token requests must ONLY be triggered when user explicitly clicks "Hubungkan Akun Google" in settings.
-  return null;
+  return getSavedToken();
 };
 
 /**

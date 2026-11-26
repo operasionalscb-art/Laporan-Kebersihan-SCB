@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   User, 
   CleaningReport, 
@@ -70,6 +70,7 @@ import {
   subscribeQuotaStatus,
   loadOlderReportsFromCloud,
   fetchReportPhotosFromCloud,
+  cleanupTemporaryReportPhotosInCloud,
   refreshReportsFromCloudNow,
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
@@ -82,16 +83,21 @@ import { GuestLandingPage } from './components/GuestLandingPage';
 import { PrintModal } from './components/PrintModal';
 import { GoogleDriveManager } from './components/GoogleDriveManager';
 import { FullBackupPayload } from './components/StorageBackupManager';
-import { 
+import {
   parseAuthError,
-  getGoogleAccessToken, 
-  googleSignOut
+  getGoogleAccessToken,
+  googleSignOut,
+  hasActiveDriveToken,
+  googleSignIn,
 } from './services/googleAuth';
-import { 
-  uploadReportPhotosToDrive, 
-  executeAutoBackupToDrive, 
-  isAutoBackupEnabled, 
-  isAutoPhotosUploadEnabled 
+import {
+  uploadReportPhotosToDrive,
+  uploadSingleReportToDrive,
+  fetchReportsFromGoogleDrive,
+  executeAutoBackupToDrive,
+  isAutoBackupEnabled,
+  isAutoPhotosUploadEnabled,
+  isReportPendingDriveArchive,
 } from './services/googleDriveService';
 import {
   provisionStaffFirebaseAuthAccount,
@@ -128,6 +134,10 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
   const [pendingUnsyncedCount, setPendingUnsyncedCount] = useState<number>(0);
   const [isFirestoreQuotaLimited, setIsFirestoreQuotaLimited] = useState<boolean>(false);
+  const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState<boolean>(() => hasActiveDriveToken());
+  const [isAutoArchivingDrive, setIsAutoArchivingDrive] = useState<boolean>(false);
+  const isAutoArchivingDriveRef = useRef<boolean>(false);
+  const attemptedAutoArchiveIdsRef = useRef<Set<string>>(new Set());
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ message, type });
@@ -408,10 +418,18 @@ export default function App() {
       setFormSettings(getFormSettings());
       setRoomSchedules(getRoomSchedules());
     };
+    const handleDriveAuthUpdated = () => {
+      setIsGoogleDriveConnected(hasActiveDriveToken());
+    };
+    const handleDriveAuthCleared = () => {
+      setIsGoogleDriveConnected(false);
+    };
     window.addEventListener('online', handleOnlineReconnect);
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
     window.addEventListener('scb_config_hydrated', handleConfigHydrated);
+    window.addEventListener('scb_gdrive_auth_updated', handleDriveAuthUpdated);
+    window.addEventListener('scb_gdrive_auth_cleared', handleDriveAuthCleared);
 
     return () => {
       unsubscribeQuota();
@@ -422,6 +440,8 @@ export default function App() {
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('scb_idb_reports_hydrated', handleIdbHydrated);
       window.removeEventListener('scb_config_hydrated', handleConfigHydrated);
+      window.removeEventListener('scb_gdrive_auth_updated', handleDriveAuthUpdated);
+      window.removeEventListener('scb_gdrive_auth_cleared', handleDriveAuthCleared);
     };
   }, []);
 
@@ -469,25 +489,267 @@ export default function App() {
     }
   }, [users, currentUser]);
 
+  const archivePendingReportsToSuperAdminDrive = async (forceRetry = false) => {
+    const isAdminSession =
+      currentUser?.role === 'superadmin' ||
+      currentUser?.email?.trim().toLowerCase() === 'operasional.scb@gmail.com' ||
+      auth.currentUser?.email?.trim().toLowerCase() === 'operasional.scb@gmail.com';
+    if (!isAdminSession || !auth.currentUser?.emailVerified || !hasActiveDriveToken()) {
+      return;
+    }
+    if (isAutoArchivingDriveRef.current) return;
+
+    const currentList = getReports();
+    const candidates = currentList.filter((rep) => {
+      if (!isReportPendingDriveArchive(rep)) return false;
+      if (!forceRetry && attemptedAutoArchiveIdsRef.current.has(rep.id)) return false;
+      return true;
+    });
+
+    if (candidates.length === 0) return;
+
+    isAutoArchivingDriveRef.current = true;
+    setIsAutoArchivingDrive(true);
+    let archivedCount = 0;
+
+    try {
+      for (const rep of candidates) {
+        attemptedAutoArchiveIdsRef.current.add(rep.id);
+        try {
+          let hydrated = rep;
+          const expectedCount = rep.fotoCount ?? rep.fotoBukti?.length ?? 0;
+          const hasFullPhotos =
+            Array.isArray(rep.fotoBukti) &&
+            rep.fotoBukti.length >= expectedCount &&
+            rep.fotoBukti.some((p) => p.startsWith('http') || p.length > 26_000);
+
+          if (!hasFullPhotos) {
+            const loaded = await fetchReportPhotosFromCloud(rep.id);
+            if (loaded && loaded.length > 0) {
+              hydrated = { ...rep, fotoBukti: loaded, fotoCount: loaded.length };
+            }
+          }
+
+          if (!hydrated.fotoBukti || hydrated.fotoBukti.length === 0) continue;
+
+          const { driveViewUrls, driveLinks } = await uploadReportPhotosToDrive(hydrated);
+          const allUploadedToDrive =
+            driveViewUrls.length > 0 && driveViewUrls.every((u) => u.startsWith('http'));
+
+          if (allUploadedToDrive) {
+            const updates: Partial<CleaningReport> = {
+              fotoBukti: driveViewUrls,
+              drivePhotoLinks: driveLinks,
+              fotoCount: driveViewUrls.length,
+              photosOffloaded: false,
+            };
+            updateReport(rep.id, updates);
+            await updateReportInCloud(rep.id, updates).catch(() => {});
+            await cleanupTemporaryReportPhotosInCloud(rep.id);
+            if (isAutoBackupEnabled()) {
+              await uploadSingleReportToDrive({ ...hydrated, ...updates }).catch(() => {});
+            }
+            archivedCount++;
+          }
+        } catch (itemErr: any) {
+          console.warn(`Auto-archive report ${rep.id} to Superadmin Drive skipped:`, itemErr);
+          if (itemErr?.isDriveAuthError) break;
+        }
+      }
+
+      if (archivedCount > 0) {
+        const refreshed = getReports();
+        setReports(refreshed);
+        if (isAutoBackupEnabled()) {
+          await executeAutoBackupToDrive(refreshed).catch(() => {});
+        }
+        showToast(
+          `☁️ ${archivedCount} laporan petugas & foto otomatis diarsipkan ke Google Drive Superadmin!`,
+          'success'
+        );
+      }
+    } finally {
+      isAutoArchivingDriveRef.current = false;
+      setIsAutoArchivingDrive(false);
+    }
+  };
+
+  useEffect(() => {
+    const isAdminSession =
+      currentUser?.role === 'superadmin' ||
+      currentUser?.email?.trim().toLowerCase() === 'operasional.scb@gmail.com';
+    if (
+      isAdminSession &&
+      isGoogleDriveConnected &&
+      cloudUserEmail &&
+      isAutoPhotosUploadEnabled() &&
+      reports.some(isReportPendingDriveArchive)
+    ) {
+      archivePendingReportsToSuperAdminDrive(false).catch(() => {});
+    }
+  }, [currentUser, isGoogleDriveConnected, cloudUserEmail, reports]);
+
+  const handleConnectGoogleDrive = async () => {
+    try {
+      const res = await googleSignIn('gis', currentUser?.email, 'drive');
+      if (res?.accessToken) {
+        setIsGoogleDriveConnected(true);
+        showToast(
+          `Google Drive terhubung (${res.profile.email || 'Akun Google'}). Foto & laporan siap disimpan/dimuat langsung dari Google Drive.`,
+          'success'
+        );
+        attemptedAutoArchiveIdsRef.current.clear();
+        archivePendingReportsToSuperAdminDrive(true).catch(() => {});
+      }
+    } catch (err: any) {
+      const parsed = parseAuthError(err);
+      showToast(parsed.message || 'Gagal menghubungkan Google Drive.', 'error');
+      throw err;
+    }
+  };
+
+  const handleSyncReportsFromDrive = async (
+    customReportsFromDrive?: CleaningReport[],
+    filesScannedOverride?: number
+  ): Promise<{ totalLoaded: number; newlyAdded: number }> => {
+    let driveReports = customReportsFromDrive;
+    let filesScanned = filesScannedOverride ?? 0;
+
+    if (!driveReports) {
+      let token = await getGoogleAccessToken();
+      if (!token) {
+        const res = await googleSignIn('gis', currentUser?.email, 'drive');
+        token = res?.accessToken || null;
+        setIsGoogleDriveConnected(Boolean(token));
+      }
+      if (!token) {
+        throw new Error('Akses Google Drive belum aktif.');
+      }
+      const fetched = await fetchReportsFromGoogleDrive();
+      driveReports = fetched.reports;
+      filesScanned = fetched.filesScanned;
+    }
+
+    const currentList = getReports();
+    const reportMap = new Map<string, CleaningReport>(currentList.map((r) => [r.id, r]));
+    let newlyAdded = 0;
+
+    for (const driveRep of driveReports) {
+      if (!driveRep || !driveRep.id) continue;
+      const existing = reportMap.get(driveRep.id);
+      if (!existing) {
+        reportMap.set(driveRep.id, driveRep);
+        newlyAdded++;
+      } else {
+        const mergedDriveLinks =
+          driveRep.drivePhotoLinks && driveRep.drivePhotoLinks.length > 0
+            ? driveRep.drivePhotoLinks
+            : existing.drivePhotoLinks;
+        const existingHasFullPhotos =
+          Array.isArray(existing.fotoBukti) &&
+          existing.fotoBukti.some(
+            (p) =>
+              p.startsWith('http://') ||
+              p.startsWith('https://') ||
+              p.length > 26_000
+          );
+        const mergedFotoBukti =
+          !existingHasFullPhotos && driveRep.fotoBukti && driveRep.fotoBukti.length > 0
+            ? driveRep.fotoBukti
+            : existing.fotoBukti;
+        const mergedStatus =
+          existing.statusVerifikasi === 'Menunggu' && driveRep.statusVerifikasi !== 'Menunggu'
+            ? {
+                statusVerifikasi: driveRep.statusVerifikasi,
+                catatanSupervisor: driveRep.catatanSupervisor ?? existing.catatanSupervisor,
+                diverifikasiOleh: driveRep.diverifikasiOleh ?? existing.diverifikasiOleh,
+                diverifikasiPada: driveRep.diverifikasiPada ?? existing.diverifikasiPada,
+              }
+            : {};
+
+        reportMap.set(driveRep.id, {
+          ...existing,
+          ...mergedStatus,
+          fotoBukti: mergedFotoBukti,
+          fotoCount: existing.fotoCount ?? mergedFotoBukti?.length ?? 0,
+          drivePhotoLinks: mergedDriveLinks,
+        });
+      }
+    }
+
+    const mergedList = Array.from(reportMap.values()).sort(
+      (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+    );
+    saveReports(mergedList);
+    setReports(mergedList);
+
+    showToast(
+      driveReports.length > 0
+        ? `Berhasil memuat ${driveReports.length} laporan dari ${filesScanned} berkas Google Drive (${newlyAdded} baru).`
+        : 'Tidak ada berkas cadangan laporan yang ditemukan di folder Google Drive.',
+      driveReports.length > 0 ? 'success' : 'info'
+    );
+
+    return { totalLoaded: driveReports.length, newlyAdded };
+  };
+
   // Handlers for Reports
   const handleAddNewReport = async (
     newReportData: Omit<CleaningReport, 'id' | 'timestamp'> & { id?: string; timestamp?: number }
   ): Promise<{ saved: CleaningReport; cloudResult: CloudSaveResult }> => {
-    const reportWithAuthor = auth.currentUser?.uid
-      ? { ...newReportData, authorUid: auth.currentUser.uid }
-      : newReportData;
+    const stableId = newReportData.id || `rep-${Date.now()}`;
+    const stableTimestamp = newReportData.timestamp || Date.now();
+    let preparedReport: CleaningReport = {
+      ...newReportData,
+      id: stableId,
+      timestamp: stableTimestamp,
+      ...(auth.currentUser?.uid ? { authorUid: auth.currentUser.uid } : {}),
+    };
 
-    // 1. Save locally first for instant feedback
-    const saved = addReport(reportWithAuthor);
+    // 1. If Google Drive is connected & auto photo upload is enabled, upload photos to Drive FIRST
+    // so Firestore & the app reference Google Drive URLs directly instead of heavy base64 strings.
+    let uploadedPhotosToDriveCount = 0;
+    const activeDriveToken = await getGoogleAccessToken().catch(() => null);
+    if (
+      activeDriveToken &&
+      isAutoPhotosUploadEnabled() &&
+      preparedReport.fotoBukti &&
+      preparedReport.fotoBukti.length > 0
+    ) {
+      try {
+        const { driveViewUrls, driveLinks, uploadedCount } = await uploadReportPhotosToDrive(preparedReport);
+        if (driveViewUrls.length > 0 && driveViewUrls.some((u) => u.startsWith('http'))) {
+          preparedReport = {
+            ...preparedReport,
+            fotoBukti: driveViewUrls,
+            drivePhotoLinks: driveLinks,
+            fotoCount: driveViewUrls.length,
+            photosOffloaded: false,
+          };
+          uploadedPhotosToDriveCount = uploadedCount;
+        }
+      } catch (drivePhotoErr) {
+        console.warn('Direct Google Drive photo upload skipped, falling back to local/Firestore:', drivePhotoErr);
+      }
+    }
+
+    // 2. Save locally for instant feedback
+    const saved = addReport(preparedReport);
     setReports(getReports());
 
-    // 2. Persist to Firestore Cloud in real-time and await exact outcome
+    // 3. Persist to Firestore Cloud in real-time and await exact outcome
     let cloudResult: CloudSaveResult;
     try {
       cloudResult = await saveReportToCloud(saved);
       setReports(getReports());
       if (cloudResult.status === 'synced') {
-        showToast(`Laporan ${saved.area} berhasil disimpan & disinkronkan ke Cloud!`);
+        if (uploadedPhotosToDriveCount > 0) {
+          showToast(
+            `Laporan ${saved.area} & ${uploadedPhotosToDriveCount} foto berhasil disimpan ke Google Drive & Cloud!`
+          );
+        } else {
+          showToast(`Laporan ${saved.area} berhasil disimpan & disinkronkan ke Cloud!`);
+        }
       } else {
         showToast(
           cloudResult.message || `Laporan ${saved.area} tersimpan lokal (belum masuk ke Cloud).`,
@@ -507,43 +769,45 @@ export default function App() {
       showToast(cloudResult.message || 'Gagal mengirim ke Cloud.', 'error');
     }
 
-    // 3. Automatic Google Drive Photo Archive & Backup (non-blocking background task)
-    getGoogleAccessToken()
-      .then((token) => {
-        if (!token) {
-          if (isAutoBackupEnabled()) {
-            showToast('ℹ️ Laporan tersimpan di sistem. Buka tab Cadangan Data & klik "Aktifkan" agar data otomatis terunggah ke Google Drive.', 'info');
+    // 4. Upload individual report JSON & update Drive archive in background if Drive is connected
+    if (activeDriveToken) {
+      (async () => {
+        if (uploadedPhotosToDriveCount === 0 && isAutoPhotosUploadEnabled() && saved.fotoBukti && saved.fotoBukti.length > 0) {
+          try {
+            const { driveViewUrls, driveLinks, uploadedCount } = await uploadReportPhotosToDrive(saved);
+            if (uploadedCount > 0 && driveLinks.length > 0) {
+              updateReport(saved.id, {
+                fotoBukti: driveViewUrls,
+                drivePhotoLinks: driveLinks,
+                fotoCount: driveViewUrls.length,
+                photosOffloaded: false,
+              });
+              setReports(getReports());
+              await updateReportInCloud(saved.id, {
+                fotoBukti: driveViewUrls,
+                drivePhotoLinks: driveLinks,
+                fotoCount: driveViewUrls.length,
+                photosOffloaded: false,
+              }).catch(() => {});
+              showToast(`📸 ${uploadedCount} foto bukti otomatis diarsipkan ke Google Drive!`, 'success');
+            }
+          } catch (photoErr) {
+            console.warn('Auto upload photos to Drive error:', photoErr);
           }
-          return;
         }
-        (async () => {
-          if (isAutoPhotosUploadEnabled() && saved.fotoBukti && saved.fotoBukti.length > 0) {
-            try {
-              const { driveLinks, uploadedCount } = await uploadReportPhotosToDrive(saved);
-              if (uploadedCount > 0 && driveLinks.length > 0) {
-                updateReport(saved.id, { drivePhotoLinks: driveLinks });
-                setReports(getReports());
-                await updateReportInCloud(saved.id, { drivePhotoLinks: driveLinks }).catch(() => {});
-                showToast(`📸 ${uploadedCount} foto bukti otomatis diarsipkan ke Google Drive!`, 'success');
-              }
-            } catch (photoErr) {
-              console.warn('Auto upload photos to Drive error:', photoErr);
-            }
-          }
 
-          if (isAutoBackupEnabled()) {
-            try {
-              const allLatestReports = getReports();
-              await executeAutoBackupToDrive(allLatestReports);
-              showToast('☁️ Data laporan otomatis dicadangkan ke Google Drive!', 'info');
-            } catch (backupErr: any) {
-              console.warn('Auto backup to Google Drive error:', backupErr);
-              showToast('⚠️ Gagal menyimpan ke Google Drive: ' + (backupErr?.message || 'Periksa izin akun'), 'error');
-            }
+        if (isAutoBackupEnabled()) {
+          try {
+            const latestSelf = getReports().find((r) => r.id === saved.id) || saved;
+            await uploadSingleReportToDrive(latestSelf);
+            await executeAutoBackupToDrive(getReports());
+            showToast('☁️ Data laporan otomatis disimpan ke Google Drive!', 'info');
+          } catch (backupErr: any) {
+            console.warn('Auto backup to Google Drive error:', backupErr);
           }
-        })();
-      })
-      .catch(() => {});
+        }
+      })();
+    }
 
     return { saved, cloudResult };
   };
@@ -1047,6 +1311,12 @@ export default function App() {
             onRefreshCloudReports={refreshReportsFromCloudNow}
             onLoadOlderReports={loadOlderReportsFromCloud}
             onLoadReportPhotos={fetchReportPhotosFromCloud}
+            isGoogleDriveConnected={isGoogleDriveConnected}
+            onConnectGoogleDrive={handleConnectGoogleDrive}
+            onSyncReportsFromDrive={() => handleSyncReportsFromDrive()}
+            pendingDriveArchiveCount={reports.filter(isReportPendingDriveArchive).length}
+            isAutoArchivingDrive={isAutoArchivingDrive}
+            onArchivePendingToDrive={() => archivePendingReportsToSuperAdminDrive(true)}
           />
         )}
 
@@ -1062,6 +1332,8 @@ export default function App() {
               initialArea={preselectedArea}
               isCloudSynced={Boolean(cloudUserEmail)}
               isAuthReady={isAuthReady}
+              isGoogleDriveConnected={isGoogleDriveConnected}
+              onConnectGoogleDrive={handleConnectGoogleDrive}
               onOpenLoginModal={handleOpenLoginModal}
               onRetryCloudSync={handleRetrySingleReportSync}
               onSubmitSuccess={async (newReport) => {
@@ -1183,6 +1455,8 @@ export default function App() {
                 onShowToast={showToast}
                 onUpdateReport={handleUpdateReport}
                 onRestoreFullBackup={handleRestoreFullBackup}
+                onSyncReportsFromDrive={handleSyncReportsFromDrive}
+                isFirestoreQuotaLimited={isFirestoreQuotaLimited}
                 onRestoreReports={(restoredReports) => {
                   saveReports(restoredReports);
                   setReports(restoredReports);

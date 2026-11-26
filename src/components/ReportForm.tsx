@@ -48,7 +48,9 @@ import {
   ShieldCheck,
   UserCheck,
   Info,
+  Cloud,
   CloudOff,
+  HardDrive,
   RefreshCw,
   LogIn
 } from 'lucide-react';
@@ -63,6 +65,8 @@ interface ReportFormProps {
   initialArea?: string | null;
   isCloudSynced?: boolean;
   isAuthReady?: boolean;
+  isGoogleDriveConnected?: boolean;
+  onConnectGoogleDrive?: () => Promise<void>;
   onOpenLoginModal?: (reason?: string) => void;
   onRetryCloudSync?: (reportId: string) => Promise<CloudSaveResult>;
   onSubmitSuccess: (
@@ -81,6 +85,8 @@ export const ReportForm: React.FC<ReportFormProps> = ({
   initialArea,
   isCloudSynced = false,
   isAuthReady = false,
+  isGoogleDriveConnected = false,
+  onConnectGoogleDrive,
   onOpenLoginModal,
   onRetryCloudSync,
   onSubmitSuccess,
@@ -162,6 +168,7 @@ export const ReportForm: React.FC<ReportFormProps> = ({
   // Status
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
+  const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
   const [submitSuccess, setSubmitSuccess] = useState<CleaningReport | null>(null);
   const [submitCloudResult, setSubmitCloudResult] = useState<CloudSaveResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -1015,6 +1022,62 @@ export const ReportForm: React.FC<ReportFormProps> = ({
           <p className="text-xs text-slate-500 mb-3">
             Ambil foto langsung dengan kamera ponsel atau pilih dari galeri dokumen (HD hingga 1280px, min. {activeSettings.minPhotos || 1}, maks. 5 foto)
           </p>
+
+          {/* Google Drive Direct Storage Indicator */}
+          {isGoogleDriveConnected ? (
+            <div className="mb-3.5 px-3.5 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2">
+              <Cloud className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Google Drive Terhubung:</strong> Foto &amp; data laporan otomatis diunggah dan dipanggil langsung dari Google Drive SCB.
+              </span>
+            </div>
+          ) : isSuperOrSpv && onConnectGoogleDrive ? (
+            <div className="mb-3.5 p-3 rounded-xl bg-blue-50/80 border border-blue-200 text-blue-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-start gap-2">
+                <HardDrive className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold text-blue-950">Simpan Foto Langsung ke Google Drive Superadmin</p>
+                  <p className="text-[11px] text-blue-800">
+                    Hubungkan Google Drive Superadmin agar foto bukti langsung diunggah ke Drive SCB dan otomatis mengarsipkan foto tertunda dari petugas.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isConnectingDrive}
+                onClick={async () => {
+                  setIsConnectingDrive(true);
+                  try {
+                    await onConnectGoogleDrive();
+                  } catch {
+                    // Toast error handled by parent
+                  } finally {
+                    setIsConnectingDrive(false);
+                  }
+                }}
+                className="self-start sm:self-center shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-lg text-[11px] transition-colors cursor-pointer whitespace-nowrap"
+              >
+                {isConnectingDrive ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghubungkan...</span>
+                  </>
+                ) : (
+                  <>
+                    <Cloud className="w-3.5 h-3.5" />
+                    <span>Hubungkan Google Drive</span>
+                  </>
+                )}
+              </button>
+            </div>
+          ) : (
+            <div className="mb-3.5 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 text-xs flex items-start gap-2">
+              <Cloud className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <span>
+                <strong>Upload Langsung via Aplikasi:</strong> Anda tidak perlu menghubungkan Google Drive pribadi. Foto dikirim aman melalui aplikasi dan otomatis diarsipkan ke Google Drive Superadmin SCB.
+              </span>
+            </div>
+          )}
 
           {/* Action buttons */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">

@@ -1,11 +1,15 @@
 import { getGoogleAccessToken, clearStoredGoogleAuth } from './googleAuth';
 import { CleaningReport } from '../types';
+import { extractGoogleDriveFileId } from '../utils/imageCompressor';
 
 function createDriveAuthError(message: string): Error & { isDriveAuthError?: boolean } {
   const err: Error & { isDriveAuthError?: boolean } = new Error(message);
   err.isDriveAuthError = true;
   return err;
 }
+
+// In-memory Blob URL cache for authenticated Google Drive image loading
+const driveImageBlobCache = new Map<string, string>();
 
 export const DEFAULT_DATABASE_FOLDER_ID = '1EW55LPCuje5G3OOB4oiMpd5JGnTf3H5Z';
 export const DEFAULT_DATABASE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_DATABASE_FOLDER_ID}?usp=sharing`;
@@ -294,6 +298,76 @@ export async function uploadFileToDrive(
 }
 
 /**
+ * Best-effort permission helper so uploaded report photos can be viewed across
+ * supervisor/admin browsers from Google Drive links.
+ */
+async function setDriveFileReadable(fileId: string, token: string): Promise<void> {
+  try {
+    await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}/permissions?supportsAllDrives=true`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          role: 'reader',
+          type: 'anyone',
+        }),
+      }
+    );
+  } catch {
+    // Non-fatal: workspace domain policies may restrict 'anyone' sharing; authenticated Drive API fallback still works
+  }
+}
+
+/**
+ * Fetches an image directly from Google Drive API (alt=media) using the active
+ * Google Drive access token and caches a local Blob ObjectURL in memory.
+ */
+export async function fetchDriveImageBlobUrl(fileIdOrUrl: string): Promise<string | null> {
+  const fileId = extractGoogleDriveFileId(fileIdOrUrl) ||
+    (/^[a-zA-Z0-9_-]{15,}$/.test(fileIdOrUrl.trim()) ? fileIdOrUrl.trim() : null);
+  if (!fileId) return null;
+
+  const cached = driveImageBlobCache.get(fileId);
+  if (cached) return cached;
+
+  const token = await getGoogleAccessToken();
+  if (!token) return null;
+
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    if (!res.ok) {
+      if (res.status === 401) {
+        clearStoredGoogleAuth();
+      }
+      return null;
+    }
+    const blob = await res.blob();
+    if (!blob || blob.size === 0) return null;
+    const objectUrl = URL.createObjectURL(blob);
+    driveImageBlobCache.set(fileId, objectUrl);
+    return objectUrl;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds a compact direct image reference URL backed by Google Drive file ID.
+ */
+export function buildDriveDirectViewUrl(fileId: string): string {
+  return `https://drive.google.com/uc?export=view&id=${fileId}`;
+}
+
+/**
  * Creates and uploads a full JSON backup of reports and master data to Google Drive
  */
 export async function backupReportsToGoogleDrive(
@@ -443,38 +517,64 @@ export async function uploadBase64ImageToDrive(
 }
 
 /**
- * Automatically uploads all photos from a cleaning report to Google Drive.
- * Preserves local compressed base64 images in fotoBukti so Dashboard thumbnails always render
- * reliably across all users/devices, while returning Drive links for drivePhotoLinks backup.
+ * Uploads all photos from a cleaning report to Google Drive.
+ * Returns both webViewLinks (for Drive folder links) and direct Drive view URLs
+ * (`driveViewUrls`) so the app can load photos directly from Google Drive without
+ * storing heavy base64 payloads inside Firestore.
  */
 export async function uploadReportPhotosToDrive(
   report: CleaningReport,
   folderId?: string
-): Promise<{ updatedPhotos: string[]; uploadedCount: number; driveLinks: string[] }> {
+): Promise<{
+  updatedPhotos: string[];
+  driveViewUrls: string[];
+  uploadedCount: number;
+  driveLinks: string[];
+}> {
   if (!report.fotoBukti || report.fotoBukti.length === 0) {
-    return { updatedPhotos: [], uploadedCount: 0, driveLinks: report.drivePhotoLinks || [] };
+    return {
+      updatedPhotos: [],
+      driveViewUrls: [],
+      uploadedCount: 0,
+      driveLinks: report.drivePhotoLinks || [],
+    };
   }
 
   const token = await getGoogleAccessToken();
   if (!token) {
-    return { updatedPhotos: report.fotoBukti, uploadedCount: 0, driveLinks: report.drivePhotoLinks || [] };
+    return {
+      updatedPhotos: report.fotoBukti,
+      driveViewUrls: [],
+      uploadedCount: 0,
+      driveLinks: report.drivePhotoLinks || [],
+    };
   }
 
   const targetFolder = folderId || getConfiguredFolderId();
   const updatedPhotos: string[] = [...report.fotoBukti];
   const existingDriveLinks: string[] = Array.isArray(report.drivePhotoLinks) ? [...report.drivePhotoLinks] : [];
   const driveLinks: string[] = [];
+  const driveViewUrls: string[] = [];
   let uploadedCount = 0;
 
   for (let i = 0; i < report.fotoBukti.length; i++) {
     const photo = report.fotoBukti[i];
-    // If fotoBukti itself already holds an external URL (legacy) or already archived at index i, reuse it
     if (photo.startsWith('http://') || photo.startsWith('https://')) {
-      driveLinks.push(photo);
+      const existingFileId = extractGoogleDriveFileId(photo);
+      driveLinks.push(
+        existingFileId ? `https://drive.google.com/file/d/${existingFileId}/view` : photo
+      );
+      driveViewUrls.push(
+        existingFileId ? buildDriveDirectViewUrl(existingFileId) : photo
+      );
       continue;
     }
     if (existingDriveLinks[i] && existingDriveLinks[i].startsWith('http')) {
+      const existingFileId = extractGoogleDriveFileId(existingDriveLinks[i]);
       driveLinks.push(existingDriveLinks[i]);
+      driveViewUrls.push(
+        existingFileId ? buildDriveDirectViewUrl(existingFileId) : existingDriveLinks[i]
+      );
       continue;
     }
 
@@ -484,17 +584,146 @@ export async function uploadReportPhotosToDrive(
       const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
 
       const uploadResult = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
+      await setDriveFileReadable(uploadResult.fileId, token);
+
       driveLinks.push(uploadResult.webViewLink);
+      driveViewUrls.push(buildDriveDirectViewUrl(uploadResult.fileId));
       uploadedCount++;
     } catch (err: any) {
       console.warn(`Gagal mengunggah foto ke-${i + 1} ke Google Drive:`, err);
+      driveViewUrls.push(photo);
       if (err?.isDriveAuthError) {
         break;
       }
     }
   }
 
-  return { updatedPhotos, uploadedCount, driveLinks };
+  return { updatedPhotos, driveViewUrls, uploadedCount, driveLinks };
+}
+
+/**
+ * Uploads a single submitted officer cleaning report JSON directly to the SCB Google Drive folder.
+ */
+export async function uploadSingleReportToDrive(
+  report: CleaningReport,
+  folderId?: string
+): Promise<DriveUploadResult> {
+  const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
+  const cleanArea = rawArea.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
+  const fileName = `Laporan_${report.tanggal}_${cleanArea}_${report.id}.json`;
+  const payload = {
+    type: 'single_cleaning_report',
+    appName: 'SIM-BERSIH SCB',
+    savedAt: new Date().toISOString(),
+    report,
+  };
+  return uploadFileToDrive(
+    fileName,
+    JSON.stringify(payload, null, 2),
+    'application/json',
+    folderId
+  );
+}
+
+/**
+ * Fetches cleaning reports and Drive photo references directly from the configured Google Drive folder.
+ * Reads the latest Backup_Laporan_Kebersihan_SCB_*.json plus any individual Laporan_*.json files.
+ */
+export async function fetchReportsFromGoogleDrive(
+  folderId?: string
+): Promise<{
+  reports: CleaningReport[];
+  filesScanned: number;
+  latestBackupName?: string;
+}> {
+  const token = await getGoogleAccessToken();
+  if (!token) {
+    throw new Error('Akses Google Drive belum aktif. Hubungkan akun Google terlebih dahulu.');
+  }
+
+  const targetFolder = folderId || getConfiguredFolderId();
+  const files = await listDriveFiles(targetFolder);
+  const reportMap = new Map<string, CleaningReport>();
+  let filesScanned = 0;
+  let latestBackupName: string | undefined;
+
+  const normalizeLoadedReport = (raw: CleaningReport): CleaningReport => {
+    const rawLinks = Array.isArray(raw.drivePhotoLinks) ? raw.drivePhotoLinks : [];
+    const fallbackDriveViewPhotos = rawLinks.map((link) => {
+      const fid = extractGoogleDriveFileId(link);
+      return fid ? buildDriveDirectViewUrl(fid) : link;
+    });
+    const currentPhotos = Array.isArray(raw.fotoBukti) ? raw.fotoBukti : [];
+    const effectivePhotos =
+      fallbackDriveViewPhotos.length > 0 &&
+      (currentPhotos.length === 0 ||
+        (currentPhotos.length < fallbackDriveViewPhotos.length &&
+          currentPhotos.every((p) => !p.startsWith('http'))))
+        ? fallbackDriveViewPhotos
+        : currentPhotos;
+
+    return {
+      ...raw,
+      checklist: Array.isArray(raw.checklist) ? raw.checklist : [],
+      keteranganTambahan: raw.keteranganTambahan ?? '',
+      fotoBukti: effectivePhotos,
+      fotoCount: raw.fotoCount ?? effectivePhotos.length,
+      drivePhotoLinks: rawLinks.length > 0 ? rawLinks : raw.drivePhotoLinks,
+    };
+  };
+
+  // 1. Read the newest full JSON backup file first (if any)
+  const backupFiles = files.filter(
+    (f) =>
+      f.mimeType === 'application/json' ||
+      f.name.toLowerCase().endsWith('.json')
+  );
+
+  const latestBulkBackup = backupFiles.find((f) =>
+    f.name.startsWith('Backup_Laporan_Kebersihan_SCB_') || f.name.startsWith('Backup_SIM_BERSIH_SCB_')
+  );
+
+  if (latestBulkBackup) {
+    try {
+      const json = await readJsonFromDrive<any>(latestBulkBackup.id);
+      filesScanned++;
+      latestBackupName = latestBulkBackup.name;
+      const list = Array.isArray(json) ? json : Array.isArray(json?.reports) ? json.reports : [];
+      for (const r of list) {
+        if (r && r.id) {
+          reportMap.set(r.id, normalizeLoadedReport(r));
+        }
+      }
+    } catch (err) {
+      console.warn('Could not read latest Drive backup JSON:', err);
+    }
+  }
+
+  // 2. Also read up to 25 individual Laporan_*.json files newer than or missing from the bulk backup
+  const individualReportFiles = backupFiles
+    .filter((f) => f.name.startsWith('Laporan_') && f.name.endsWith('.json'))
+    .slice(0, 25);
+
+  for (const file of individualReportFiles) {
+    try {
+      const json = await readJsonFromDrive<any>(file.id);
+      filesScanned++;
+      const rep: CleaningReport | undefined = json?.report || (json?.id && json?.area ? json : undefined);
+      if (rep && rep.id) {
+        const existing = reportMap.get(rep.id);
+        if (!existing || (rep.timestamp || 0) >= (existing.timestamp || 0)) {
+          reportMap.set(rep.id, normalizeLoadedReport(rep));
+        }
+      }
+    } catch (err) {
+      console.warn(`Could not read individual Drive report ${file.name}:`, err);
+    }
+  }
+
+  const reports = Array.from(reportMap.values()).sort(
+    (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+  );
+  return { reports, filesScanned, latestBackupName };
 }
 
 /**
@@ -525,8 +754,29 @@ export async function executeAutoBackupToDrive(
 }
 
 /**
- * Batch upload all pending local/base64 photos across all reports into Google Drive
- * while keeping fotoBukti intact for reliable dashboard rendering.
+ * Returns true if a report has photos still waiting to be archived to Superadmin's Google Drive
+ * (or still stored as offloaded Firestore base64 payloads).
+ */
+export function isReportPendingDriveArchive(report: CleaningReport): boolean {
+  const expectedCount = report.fotoCount ?? report.fotoBukti?.length ?? 0;
+  if (expectedCount <= 0) return false;
+  const archivedLinksCount = (report.drivePhotoLinks || []).filter(
+    (l) => typeof l === 'string' && l.startsWith('http')
+  ).length;
+  if (archivedLinksCount < expectedCount) return true;
+  if (report.photosOffloaded) return true;
+  if (
+    Array.isArray(report.fotoBukti) &&
+    report.fotoBukti.some((p) => p.startsWith('data:image/') && !p.startsWith('data:image/svg+xml'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Batch upload all pending local/base64 photos across all reports into Superadmin's Google Drive
+ * and replace fotoBukti with lightweight Google Drive view URLs.
  */
 export async function batchUploadAllReportsPhotosToDrive(
   reports: CleaningReport[],
@@ -565,41 +815,63 @@ export async function batchUploadAllReportsPhotosToDrive(
     let reportModified = false;
     const existingLinks = Array.isArray(report.drivePhotoLinks) ? [...report.drivePhotoLinks] : [];
     const newDriveLinks: string[] = [];
+    const newDriveViewUrls: string[] = [];
 
     for (let i = 0; i < report.fotoBukti.length; i++) {
       const photo = report.fotoBukti[i];
       if (photo.startsWith('http://') || photo.startsWith('https://')) {
-        newDriveLinks.push(photo);
+        const fid = extractGoogleDriveFileId(photo);
+        newDriveLinks.push(fid ? `https://drive.google.com/file/d/${fid}/view` : photo);
+        newDriveViewUrls.push(fid ? buildDriveDirectViewUrl(fid) : photo);
         continue;
       }
       if (existingLinks[i] && existingLinks[i].startsWith('http')) {
+        const fid = extractGoogleDriveFileId(existingLinks[i]);
         newDriveLinks.push(existingLinks[i]);
+        newDriveViewUrls.push(fid ? buildDriveDirectViewUrl(fid) : existingLinks[i]);
+        if (report.photosOffloaded || photo.startsWith('data:image/')) {
+          reportModified = true;
+        }
         continue;
       }
 
-      if (photo.startsWith('data:image/')) {
+      if (photo.startsWith('data:image/') && !photo.startsWith('data:image/svg+xml')) {
         try {
           const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
           const cleanArea = rawArea.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
           const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
 
           const result = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
+          await setDriveFileReadable(result.fileId, token);
           newDriveLinks.push(result.webViewLink);
+          newDriveViewUrls.push(buildDriveDirectViewUrl(result.fileId));
           reportModified = true;
           totalUploaded++;
         } catch (e: any) {
           console.warn('Batch photo upload item error:', e);
+          newDriveViewUrls.push(photo);
           if (e?.isDriveAuthError) {
             throw e;
           }
         }
         processedCount++;
         if (onProgress) onProgress(processedCount, totalPhotos);
+      } else {
+        newDriveViewUrls.push(photo);
       }
     }
 
-    if (reportModified) {
-      const updated = { ...report, drivePhotoLinks: newDriveLinks };
+    const allArchivedToHttp =
+      newDriveViewUrls.length > 0 && newDriveViewUrls.every((u) => u.startsWith('http'));
+
+    if (reportModified || (report.photosOffloaded && allArchivedToHttp)) {
+      const updated: CleaningReport = {
+        ...report,
+        fotoBukti: allArchivedToHttp ? newDriveViewUrls : report.fotoBukti,
+        fotoCount: newDriveViewUrls.length,
+        photosOffloaded: allArchivedToHttp ? false : report.photosOffloaded,
+        drivePhotoLinks: newDriveLinks,
+      };
       updatedReports.push(updated);
       modifiedReports.push(updated);
     } else {
