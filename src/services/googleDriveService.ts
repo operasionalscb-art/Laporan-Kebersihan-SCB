@@ -1,11 +1,35 @@
-import { getGoogleAccessToken, clearStoredGoogleAuth } from './googleAuth';
+import {
+  getGoogleAccessToken,
+  clearActiveDriveToken,
+} from './googleAuth';
 import { CleaningReport } from '../types';
-import { extractGoogleDriveFileId } from '../utils/imageCompressor';
+import {
+  extractGoogleDriveFileId,
+  optimizePhotoForDrive,
+} from '../utils/imageCompressor';
 
 function createDriveAuthError(message: string): Error & { isDriveAuthError?: boolean } {
   const err: Error & { isDriveAuthError?: boolean } = new Error(message);
   err.isDriveAuthError = true;
   return err;
+}
+
+async function fetchDriveWithAuthRetry(
+  url: string,
+  initFactory: (token: string) => RequestInit
+): Promise<{ response: Response; tokenUsed: string }> {
+  const token = await getGoogleAccessToken();
+  if (!token) {
+    throw createDriveAuthError(
+      'Akses Google Drive belum terautentikasi. Silakan klik "Pulihkan Sesi Google Drive".'
+    );
+  }
+
+  const response = await fetch(url, initFactory(token));
+  if (response.status === 401) {
+    clearActiveDriveToken();
+  }
+  return { response, tokenUsed: token };
 }
 
 // In-memory Blob URL cache for authenticated Google Drive image loading
@@ -102,11 +126,6 @@ export async function listDriveFiles(
   folderId?: string,
   queryText?: string
 ): Promise<DriveFileItem[]> {
-  const token = await getGoogleAccessToken();
-  if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi. Silakan klik tombol "Hubungkan Akun Google".');
-  }
-
   const targetFolderId = folderId || getConfiguredFolderId();
 
   let q = "trashed = false";
@@ -126,16 +145,19 @@ export async function listDriveFiles(
     includeItemsFromAllDrives: 'true',
   });
 
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  const { response } = await fetchDriveWithAuthRetry(
+    `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+    (token) => ({
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+  );
 
   if (!response.ok) {
     if (response.status === 401) {
-      clearStoredGoogleAuth();
-      throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan klik "Hubungkan Akun Google" untuk memperbarui sesi.');
+      clearActiveDriveToken();
+      throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan klik "Hubungkan Google Drive" untuk memperbarui sesi.');
     }
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error?.message || `Gagal memuat file Google Drive (${response.status})`);
@@ -143,6 +165,129 @@ export async function listDriveFiles(
 
   const data = await response.json();
   return data.files || [];
+}
+
+const UPLOADED_REPORT_IDS_KEY = 'scb_gdrive_uploaded_report_ids';
+
+function getUploadedDriveReportIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(UPLOADED_REPORT_IDS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr.filter((x) => typeof x === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function markReportUploadedToDrive(reportId: string): void {
+  if (!reportId) return;
+  try {
+    const set = getUploadedDriveReportIds();
+    set.add(reportId);
+    // Keep recent 2000 report IDs bounded in localStorage
+    const list = Array.from(set).slice(-2000);
+    localStorage.setItem(UPLOADED_REPORT_IDS_KEY, JSON.stringify(list));
+  } catch {}
+}
+
+function buildReportJsonFileName(report: CleaningReport): string {
+  const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
+  const cleanArea = (rawArea || 'Area').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
+  return `Laporan_${report.tanggal}_${cleanArea}_${report.id}.json`;
+}
+
+function buildDeterministicPhotoFileName(
+  report: CleaningReport,
+  index: number
+): string {
+  const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
+  const cleanArea = (rawArea || 'Area').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
+  return `Foto_${report.tanggal}_${cleanArea}_${report.id}_${index + 1}.jpg`;
+}
+
+/**
+ * Lists up to 1000 existing non-trashed files inside the target Google Drive folder
+ * to avoid re-uploading or replacing already-archived files.
+ */
+async function listAllDriveFolderFiles(folderId?: string): Promise<DriveFileItem[]> {
+  const targetFolderId = folderId || getConfiguredFolderId();
+  let q = 'trashed = false';
+  if (targetFolderId) {
+    q += ` and '${targetFolderId}' in parents`;
+  }
+
+  const allFiles: DriveFileItem[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const params = new URLSearchParams({
+      q,
+      pageSize: '1000',
+      fields: 'nextPageToken, files(id, name, mimeType, modifiedTime, webViewLink)',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const { response } = await fetchDriveWithAuthRetry(
+      `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+      (token) => ({
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    );
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearActiveDriveToken();
+        throw createDriveAuthError(
+          'Sesi Google Drive telah berakhir. Silakan klik "Pulihkan Sesi Google Drive".'
+        );
+      }
+      break;
+    }
+    const data = await response.json();
+    if (Array.isArray(data.files)) {
+      allFiles.push(...data.files);
+    }
+    pageToken = data.nextPageToken;
+  } while (pageToken && allFiles.length < 3000);
+
+  return allFiles;
+}
+
+/**
+ * Searches for a single existing non-trashed file in the target folder matching a query fragment.
+ */
+async function findExistingDriveFile(
+  qFragment: string,
+  folderId?: string
+): Promise<DriveFileItem | null> {
+  try {
+    const targetFolderId = folderId || getConfiguredFolderId();
+    const q = targetFolderId
+      ? `trashed = false and '${targetFolderId}' in parents and ${qFragment}`
+      : `trashed = false and ${qFragment}`;
+
+    const params = new URLSearchParams({
+      q,
+      pageSize: '5',
+      fields: 'files(id, name, mimeType, webViewLink)',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+    });
+
+    const { response } = await fetchDriveWithAuthRetry(
+      `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+      (token) => ({
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return Array.isArray(data.files) && data.files.length > 0 ? data.files[0] : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -183,7 +328,7 @@ export async function getDriveFolderDetails(folderId: string): Promise<{
       };
     }
     if (res.status === 401) {
-      clearStoredGoogleAuth();
+      clearActiveDriveToken();
     }
   } catch (err) {
     console.warn('Could not fetch folder details from Drive API:', err);
@@ -208,18 +353,16 @@ export async function getOrCreateScbDriveFolder(): Promise<string> {
  * Reads a JSON file directly from Google Drive (e.g. for database restoration/import).
  */
 export async function readJsonFromDrive<T = any>(fileId: string): Promise<T> {
-  const token = await getGoogleAccessToken();
-  if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi. Silakan hubungkan akun Google.');
-  }
-
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const { response: res } = await fetchDriveWithAuthRetry(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
+    (token) => ({
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  );
 
   if (!res.ok) {
     if (res.status === 401) {
-      clearStoredGoogleAuth();
+      clearActiveDriveToken();
       throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan hubungkan kembali akun Google.');
     }
     throw new Error(`Gagal mengunduh file dari Google Drive (${res.status})`);
@@ -237,11 +380,6 @@ export async function uploadFileToDrive(
   mimeType: string,
   parentFolderId?: string
 ): Promise<DriveUploadResult> {
-  const token = await getGoogleAccessToken();
-  if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi. Silakan klik "Hubungkan Akun Google".');
-  }
-
   const metadata: any = {
     name,
     mimeType,
@@ -268,21 +406,21 @@ export async function uploadFileToDrive(
 
   const fullBody = new Blob(bodyBlobParts);
 
-  const res = await fetch(
+  const { response: res } = await fetchDriveWithAuthRetry(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink&supportsAllDrives=true',
-    {
+    (token) => ({
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': `multipart/related; boundary=${boundary}`,
       },
       body: fullBody,
-    }
+    })
   );
 
   if (!res.ok) {
     if (res.status === 401) {
-      clearStoredGoogleAuth();
+      clearActiveDriveToken();
       throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
     }
     const err = await res.json().catch(() => ({}));
@@ -338,15 +476,15 @@ export async function fetchDriveImageBlobUrl(fileIdOrUrl: string): Promise<strin
   if (!token) return null;
 
   try {
-    const res = await fetch(
+    const { response: res } = await fetchDriveWithAuthRetry(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      }
+      (tk) => ({
+        headers: { Authorization: `Bearer ${tk}` },
+      })
     );
     if (!res.ok) {
       if (res.status === 401) {
-        clearStoredGoogleAuth();
+        clearActiveDriveToken();
       }
       return null;
     }
@@ -433,19 +571,17 @@ export async function exportCsvToGoogleDrive(
  * Explicit user confirmation before deleting a file in Google Drive
  */
 export async function deleteDriveFile(fileId: string): Promise<boolean> {
-  const token = await getGoogleAccessToken();
-  if (!token) {
-    throw new Error('Akses Google Drive belum terautentikasi.');
-  }
-
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const { response: res } = await fetchDriveWithAuthRetry(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+    (token) => ({
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  );
 
   if (!res.ok) {
     if (res.status === 401) {
-      clearStoredGoogleAuth();
+      clearActiveDriveToken();
       throw createDriveAuthError('Sesi Google Drive telah berakhir. Silakan hubungkan ulang akun Google.');
     }
     const err = await res.json().catch(() => ({}));
@@ -489,17 +625,19 @@ export function setAutoPhotosUploadEnabled(enabled: boolean): void {
 }
 
 /**
- * Uploads a base64 encoded image or data URL to Google Drive
+ * Uploads a base64 encoded image or data URL to Google Drive, optimizing only if oversized
+ * while preserving crisp HD resolution.
  */
 export async function uploadBase64ImageToDrive(
   base64Data: string,
   fileName: string,
   parentFolderId?: string
 ): Promise<DriveUploadResult> {
+  const optimizedDataUrl = await optimizePhotoForDrive(base64Data);
   let mimeType = 'image/jpeg';
-  let pureBase64 = base64Data;
+  let pureBase64 = optimizedDataUrl;
 
-  const match = base64Data.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.*)$/);
+  const match = optimizedDataUrl.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.*)$/);
   if (match) {
     mimeType = match[1];
     pureBase64 = match[2];
@@ -517,10 +655,8 @@ export async function uploadBase64ImageToDrive(
 }
 
 /**
- * Uploads all photos from a cleaning report to Google Drive.
- * Returns both webViewLinks (for Drive folder links) and direct Drive view URLs
- * (`driveViewUrls`) so the app can load photos directly from Google Drive without
- * storing heavy base64 payloads inside Firestore.
+ * Uploads ONLY new photos from a cleaning report to Google Drive (skipping existing Drive links
+ * or files already present in the folder without replacing/duplicating them).
  */
 export async function uploadReportPhotosToDrive(
   report: CleaningReport,
@@ -530,6 +666,7 @@ export async function uploadReportPhotosToDrive(
   driveViewUrls: string[];
   uploadedCount: number;
   driveLinks: string[];
+  hadUploadFailure: boolean;
 }> {
   if (!report.fotoBukti || report.fotoBukti.length === 0) {
     return {
@@ -537,6 +674,7 @@ export async function uploadReportPhotosToDrive(
       driveViewUrls: [],
       uploadedCount: 0,
       driveLinks: report.drivePhotoLinks || [],
+      hadUploadFailure: false,
     };
   }
 
@@ -547,6 +685,7 @@ export async function uploadReportPhotosToDrive(
       driveViewUrls: [],
       uploadedCount: 0,
       driveLinks: report.drivePhotoLinks || [],
+      hadUploadFailure: true,
     };
   }
 
@@ -556,6 +695,7 @@ export async function uploadReportPhotosToDrive(
   const driveLinks: string[] = [];
   const driveViewUrls: string[] = [];
   let uploadedCount = 0;
+  let hadUploadFailure = false;
 
   for (let i = 0; i < report.fotoBukti.length; i++) {
     const photo = report.fotoBukti[i];
@@ -579,50 +719,87 @@ export async function uploadReportPhotosToDrive(
     }
 
     try {
-      const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
-      const cleanArea = rawArea.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
-      const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
+      const fileName = buildDeterministicPhotoFileName(report, i);
+      const escapedName = fileName.replace(/'/g, "\\'");
+      // Check if this exact photo file already exists in Drive folder (avoid duplicate / replace)
+      const existingDrivePhoto = await findExistingDriveFile(`name = '${escapedName}'`, targetFolder);
+      if (existingDrivePhoto) {
+        driveLinks.push(
+          existingDrivePhoto.webViewLink || `https://drive.google.com/file/d/${existingDrivePhoto.id}/view`
+        );
+        driveViewUrls.push(buildDriveDirectViewUrl(existingDrivePhoto.id));
+        continue;
+      }
 
       const uploadResult = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
-      await setDriveFileReadable(uploadResult.fileId, token);
+      const activeToken = (await getGoogleAccessToken()) || token;
+      await setDriveFileReadable(uploadResult.fileId, activeToken);
 
       driveLinks.push(uploadResult.webViewLink);
       driveViewUrls.push(buildDriveDirectViewUrl(uploadResult.fileId));
       uploadedCount++;
     } catch (err: any) {
+      hadUploadFailure = true;
       console.warn(`Gagal mengunggah foto ke-${i + 1} ke Google Drive:`, err);
       driveViewUrls.push(photo);
       if (err?.isDriveAuthError) {
+        for (let j = i + 1; j < report.fotoBukti.length; j++) {
+          driveViewUrls.push(report.fotoBukti[j]);
+        }
         break;
       }
     }
   }
 
-  return { updatedPhotos, driveViewUrls, uploadedCount, driveLinks };
+  return { updatedPhotos, driveViewUrls, uploadedCount, driveLinks, hadUploadFailure };
 }
 
 /**
- * Uploads a single submitted officer cleaning report JSON directly to the SCB Google Drive folder.
+ * Uploads a single submitted officer cleaning report JSON directly to the SCB Google Drive folder
+ * ONLY if a file for that report ID does not already exist (never repeats or replaces existing files).
  */
 export async function uploadSingleReportToDrive(
   report: CleaningReport,
   folderId?: string
-): Promise<DriveUploadResult> {
-  const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
-  const cleanArea = rawArea.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
-  const fileName = `Laporan_${report.tanggal}_${cleanArea}_${report.id}.json`;
+): Promise<DriveUploadResult & { skipped?: boolean }> {
+  const fileName = buildReportJsonFileName(report);
+  const targetFolder = folderId || getConfiguredFolderId();
+
+  if (getUploadedDriveReportIds().has(report.id)) {
+    return {
+      fileId: '',
+      name: fileName,
+      webViewLink: '',
+      skipped: true,
+    };
+  }
+
+  const escapedId = report.id.replace(/'/g, "\\'");
+  const existing = await findExistingDriveFile(`name contains '${escapedId}.json'`, targetFolder);
+  if (existing) {
+    markReportUploadedToDrive(report.id);
+    return {
+      fileId: existing.id,
+      name: existing.name,
+      webViewLink: existing.webViewLink || `https://drive.google.com/file/d/${existing.id}/view`,
+      skipped: true,
+    };
+  }
+
   const payload = {
     type: 'single_cleaning_report',
     appName: 'SIM-BERSIH SCB',
     savedAt: new Date().toISOString(),
     report,
   };
-  return uploadFileToDrive(
+  const uploaded = await uploadFileToDrive(
     fileName,
     JSON.stringify(payload, null, 2),
     'application/json',
-    folderId
+    targetFolder
   );
+  markReportUploadedToDrive(report.id);
+  return { ...uploaded, skipped: false };
 }
 
 /**
@@ -727,30 +904,106 @@ export async function fetchReportsFromGoogleDrive(
 }
 
 /**
- * Automatically creates and updates the latest backup file in Google Drive
+ * Syncs ONLY new cleaning report JSON files to Google Drive without repeating or replacing
+ * reports that already exist in the configured folder.
+ */
+export async function syncNewReportsOnlyToDrive(
+  reports: CleaningReport[],
+  folderId?: string,
+  forceVerifyDrive = false
+): Promise<{
+  uploadedCount: number;
+  skippedCount: number;
+  totalReports: number;
+  lastUploadedName?: string;
+}> {
+  const token = await getGoogleAccessToken();
+  if (!token) {
+    throw createDriveAuthError('Akses Google Drive belum aktif.');
+  }
+
+  if (reports.length === 0) {
+    return { uploadedCount: 0, skippedCount: 0, totalReports: 0 };
+  }
+
+  const targetFolder = folderId || getConfiguredFolderId();
+  const localUploaded = forceVerifyDrive ? new Set<string>() : getUploadedDriveReportIds();
+
+  // Check if we need to query the Drive folder at all
+  const needsDriveCheck =
+    forceVerifyDrive || reports.some((r) => !localUploaded.has(r.id));
+
+  if (!needsDriveCheck) {
+    return {
+      uploadedCount: 0,
+      skippedCount: reports.length,
+      totalReports: reports.length,
+    };
+  }
+
+  const existingFiles = await listAllDriveFolderFiles(targetFolder);
+  const existingFileNames = existingFiles.map((f) => f.name || '');
+
+  const isReportAlreadyInDrive = (report: CleaningReport): boolean => {
+    if (localUploaded.has(report.id)) return true;
+    const exactName = buildReportJsonFileName(report);
+    const suffix = `_${report.id}.json`;
+    return existingFileNames.some((n) => n === exactName || n.endsWith(suffix));
+  };
+
+  let uploadedCount = 0;
+  let skippedCount = 0;
+  let lastUploadedName: string | undefined;
+
+  for (const report of reports) {
+    if (isReportAlreadyInDrive(report)) {
+      markReportUploadedToDrive(report.id);
+      skippedCount++;
+      continue;
+    }
+
+    const fileName = buildReportJsonFileName(report);
+    const payload = {
+      type: 'single_cleaning_report',
+      appName: 'SIM-BERSIH SCB',
+      savedAt: new Date().toISOString(),
+      report,
+    };
+    const res = await uploadFileToDrive(
+      fileName,
+      JSON.stringify(payload, null, 2),
+      'application/json',
+      targetFolder
+    );
+    markReportUploadedToDrive(report.id);
+    uploadedCount++;
+    lastUploadedName = res.name;
+  }
+
+  return {
+    uploadedCount,
+    skippedCount,
+    totalReports: reports.length,
+    lastUploadedName,
+  };
+}
+
+/**
+ * Compatibility helper: performs incremental new-files-only sync instead of repeatedly replacing
+ * a full daily JSON snapshot.
  */
 export async function executeAutoBackupToDrive(
   reports: CleaningReport[],
   folderId?: string
-): Promise<DriveUploadResult> {
-  const token = await getGoogleAccessToken();
-  if (!token) {
-    throw new Error('Akses Google Drive belum aktif.');
-  }
-
-  const payload = {
-    appName: 'SIM-BERSIH SCB',
-    institution: 'Sekolah Cendekia BAZNAS (SCB)',
-    backupTimestamp: new Date().toISOString(),
-    totalReports: reports.length,
-    reports,
+): Promise<DriveUploadResult & { uploadedCount: number; skippedCount: number }> {
+  const res = await syncNewReportsOnlyToDrive(reports, folderId, false);
+  return {
+    fileId: '',
+    name: res.lastUploadedName || 'Sinkronisasi Incremental',
+    webViewLink: '',
+    uploadedCount: res.uploadedCount,
+    skippedCount: res.skippedCount,
   };
-
-  const jsonString = JSON.stringify(payload, null, 2);
-  const dateStr = new Date().toISOString().slice(0, 10);
-  const fileName = `Backup_Laporan_Kebersihan_SCB_${dateStr}.json`;
-
-  return uploadFileToDrive(fileName, jsonString, 'application/json', folderId);
 }
 
 /**
@@ -792,6 +1045,12 @@ export async function batchUploadAllReportsPhotosToDrive(
   }
 
   const targetFolder = getConfiguredFolderId();
+  const existingDriveFiles = await listAllDriveFolderFiles(targetFolder).catch(() => [] as DriveFileItem[]);
+  const existingPhotoByName = new Map<string, DriveFileItem>();
+  for (const df of existingDriveFiles) {
+    if (df.name) existingPhotoByName.set(df.name, df);
+  }
+
   let totalUploaded = 0;
   const updatedReports: CleaningReport[] = [];
   const modifiedReports: CleaningReport[] = [];
@@ -836,11 +1095,20 @@ export async function batchUploadAllReportsPhotosToDrive(
       }
 
       if (photo.startsWith('data:image/') && !photo.startsWith('data:image/svg+xml')) {
-        try {
-          const rawArea = report.isAreaOther ? report.areaCustom || report.area : report.area;
-          const cleanArea = rawArea.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
-          const fileName = `Foto_${report.tanggal}_${cleanArea}_${i + 1}_${Date.now()}.jpg`;
+        const fileName = buildDeterministicPhotoFileName(report, i);
+        const alreadyOnDrive = existingPhotoByName.get(fileName);
+        if (alreadyOnDrive) {
+          newDriveLinks.push(
+            alreadyOnDrive.webViewLink || `https://drive.google.com/file/d/${alreadyOnDrive.id}/view`
+          );
+          newDriveViewUrls.push(buildDriveDirectViewUrl(alreadyOnDrive.id));
+          reportModified = true;
+          processedCount++;
+          if (onProgress) onProgress(processedCount, totalPhotos);
+          continue;
+        }
 
+        try {
           const result = await uploadBase64ImageToDrive(photo, fileName, targetFolder);
           await setDriveFileReadable(result.fileId, token);
           newDriveLinks.push(result.webViewLink);

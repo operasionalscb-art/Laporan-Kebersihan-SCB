@@ -94,7 +94,6 @@ import {
   uploadReportPhotosToDrive,
   uploadSingleReportToDrive,
   fetchReportsFromGoogleDrive,
-  executeAutoBackupToDrive,
   isAutoBackupEnabled,
   isAutoPhotosUploadEnabled,
   isReportPendingDriveArchive,
@@ -514,7 +513,6 @@ export default function App() {
 
     try {
       for (const rep of candidates) {
-        attemptedAutoArchiveIdsRef.current.add(rep.id);
         try {
           let hydrated = rep;
           const expectedCount = rep.fotoCount ?? rep.fotoBukti?.length ?? 0;
@@ -532,24 +530,46 @@ export default function App() {
 
           if (!hydrated.fotoBukti || hydrated.fotoBukti.length === 0) continue;
 
-          const { driveViewUrls, driveLinks } = await uploadReportPhotosToDrive(hydrated);
+          const { driveViewUrls, driveLinks, hadUploadFailure } = await uploadReportPhotosToDrive(hydrated);
           const allUploadedToDrive =
-            driveViewUrls.length > 0 && driveViewUrls.every((u) => u.startsWith('http'));
+            !hadUploadFailure &&
+            driveViewUrls.length > 0 &&
+            driveViewUrls.every((u) => u.startsWith('http'));
 
-          if (allUploadedToDrive) {
-            const updates: Partial<CleaningReport> = {
-              fotoBukti: driveViewUrls,
-              drivePhotoLinks: driveLinks,
-              fotoCount: driveViewUrls.length,
-              photosOffloaded: false,
-            };
+          const existingLinksCount = (rep.drivePhotoLinks || []).filter((l) => l && l.startsWith('http')).length;
+          const hasNewDriveLinks = driveLinks.length > existingLinksCount;
+
+          if (allUploadedToDrive || hasNewDriveLinks) {
+            const updates: Partial<CleaningReport> = allUploadedToDrive
+              ? {
+                  fotoBukti: driveViewUrls,
+                  drivePhotoLinks: driveLinks,
+                  fotoCount: driveViewUrls.length,
+                  photosOffloaded: false,
+                }
+              : {
+                  drivePhotoLinks: driveLinks,
+                };
             updateReport(rep.id, updates);
-            await updateReportInCloud(rep.id, updates).catch(() => {});
-            await cleanupTemporaryReportPhotosInCloud(rep.id);
-            if (isAutoBackupEnabled()) {
-              await uploadSingleReportToDrive({ ...hydrated, ...updates }).catch(() => {});
+            const cloudRes = await updateReportInCloud(rep.id, updates).catch((err) => {
+              console.warn(`Failed to save Drive links for ${rep.id} to Firestore:`, err);
+              return null;
+            });
+
+            if (allUploadedToDrive) {
+              attemptedAutoArchiveIdsRef.current.add(rep.id);
+              await cleanupTemporaryReportPhotosInCloud(rep.id);
+              if (isAutoBackupEnabled()) {
+                await uploadSingleReportToDrive({ ...hydrated, ...updates }).catch(() => {});
+              }
+              if (cloudRes?.status === 'synced') {
+                archivedCount++;
+              } else {
+                archivedCount++;
+              }
             }
-            archivedCount++;
+          } else {
+            attemptedAutoArchiveIdsRef.current.add(rep.id);
           }
         } catch (itemErr: any) {
           console.warn(`Auto-archive report ${rep.id} to Superadmin Drive skipped:`, itemErr);
@@ -560,11 +580,8 @@ export default function App() {
       if (archivedCount > 0) {
         const refreshed = getReports();
         setReports(refreshed);
-        if (isAutoBackupEnabled()) {
-          await executeAutoBackupToDrive(refreshed).catch(() => {});
-        }
         showToast(
-          `☁️ ${archivedCount} laporan petugas & foto otomatis diarsipkan ke Google Drive Superadmin!`,
+          `☁️ ${archivedCount} laporan petugas & foto baru otomatis diarsipkan ke Google Drive Superadmin!`,
           'success'
         );
       }
@@ -799,9 +816,10 @@ export default function App() {
         if (isAutoBackupEnabled()) {
           try {
             const latestSelf = getReports().find((r) => r.id === saved.id) || saved;
-            await uploadSingleReportToDrive(latestSelf);
-            await executeAutoBackupToDrive(getReports());
-            showToast('☁️ Data laporan otomatis disimpan ke Google Drive!', 'info');
+            const uploadedRes = await uploadSingleReportToDrive(latestSelf);
+            if (!uploadedRes.skipped) {
+              showToast('☁️ Berkas laporan baru otomatis diarsipkan ke Google Drive!', 'info');
+            }
           } catch (backupErr: any) {
             console.warn('Auto backup to Google Drive error:', backupErr);
           }
@@ -857,14 +875,6 @@ export default function App() {
         console.warn('Updated locally, cloud sync failed:', e);
         showToast('Perubahan tersimpan lokal, gagal sinkron ke Cloud.', 'error');
       }
-
-      if (isAutoBackupEnabled()) {
-        getGoogleAccessToken().then((token) => {
-          if (token) {
-            executeAutoBackupToDrive(getReports()).catch((e) => console.warn('Auto backup on update error:', e));
-          }
-        });
-      }
     }
   };
 
@@ -877,14 +887,6 @@ export default function App() {
       await deleteReportFromCloud(id);
     } catch (e) {
       console.warn('Deleted locally, background cloud sync error:', e);
-    }
-
-    if (isAutoBackupEnabled()) {
-      getGoogleAccessToken().then((token) => {
-        if (token) {
-          executeAutoBackupToDrive(getReports()).catch((e) => console.warn('Auto backup on delete error:', e));
-        }
-      });
     }
   };
 

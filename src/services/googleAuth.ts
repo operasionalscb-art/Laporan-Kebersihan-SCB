@@ -74,17 +74,19 @@ let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 let cachedTokenExpiryMs: number = 0;
 let currentProfile: GoogleUserProfile | null = null;
+let silentRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let inFlightSilentRefresh: Promise<string | null> | null = null;
 
 /**
- * Checks if the Google Drive connection is retained and remembered
+ * Checks if the Google Drive connection has been linked and remembered on this browser
  */
 export function isGoogleDriveLinked(): boolean {
   try {
     const keep = localStorage.getItem(STORAGE_KEEP_CONNECTED_KEY);
-    if (keep === 'false') return false;
-    return true;
+    const hasProfile = Boolean(localStorage.getItem(STORAGE_PROFILE_KEY));
+    return keep === 'true' && hasProfile;
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -98,16 +100,28 @@ export function setGoogleDriveLinked(linked: boolean): void {
 }
 
 /**
+ * Clears ONLY the in-memory OAuth access token (e.g., on expiry/401)
+ * while keeping the remembered Drive link metadata in localStorage so silent refresh can restore it.
+ */
+export function clearActiveDriveToken(): void {
+  if (silentRefreshTimer) {
+    clearTimeout(silentRefreshTimer);
+    silentRefreshTimer = null;
+  }
+  cachedAccessToken = null;
+  cachedTokenExpiryMs = 0;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('scb_gdrive_auth_cleared'));
+  }
+}
+
+/**
  * Returns the active in-memory Google Drive access token if still valid.
  */
 export function getSavedToken(): string | null {
   if (!cachedAccessToken) return null;
   if (cachedTokenExpiryMs > 0 && Date.now() > cachedTokenExpiryMs) {
-    cachedAccessToken = null;
-    cachedTokenExpiryMs = 0;
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('scb_gdrive_auth_cleared'));
-    }
+    clearActiveDriveToken();
     return null;
   }
   return cachedAccessToken;
@@ -115,6 +129,19 @@ export function getSavedToken(): string | null {
 
 export function hasActiveDriveToken(): boolean {
   return Boolean(getSavedToken());
+}
+
+function scheduleTokenExpiryClear(expiresInSeconds: number): void {
+  if (typeof window === 'undefined') return;
+  if (silentRefreshTimer) {
+    clearTimeout(silentRefreshTimer);
+    silentRefreshTimer = null;
+  }
+  const delayMs = Math.max(60_000, (expiresInSeconds - 60) * 1000);
+  silentRefreshTimer = setTimeout(() => {
+    silentRefreshTimer = null;
+    clearActiveDriveToken();
+  }, delayMs);
 }
 
 export function saveGoogleAuth(token: string, profile: GoogleUserProfile, expiresInSeconds = 3500) {
@@ -127,12 +154,17 @@ export function saveGoogleAuth(token: string, profile: GoogleUserProfile, expire
   } catch (e) {
     console.warn('Could not persist Google profile metadata:', e);
   }
+  scheduleTokenExpiryClear(expiresInSeconds);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event('scb_gdrive_auth_updated'));
   }
 }
 
 export function clearStoredGoogleAuth() {
+  if (silentRefreshTimer) {
+    clearTimeout(silentRefreshTimer);
+    silentRefreshTimer = null;
+  }
   cachedAccessToken = null;
   cachedTokenExpiryMs = 0;
   currentProfile = null;
@@ -268,7 +300,7 @@ export const initGoogleAuth = (
     } else {
       const activeToken = getSavedToken();
       if (!activeToken) {
-        clearStoredGoogleAuth();
+        clearActiveDriveToken();
         if (onAuthFailure) onAuthFailure();
       }
     }
@@ -577,8 +609,26 @@ export const signInWithGIS = async (
             } catch {}
           }
 
-          if (profile.email && scopeMode === 'drive') {
-            saveGoogleAuth(accessToken, profile, expiresIn);
+          if (scopeMode === 'drive') {
+            const existingProf = getCurrentGoogleProfile();
+            const resolvedEmail =
+              profile.email ||
+              emailHint ||
+              existingProf?.email ||
+              auth?.currentUser?.email ||
+              'operasional.scb@gmail.com';
+            const resolvedProfile: GoogleUserProfile = {
+              email: resolvedEmail,
+              displayName:
+                profile.displayName ||
+                existingProf?.displayName ||
+                resolvedEmail.split('@')[0] ||
+                'Operasional SCB',
+              photoURL: profile.photoURL || existingProf?.photoURL,
+              authMethod: 'gis',
+            };
+            profile = resolvedProfile;
+            saveGoogleAuth(accessToken, resolvedProfile, expiresIn);
           }
           finishResolve({ profile, accessToken });
         },
@@ -705,7 +755,35 @@ export const googleSignIn = async (
   }
 };
 
-export const getGoogleAccessToken = async (): Promise<string | null> => {
+export async function trySilentRefreshDriveToken(emailHint?: string): Promise<string | null> {
+  const existing = getSavedToken();
+  if (existing) return existing;
+  if (!isGoogleDriveLinked()) return null;
+  if (inFlightSilentRefresh) return inFlightSilentRefresh;
+
+  const savedProf = getCurrentGoogleProfile();
+  const targetEmail =
+    emailHint?.trim() ||
+    savedProf?.email?.trim() ||
+    auth?.currentUser?.email?.trim() ||
+    '';
+  if (!targetEmail) return null;
+
+  inFlightSilentRefresh = (async () => {
+    try {
+      const res = await signInWithGIS(true, targetEmail, 'drive');
+      return res?.accessToken || getSavedToken();
+    } catch {
+      return null;
+    } finally {
+      inFlightSilentRefresh = null;
+    }
+  })();
+
+  return inFlightSilentRefresh;
+}
+
+export const getGoogleAccessToken = async (_allowSilentRefresh = false): Promise<string | null> => {
   return getSavedToken();
 };
 

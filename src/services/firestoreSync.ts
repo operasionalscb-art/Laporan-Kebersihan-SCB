@@ -93,6 +93,9 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null
 ): never {
+  if (isQuotaExceededError(error)) {
+    notifyQuotaStatus(true);
+  }
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -342,7 +345,7 @@ export function sanitizeForFirestore<T>(data: T): T {
   return data;
 }
 
-const MAX_FIRESTORE_PHOTOS_BYTES = 820_000;
+const MAX_FIRESTORE_PHOTOS_BYTES = 880_000;
 
 async function ensureReportPhotosFitLimit(rawPhotos: string[] = []): Promise<string[]> {
   const cleanPhotos = Array.isArray(rawPhotos)
@@ -354,18 +357,19 @@ async function ensureReportPhotosFitLimit(rawPhotos: string[] = []): Promise<str
     return cleanPhotos;
   }
 
+  const perPhotoBudget = Math.floor(MAX_FIRESTORE_PHOTOS_BYTES / Math.max(1, cleanPhotos.length));
   const compressionSteps: Array<[number, number, number]> = [
-    [1024, 1024, 0.64],
-    [880, 880, 0.56],
-    [720, 720, 0.48],
-    [560, 560, 0.42],
-    [440, 440, 0.35],
+    [1600, 1600, 0.62],
+    [1440, 1440, 0.56],
+    [1280, 1280, 0.52],
+    [1080, 1080, 0.46],
+    [880, 880, 0.4],
   ];
 
   let current = cleanPhotos;
   for (const [w, h, q] of compressionSteps) {
     current = await Promise.all(
-      current.map((p) => recompressImageDataUrl(p, w, h, q))
+      current.map((p) => recompressImageDataUrl(p, w, h, q, perPhotoBudget))
     );
     if (calcSize(current) <= MAX_FIRESTORE_PHOTOS_BYTES) {
       return current;
@@ -453,6 +457,31 @@ function mergeCloudWithLocalReports(
     if (unsyncedIds.has(cloudRep.id) && localVersion) {
       return localVersion;
     }
+
+    const cloudDriveLinks = (cloudRep.drivePhotoLinks || []).filter(
+      (l) => typeof l === 'string' && l.startsWith('http')
+    );
+    const localDriveLinks = (localVersion?.drivePhotoLinks || []).filter(
+      (l) => typeof l === 'string' && l.startsWith('http')
+    );
+
+    if (localVersion && localDriveLinks.length > cloudDriveLinks.length) {
+      markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, cloudRep.id);
+      const localHasHttpPhotos =
+        Array.isArray(localVersion.fotoBukti) &&
+        localVersion.fotoBukti.length > 0 &&
+        localVersion.fotoBukti.every((p) => p.startsWith('http'));
+      return {
+        ...cloudRep,
+        drivePhotoLinks: localVersion.drivePhotoLinks,
+        fotoBukti: localHasHttpPhotos ? localVersion.fotoBukti : cloudRep.fotoBukti,
+        fotoCount: localHasHttpPhotos
+          ? localVersion.fotoBukti.length
+          : cloudRep.fotoCount ?? localVersion.fotoCount,
+        photosOffloaded: localHasHttpPhotos ? false : cloudRep.photosOffloaded,
+      };
+    }
+
     if (
       cloudRep.photosOffloaded &&
       localVersion &&
@@ -463,6 +492,10 @@ function mergeCloudWithLocalReports(
         ...cloudRep,
         fotoBukti: localVersion.fotoBukti,
         fotoCount: cloudRep.fotoCount ?? localVersion.fotoBukti.length,
+        drivePhotoLinks:
+          cloudDriveLinks.length >= localDriveLinks.length
+            ? cloudRep.drivePhotoLinks
+            : localVersion.drivePhotoLinks,
       };
     }
     return cloudRep;
@@ -1053,6 +1086,9 @@ export async function updateReportInCloud(
   id: string,
   updates: Partial<CleaningReport>
 ): Promise<CloudSaveResult> {
+  // Mark unsynced immediately so concurrent onSnapshot emissions cannot overwrite pending updates (e.g., Drive links)
+  markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
+
   const preparedUpdates: Partial<CleaningReport> = { ...updates };
   let fullUpdatedPhotos: string[] | null = null;
   let hasOffloadedPhotos = false;
@@ -1081,7 +1117,6 @@ export async function updateReportInCloud(
   }
 
   if (!auth.currentUser || !auth.currentUser.emailVerified) {
-    markUnsyncedId(UNSYNCED_REPORT_IDS_KEY, id);
     return {
       status: 'local_unauthenticated',
       message: 'Perubahan tersimpan lokal. Masuk Cloud agar sinkron ke pengguna lain.',
@@ -1190,8 +1225,15 @@ export async function syncPendingLocalReportsToCloud(): Promise<number> {
           // Document already exists in Firestore: apply safe field update or mark synced
           const cloudData = existingSnap.data() as CleaningReport;
           const updates: Partial<CleaningReport> = {};
-          if (rep.drivePhotoLinks && rep.drivePhotoLinks.length > 0) {
+          const localDriveLinks = (rep.drivePhotoLinks || []).filter((l) => l && l.startsWith('http'));
+          const cloudDriveLinks = (cloudData.drivePhotoLinks || []).filter((l) => l && l.startsWith('http'));
+          if (localDriveLinks.length > 0 && localDriveLinks.length >= cloudDriveLinks.length) {
             updates.drivePhotoLinks = rep.drivePhotoLinks;
+            if (Array.isArray(rep.fotoBukti) && rep.fotoBukti.some((p) => p.startsWith('http'))) {
+              updates.fotoBukti = rep.fotoBukti;
+              updates.fotoCount = rep.fotoCount ?? rep.fotoBukti.length;
+              updates.photosOffloaded = Boolean(rep.photosOffloaded);
+            }
           }
           if (
             rep.statusVerifikasi &&
@@ -1250,6 +1292,17 @@ export async function retrySingleReportCloudSync(reportId: string): Promise<Clou
       return await saveReportToCloud({
         ...target,
         authorUid: target.authorUid || auth.currentUser.uid,
+      });
+    }
+    const cloudData = existingSnap.data() as CleaningReport;
+    const localDriveLinks = (target.drivePhotoLinks || []).filter((l) => l && l.startsWith('http'));
+    const cloudDriveLinks = (cloudData.drivePhotoLinks || []).filter((l) => l && l.startsWith('http'));
+    if (localDriveLinks.length > cloudDriveLinks.length) {
+      return await updateReportInCloud(reportId, {
+        drivePhotoLinks: target.drivePhotoLinks,
+        fotoBukti: target.fotoBukti,
+        fotoCount: target.fotoCount ?? target.fotoBukti?.length ?? 0,
+        photosOffloaded: Boolean(target.photosOffloaded),
       });
     }
     unmarkUnsyncedId(UNSYNCED_REPORT_IDS_KEY, reportId);
@@ -1401,6 +1454,11 @@ async function syncStaffRoleToCloud(user: User): Promise<void> {
     });
     recordFirestoreWrite('users', 1);
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      console.warn(`Firestore quota exceeded syncing ${path}, skipping.`);
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
@@ -1470,9 +1528,16 @@ export async function migrateLegacyConfigsIfNeeded(): Promise<void> {
   }
 }
 
-export async function ensureSuperAdminRecord(): Promise<void> {
+export async function ensureSuperAdminRecord(): Promise<boolean> {
   const currentUser = auth.currentUser;
-  if (!currentUser || !isCurrentAuthSuperAdmin()) return;
+  if (!currentUser || !isCurrentAuthSuperAdmin()) return false;
+  if (isQuotaLimitedState) return false;
+  try {
+    if (localStorage.getItem(ADMIN_BOOTSTRAPPED_UID_KEY) === currentUser.uid) {
+      return true;
+    }
+  } catch {}
+
   const path = `${ADMINS_COLLECTION}/${currentUser.uid}`;
   const targetEmail = (currentUser.email || SUPERADMIN_EMAIL).toLowerCase();
   try {
@@ -1498,7 +1563,13 @@ export async function ensureSuperAdminRecord(): Promise<void> {
       }
     }
     await migrateLegacyConfigsIfNeeded();
+    return true;
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      console.warn('Firestore quota exceeded during Superadmin bootstrap, continuing in local mode.');
+      return false;
+    }
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
@@ -1622,12 +1693,17 @@ export function subscribeUsers(
       if (isAdmin && lastBootstrappedAdminUid !== fbUser.uid && persistedAdminUid !== fbUser.uid) {
         lastBootstrappedAdminUid = fbUser.uid;
         ensureSuperAdminRecord()
-          .then(() => {
-            try {
-              localStorage.setItem(ADMIN_BOOTSTRAPPED_UID_KEY, fbUser.uid);
-            } catch {}
+          .then((ok) => {
+            if (ok) {
+              try {
+                localStorage.setItem(ADMIN_BOOTSTRAPPED_UID_KEY, fbUser.uid);
+              } catch {}
+            } else {
+              lastBootstrappedAdminUid = null;
+            }
           })
           .catch((err) => {
+            lastBootstrappedAdminUid = null;
             if (!isQuotaExceededError(err)) {
               console.warn('Admin bootstrap note:', err);
             }
@@ -1784,6 +1860,7 @@ export function subscribeUsers(
       onUsersChanged(fallback);
       if (onError) onError(error);
       if (isQuotaExceededError(error)) {
+        notifyQuotaStatus(true);
         console.warn('Firestore quota exceeded on users listener, using local storage cache.');
         return;
       }
@@ -2078,6 +2155,7 @@ async function writeFormConfigPayloadToCloud(payload: {
     return { status: 'synced' };
   } catch (err: any) {
     if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
       console.warn('Firestore quota exceeded while saving form config, kept in local storage.');
       return {
         status: 'local_quota',
@@ -2282,6 +2360,7 @@ export async function saveRoomSchedulesToCloud(schedules: RoomSchedule[]): Promi
     return { status: 'synced' };
   } catch (err: any) {
     if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
       console.warn('Firestore quota exceeded while saving schedules, kept in local storage.');
       return {
         status: 'local_quota',

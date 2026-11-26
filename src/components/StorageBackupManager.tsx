@@ -14,7 +14,7 @@ import {
   setAutoBackupEnabled,
   isAutoPhotosUploadEnabled,
   setAutoPhotosUploadEnabled,
-  executeAutoBackupToDrive,
+  syncNewReportsOnlyToDrive,
   batchUploadAllReportsPhotosToDrive,
   listDriveFiles,
   readJsonFromDrive,
@@ -34,6 +34,7 @@ import {
   setActiveOAuthClientId,
   getDiagnosticInfo,
   parseAuthError,
+  isGoogleDriveLinked,
   GoogleUserProfile 
 } from '../services/googleAuth';
 import { 
@@ -408,19 +409,25 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
   const handleConnectGoogleAuth = async () => {
     setIsLoadingGoogle(true);
     try {
-      const result = await googleSignIn('auto', undefined, 'drive');
+      const hintEmail = googleProfile.email || 'operasional.scb@gmail.com';
+      const result = await googleSignIn('gis', hintEmail, 'drive');
       if (result?.accessToken) {
         setGoogleProfile(result.profile);
         setIsGoogleConnected(true);
         onShowToast(`Koneksi aktif! Akun ${result.profile.email} berhasil diotorisasi.`, 'success');
 
-        // Immediately backup current reports into Google Drive folder!
-        if (reports.length > 0) {
+        // Sync ONLY new reports not yet archived in Google Drive (never re-uploads/replaces existing ones)
+        if (reports.length > 0 && isAutoBackupEnabled()) {
           try {
-            const res = await executeAutoBackupToDrive(reports, folderId);
-            onShowToast(`☁️ Berkas cadangan (${res.name}) otomatis disimpan di folder Google Drive!`, 'success');
+            const res = await syncNewReportsOnlyToDrive(reports, folderId, false);
+            if (res.uploadedCount > 0) {
+              onShowToast(
+                `☁️ ${res.uploadedCount} berkas laporan baru otomatis diunggah ke Google Drive (${res.skippedCount} sudah ada, dilewati).`,
+                'success'
+              );
+            }
           } catch (syncErr: any) {
-            console.warn('Initial backup after connect error:', syncErr);
+            console.warn('Initial incremental sync after connect error:', syncErr);
           }
         }
       }
@@ -485,15 +492,25 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       let token = await getGoogleAccessToken();
       if (!token) {
         onShowToast('Membuka otorisasi Google Drive...', 'info');
-        const loginRes = await googleSignIn('gis', undefined, 'drive');
+        const loginRes = await googleSignIn('gis', googleProfile.email || 'operasional.scb@gmail.com', 'drive');
         token = loginRes?.accessToken;
         setIsGoogleConnected(true);
         setGoogleProfile(loginRes.profile);
       }
 
-      const res = await executeAutoBackupToDrive(reports, folderId);
+      const res = await syncNewReportsOnlyToDrive(reports, folderId, true);
       setIsGoogleConnected(true);
-      onShowToast(`Berkas cadangan berhasil diunggah ke Google Drive: ${res.name}`, 'success');
+      if (res.uploadedCount > 0) {
+        onShowToast(
+          `Berhasil mengunggah ${res.uploadedCount} berkas baru ke Google Drive (${res.skippedCount} berkas lama dilewati).`,
+          'success'
+        );
+      } else {
+        onShowToast(
+          `Semua ${res.skippedCount} laporan sudah ada di Google Drive. Tidak ada unggahan ulang.`,
+          'info'
+        );
+      }
     } catch (err: any) {
       console.error(err);
       onShowToast(err.message || 'Gagal mencadangkan data ke Google Drive', 'error');
@@ -516,7 +533,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       let token = await getGoogleAccessToken();
       if (!token) {
         onShowToast('Membuka otorisasi Google Drive...', 'info');
-        const loginRes = await googleSignIn('gis', undefined, 'drive');
+        const loginRes = await googleSignIn('gis', googleProfile.email || 'operasional.scb@gmail.com', 'drive');
         token = loginRes?.accessToken;
         setIsGoogleConnected(true);
         setGoogleProfile(loginRes.profile);
@@ -543,12 +560,14 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
       if (result.modifiedReports.length > 0) {
         if (onUpdateReport) {
           for (const mod of result.modifiedReports) {
-            onUpdateReport(mod.id, {
-              fotoBukti: mod.fotoBukti,
-              fotoCount: mod.fotoCount,
-              photosOffloaded: mod.photosOffloaded,
-              drivePhotoLinks: mod.drivePhotoLinks,
-            });
+            await Promise.resolve(
+              onUpdateReport(mod.id, {
+                fotoBukti: mod.fotoBukti,
+                fotoCount: mod.fotoCount,
+                photosOffloaded: mod.photosOffloaded,
+                drivePhotoLinks: mod.drivePhotoLinks,
+              })
+            );
             if (!mod.photosOffloaded) {
               await cleanupTemporaryReportPhotosInCloud(mod.id).catch(() => {});
             }
@@ -580,7 +599,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
     try {
       let token = await getGoogleAccessToken();
       if (!token) {
-        const loginRes = await googleSignIn('gis', undefined, 'drive');
+        const loginRes = await googleSignIn('gis', googleProfile.email || 'operasional.scb@gmail.com', 'drive');
         token = loginRes?.accessToken;
         setIsGoogleConnected(true);
         setGoogleProfile(loginRes.profile);
@@ -602,7 +621,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
     try {
       let token = await getGoogleAccessToken();
       if (!token) {
-        const loginRes = await googleSignIn('gis', undefined, 'drive');
+        const loginRes = await googleSignIn('gis', googleProfile.email || 'operasional.scb@gmail.com', 'drive');
         token = loginRes?.accessToken;
         setIsGoogleConnected(true);
         setGoogleProfile(loginRes.profile);
@@ -1042,10 +1061,20 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
                   </div>
                   <div>
                     <h4 className="text-xs font-bold text-amber-950">
-                      Otorisasi Google Drive Diperlukan (1x di Browser Ini)
+                      {isGoogleDriveLinked()
+                        ? `Sesi Google Drive Perlu Diperbarui (${googleProfile.email || 'operasional.scb@gmail.com'})`
+                        : 'Otorisasi Google Drive Diperlukan (1x per Sesi Browser)'}
                     </h4>
                     <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
-                      Agar laporan kebersihan dan foto dokumentasi <strong>otomatis tersimpan langsung di folder Google Drive resmi</strong>, silakan izinkan akses ke akun <strong>operasional.scb@gmail.com</strong> dengan menekan tombol di bawah.
+                      {isGoogleDriveLinked() ? (
+                        <>
+                          Tautan folder Google Drive SCB tetap tersimpan, namun token akses sementara dari Google sudah habis setelah halaman dimuat ulang atau 1 jam berlalu. Klik tombol di bawah untuk melanjutkan sinkronisasi otomatis.
+                        </>
+                      ) : (
+                        <>
+                          Agar laporan kebersihan dan foto dokumentasi <strong>otomatis tersimpan langsung di folder Google Drive resmi</strong>, silakan izinkan akses ke akun <strong>operasional.scb@gmail.com</strong> dengan menekan tombol di bawah.
+                        </>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1064,7 +1093,11 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
                   ) : (
                     <>
                       <Cloud className="w-4 h-4" />
-                      <span>Aktifkan Sinkronisasi Otomatis Google Drive</span>
+                      <span>
+                        {isGoogleDriveLinked()
+                          ? 'Pulihkan Sesi Sinkronisasi Google Drive'
+                          : 'Aktifkan Sinkronisasi Otomatis Google Drive'}
+                      </span>
                     </>
                   )}
                 </button>
@@ -1141,10 +1174,10 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
                   </div>
                   <div>
                     <h4 className="text-xs font-bold text-slate-800">
-                      Otomatis Cadangkan Data (.JSON)
+                      Otomatis Unggah Laporan Baru (.JSON)
                     </h4>
                     <p className="text-[11px] text-slate-500">
-                      Perbarui arsip JSON di Google Drive secara otomatis saat laporan baru disimpan.
+                      Hanya mengunggah berkas laporan baru ke Google Drive tanpa mengulang atau menimpa berkas lama.
                     </p>
                   </div>
                 </div>
@@ -1193,7 +1226,7 @@ export const StorageBackupManager: React.FC<StorageBackupManagerProps> = ({
                 ) : (
                   <>
                     <Cloud className="w-3.5 h-3.5" />
-                    <span>Cadangkan ke Drive Sekarang</span>
+                    <span>Unggah File Baru ke Drive</span>
                   </>
                 )}
               </button>
