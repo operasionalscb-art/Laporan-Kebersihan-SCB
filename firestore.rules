@@ -246,6 +246,36 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
+    function isValidSupervisorInspection(data) {
+      return data.keys().hasAll([
+          'id', 'date', 'supervisorUid', 'supervisorName', 'supervisorEmail',
+          'items', 'summaryScore', 'totalChecked', 'matchCount', 'issueCount',
+          'updatedAtMs', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'date', 'supervisorUid', 'supervisorName', 'supervisorEmail',
+          'items', 'summaryScore', 'totalChecked', 'matchCount', 'issueCount',
+          'updatedAtMs', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == data.date
+        && data.date is string && data.date.size() >= 8 && data.date.size() <= 20
+        && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && isValidId(data.supervisorUid)
+        && data.supervisorUid == request.auth.uid
+        && data.supervisorName is string && data.supervisorName.size() >= 1 && data.supervisorName.size() <= 120
+        && data.supervisorEmail is string && data.supervisorEmail.size() >= 3 && data.supervisorEmail.size() <= 254
+        && data.supervisorEmail.lower() == request.auth.token.email.lower()
+        && data.items is list && data.items.size() <= 100
+        && (data.items.size() == 0 || data.items[0] is map)
+        && data.summaryScore is number && data.summaryScore >= 0 && data.summaryScore <= 5
+        && data.totalChecked is int && data.totalChecked >= 0 && data.totalChecked <= 100
+        && data.matchCount is int && data.matchCount >= 0 && data.matchCount <= 100
+        && data.issueCount is int && data.issueCount >= 0 && data.issueCount <= 100
+        && data.updatedAtMs is number && data.updatedAtMs > 0
+        && data.updatedAt == request.time;
+    }
+
     // =========================================================================
     // Collections
     // =========================================================================
@@ -454,6 +484,27 @@ service cloud.firestore {
         && isActiveStaff()
         && isValidAccountActivity(incoming());
       allow delete: if isAdmin() && isValidId(uid);
+    }
+
+    // Single-document-per-day supervisor physical cross-check patrol log (1 write/day pattern)
+    match /supervisor_inspections/{dateId} {
+      allow get: if isVerifiedEmail() && isValidId(dateId) && isActiveStaff();
+      allow list: if isVerifiedEmail()
+        && (isBootstrappedAdmin()
+            || isBootstrapOfficialSupervisorEmail()
+            || resource.data.supervisorUid == request.auth.uid);
+      allow create: if isVerifiedEmail()
+        && isValidId(dateId)
+        && isSupervisor()
+        && isValidSupervisorInspection(incoming())
+        && incoming().id == dateId;
+      allow update: if isVerifiedEmail()
+        && isValidId(dateId)
+        && isSupervisor()
+        && isValidSupervisorInspection(incoming())
+        && incoming().id == existing().id
+        && incoming().date == existing().date;
+      allow delete: if isAdmin() && isValidId(dateId);
     }
   }
 }

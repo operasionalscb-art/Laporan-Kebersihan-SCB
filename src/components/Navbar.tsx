@@ -12,14 +12,17 @@ import {
   Lock,
   Database,
   Sliders,
-  LogIn
+  LogIn,
+  ClipboardList,
 } from 'lucide-react';
+
+export type AppNavTab = 'dashboard' | 'input' | 'patrol' | 'form_mgmt' | 'accounts' | 'drive';
 
 interface NavbarProps {
   currentUser: User | null;
   allUsers?: User[];
-  activeTab: 'dashboard' | 'input' | 'form_mgmt' | 'accounts' | 'drive';
-  setActiveTab: (tab: 'dashboard' | 'input' | 'form_mgmt' | 'accounts' | 'drive') => void;
+  activeTab: AppNavTab;
+  setActiveTab: (tab: AppNavTab) => void;
   onSwitchUser?: (user: User) => void;
   onLogout: () => void;
   onOpenLoginModal: (reason?: string) => void;
@@ -41,6 +44,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
 
   const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
+  const isSupervisorOrAdmin = isSuperAdmin || currentUser?.role === 'supervisor';
 
   return (
     <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-xs">
@@ -155,6 +159,20 @@ export const Navbar: React.FC<NavbarProps> = ({
               )}
               <span>Input Laporan</span>
             </button>
+
+            {isSupervisorOrAdmin && (
+              <button
+                onClick={() => setActiveTab('patrol')}
+                className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 xl:px-3.5 rounded-lg text-xs xl:text-[13px] whitespace-nowrap transition-all cursor-pointer shrink-0 ${
+                  activeTab === 'patrol'
+                    ? 'bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/80'
+                    : 'text-slate-600 font-medium hover:text-slate-900 hover:bg-white/60'
+                }`}
+              >
+                <ClipboardList className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>Patroli</span>
+              </button>
+            )}
 
             {isSuperAdmin && (
               <button
@@ -310,7 +328,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Mobile & Tablet Sub-Navigation Bar (Uniform Grid, Zero Overlap) */}
         <div
           className={`grid lg:hidden gap-1 border-t border-slate-100 py-1.5 ${
-            isSuperAdmin ? 'grid-cols-5' : 'grid-cols-2'
+            isSuperAdmin ? 'grid-cols-3 sm:grid-cols-6' : isSupervisorOrAdmin ? 'grid-cols-3' : 'grid-cols-2'
           }`}
         >
           <button
@@ -340,6 +358,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
             <span className="truncate w-full text-center">Input</span>
           </button>
+
+          {isSupervisorOrAdmin && (
+            <button
+              onClick={() => setActiveTab('patrol')}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 text-[11px] rounded-lg transition-colors min-w-0 ${
+                activeTab === 'patrol'
+                  ? 'bg-emerald-50 text-emerald-700 font-bold'
+                  : 'text-slate-600 font-medium hover:bg-slate-50'
+              }`}
+            >
+              <ClipboardList className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="truncate w-full text-center">Patroli</span>
+            </button>
+          )}
 
           {isSuperAdmin && (
             <button

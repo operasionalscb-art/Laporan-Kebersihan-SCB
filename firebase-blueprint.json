@@ -450,6 +450,79 @@
         "lastActiveAtMs",
         "updatedAt"
       ]
+    },
+    "SupervisorInspection": {
+      "title": "SupervisorInspection",
+      "description": "Daily supervisor physical cross-check patrol stored as one consolidated document per date",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "date": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "supervisorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "supervisorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "supervisorEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "items": {
+          "type": "array",
+          "description": "List of inspected room check entries for this date (max 100)"
+        },
+        "summaryScore": {
+          "type": "number"
+        },
+        "totalChecked": {
+          "type": "integer"
+        },
+        "matchCount": {
+          "type": "integer"
+        },
+        "issueCount": {
+          "type": "integer"
+        },
+        "updatedAtMs": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "date",
+        "supervisorUid",
+        "supervisorName",
+        "supervisorEmail",
+        "items",
+        "summaryScore",
+        "totalChecked",
+        "matchCount",
+        "issueCount",
+        "updatedAtMs",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -488,6 +561,10 @@
     "/account_activity/{uid}": {
       "schema": "AccountActivity",
       "description": "Per-account login timestamp and device metadata readable by Superadmin"
+    },
+    "/supervisor_inspections/{dateId}": {
+      "schema": "SupervisorInspection",
+      "description": "Single-document-per-day supervisor cross-check patrol log"
     }
   }
 }

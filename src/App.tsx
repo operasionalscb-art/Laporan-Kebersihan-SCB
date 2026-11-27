@@ -74,11 +74,12 @@ import {
   refreshReportsFromCloudNow,
   recordAccountActivityToCloud,
 } from './services/firestoreSync';
-import { Navbar } from './components/Navbar';
+import { Navbar, AppNavTab } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
 import { ReportForm } from './components/ReportForm';
 import { FormManagement } from './components/FormManagement';
 import { AccountManagement, UserRegistrationResult } from './components/AccountManagement';
+import { SupervisorPatrol } from './components/SupervisorPatrol';
 import { LoginModal } from './components/LoginModal';
 import { GuestLandingPage } from './components/GuestLandingPage';
 import { PrintModal } from './components/PrintModal';
@@ -110,7 +111,7 @@ export default function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUserState] = useState<User | null>(null);
   const [reports, setReports] = useState<CleaningReport[]>([]);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'input' | 'form_mgmt' | 'accounts' | 'drive'>('dashboard');
+  const [activeTab, setActiveTab] = useState<AppNavTab>('dashboard');
 
   // Master Data & Configuration state
   const [masterRooms, setMasterRooms] = useState<MasterRoom[]>(() => getMasterRooms());
@@ -172,10 +173,17 @@ export default function App() {
   };
 
   // Safe tab change handler to block non-users from switching to restricted tabs
-  const handleSafeTabChange = (targetTab: 'dashboard' | 'input' | 'form_mgmt' | 'accounts' | 'drive') => {
+  const handleSafeTabChange = (targetTab: AppNavTab) => {
     if (targetTab === 'input') {
       handleRequestInputReport();
       return;
+    }
+    if (targetTab === 'patrol') {
+      if (!isSupervisorOrAdmin) {
+        handleOpenLoginModal('Kartu Inspeksi Silang & Patroli hanya dapat diakses oleh Supervisor atau Superadmin.');
+        setActiveTab('dashboard');
+        return;
+      }
     }
     if (targetTab === 'form_mgmt') {
       if (!isSuperAdmin) {
@@ -1211,6 +1219,7 @@ export default function App() {
 
   const officers = users.filter((u) => u.role === 'petugas' && u.isActive !== false);
   const isSuperAdmin = currentUser?.role === 'superadmin' || currentUser?.email === 'operasional.scb@gmail.com';
+  const isSupervisorOrAdmin = isSuperAdmin || currentUser?.role === 'supervisor';
 
   if (!currentUser) {
     return (
@@ -1380,6 +1389,34 @@ export default function App() {
                   Kembali ke Dashboard Laporan
                 </button>
               </div>
+            </div>
+          )
+        )}
+
+        {activeTab === 'patrol' && (
+          isSupervisorOrAdmin && currentUser ? (
+            <SupervisorPatrol
+              currentUser={currentUser}
+              reports={reports}
+              masterRooms={masterRooms}
+              roomSchedules={roomSchedules}
+              isCloudSynced={Boolean(cloudUserEmail)}
+              isFirestoreQuotaLimited={isFirestoreQuotaLimited}
+              onShowToast={showToast}
+            />
+          ) : (
+            <div className="max-w-md mx-auto my-12 p-6 bg-white rounded-2xl border border-slate-200 text-center">
+              <AlertCircle className="w-10 h-10 text-amber-500 mx-auto mb-2" />
+              <h3 className="font-bold text-slate-800 text-base">Akses Khusus Supervisor &amp; Superadmin</h3>
+              <p className="text-xs text-slate-500 mt-1 mb-4">
+                Halaman Kartu Inspeksi Silang &amp; Patroli hanya dapat diakses oleh akun Supervisor atau Superadmin.
+              </p>
+              <button
+                onClick={() => handleOpenLoginModal('Masuk dengan akun Supervisor atau Superadmin.')}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors cursor-pointer"
+              >
+                Masuk Akun Pengawas
+              </button>
             </div>
           )
         )}

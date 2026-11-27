@@ -26,6 +26,8 @@ import {
   PublicDailyNotificationSummary,
   PublicNotificationItem,
   AccountActivity,
+  SupervisorInspectionDoc,
+  SupervisorInspectionItem,
 } from '../types';
 import { detectDeviceInfo } from '../utils/deviceInfo';
 import {
@@ -168,6 +170,11 @@ const ACCOUNT_ACTIVITY_SIG_KEY = 'scb_account_activity_sig_v1';
 const ACCOUNT_ACTIVITY_LAST_WRITE_AT_KEY = 'scb_account_activity_last_write_ms_v1';
 const ACCOUNT_ACTIVITY_CACHE_KEY = 'scb_account_activity_cache_v1';
 const ACCOUNT_RECENT_LOGINS_KEY = 'scb_recent_logins_by_uid_v1';
+
+const SUPERVISOR_INSPECTIONS_COLLECTION = 'supervisor_inspections';
+const SUPERVISOR_INSPECTION_CACHE_TTL_MS = 5 * 60 * 1000;
+const SUPERVISOR_INSPECTION_CACHE_KEY = 'scb_supervisor_inspections_cache_v1';
+const SUPERVISOR_INSPECTION_DRAFTS_KEY = 'scb_supervisor_inspection_drafts_v1';
 
 export interface CloudSaveResult {
   status: 'synced' | 'local_unauthenticated' | 'local_quota' | 'local_error';
@@ -3003,4 +3010,256 @@ export async function fetchAccountActivitiesFromCloud(forceRefresh = false): Pro
     };
   }
 }
+
+// ==========================================
+// SUPERVISOR CROSS-CHECK PATROL (1 DOC PER DAY)
+// ==========================================
+
+interface CachedInspectionEntry {
+  doc: SupervisorInspectionDoc | null;
+  fetchedAtMs: number;
+}
+
+export function getCachedSupervisorInspection(dateStr: string): CachedInspectionEntry {
+  try {
+    const raw = localStorage.getItem(SUPERVISOR_INSPECTION_CACHE_KEY);
+    if (!raw) return { doc: null, fetchedAtMs: 0 };
+    const parsed = JSON.parse(raw) as Record<string, CachedInspectionEntry>;
+    const entry = parsed && typeof parsed === 'object' ? parsed[dateStr] : null;
+    if (entry && typeof entry.fetchedAtMs === 'number') {
+      return {
+        doc: entry.doc || null,
+        fetchedAtMs: entry.fetchedAtMs,
+      };
+    }
+    return { doc: null, fetchedAtMs: 0 };
+  } catch {
+    return { doc: null, fetchedAtMs: 0 };
+  }
+}
+
+function saveCachedSupervisorInspection(
+  dateStr: string,
+  inspectionDoc: SupervisorInspectionDoc | null,
+  fetchedAtMs = Date.now()
+): void {
+  try {
+    const raw = localStorage.getItem(SUPERVISOR_INSPECTION_CACHE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, CachedInspectionEntry>) : {};
+    const map = parsed && typeof parsed === 'object' ? parsed : {};
+    // Keep only last 14 cached dates to keep localStorage tiny
+    const nextEntries = Object.entries({
+      ...map,
+      [dateStr]: { doc: inspectionDoc, fetchedAtMs },
+    })
+      .sort((a, b) => (b[1]?.fetchedAtMs || 0) - (a[1]?.fetchedAtMs || 0))
+      .slice(0, 14);
+    localStorage.setItem(
+      SUPERVISOR_INSPECTION_CACHE_KEY,
+      JSON.stringify(Object.fromEntries(nextEntries))
+    );
+  } catch {
+    // Ignore localStorage quota noise
+  }
+}
+
+export function getLocalSupervisorInspectionDraft(
+  dateStr: string
+): SupervisorInspectionItem[] | null {
+  try {
+    const raw = localStorage.getItem(SUPERVISOR_INSPECTION_DRAFTS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, SupervisorInspectionItem[]>;
+    const draft = parsed && typeof parsed === 'object' ? parsed[dateStr] : null;
+    return Array.isArray(draft) ? draft : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveLocalSupervisorInspectionDraft(
+  dateStr: string,
+  items: SupervisorInspectionItem[] | null
+): void {
+  try {
+    const raw = localStorage.getItem(SUPERVISOR_INSPECTION_DRAFTS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, SupervisorInspectionItem[]>) : {};
+    const map = parsed && typeof parsed === 'object' ? { ...parsed } : {};
+    if (items === null) {
+      delete map[dateStr];
+    } else {
+      map[dateStr] = items.slice(0, 100);
+    }
+    // Keep up to 7 date drafts
+    const trimmed = Object.fromEntries(Object.entries(map).slice(-7));
+    localStorage.setItem(SUPERVISOR_INSPECTION_DRAFTS_KEY, JSON.stringify(trimmed));
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
+/**
+ * Fetches 1 consolidated daily supervisor inspection document (/supervisor_inspections/{dateStr}).
+ * Serves 5-minute cache first (0 Firestore reads) and never uses real-time listeners.
+ */
+export async function fetchSupervisorInspectionByDateFromCloud(
+  dateStr: string,
+  forceRefresh = false
+): Promise<{
+  inspection: SupervisorInspectionDoc | null;
+  fromCache: boolean;
+  fetchedAtMs: number;
+  quotaExceeded?: boolean;
+}> {
+  const cached = getCachedSupervisorInspection(dateStr);
+  if (!auth.currentUser || !auth.currentUser.emailVerified) {
+    return {
+      inspection: cached.doc,
+      fromCache: true,
+      fetchedAtMs: cached.fetchedAtMs,
+    };
+  }
+
+  if (
+    !forceRefresh &&
+    cached.fetchedAtMs > 0 &&
+    Date.now() - cached.fetchedAtMs < SUPERVISOR_INSPECTION_CACHE_TTL_MS
+  ) {
+    return {
+      inspection: cached.doc,
+      fromCache: true,
+      fetchedAtMs: cached.fetchedAtMs,
+    };
+  }
+
+  try {
+    const snap = await getDoc(doc(db, SUPERVISOR_INSPECTIONS_COLLECTION, dateStr));
+    recordFirestoreRead('reports', 1, snap.metadata?.fromCache);
+    notifyQuotaStatus(false);
+
+    const fetchedAtMs = Date.now();
+    if (!snap.exists()) {
+      saveCachedSupervisorInspection(dateStr, null, fetchedAtMs);
+      return { inspection: null, fromCache: false, fetchedAtMs };
+    }
+
+    const data = snap.data() as SupervisorInspectionDoc;
+    const normalized: SupervisorInspectionDoc = {
+      ...data,
+      id: data.id || dateStr,
+      date: data.date || dateStr,
+      items: Array.isArray(data.items) ? data.items.slice(0, 100) : [],
+      summaryScore: Number(data.summaryScore) || 0,
+      totalChecked: Math.round(Number(data.totalChecked) || 0),
+      matchCount: Math.round(Number(data.matchCount) || 0),
+      issueCount: Math.round(Number(data.issueCount) || 0),
+      updatedAtMs: Number(data.updatedAtMs) || fetchedAtMs,
+    };
+    saveCachedSupervisorInspection(dateStr, normalized, fetchedAtMs);
+    return { inspection: normalized, fromCache: false, fetchedAtMs };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      return {
+        inspection: cached.doc,
+        fromCache: true,
+        fetchedAtMs: cached.fetchedAtMs,
+        quotaExceeded: true,
+      };
+    }
+    console.warn(`Failed to fetch supervisor inspection for ${dateStr}:`, err);
+    return {
+      inspection: cached.doc,
+      fromCache: true,
+      fetchedAtMs: cached.fetchedAtMs,
+    };
+  }
+}
+
+/**
+ * Saves the full day's supervisor patrol checklist in 1 single document write (/supervisor_inspections/{dateStr}).
+ */
+export async function saveSupervisorInspectionToCloud(
+  dateStr: string,
+  items: SupervisorInspectionItem[],
+  appUser: User
+): Promise<CloudSaveResult & { inspection?: SupervisorInspectionDoc }> {
+  const cleanItems: SupervisorInspectionItem[] = (items || []).slice(0, 100).map((item) => ({
+    roomName: String(item.roomName || '').trim().slice(0, 150),
+    status: item.status,
+    score: Math.max(1, Math.min(5, Math.round(Number(item.score) || 5))),
+    notes: String(item.notes || '').trim().slice(0, 300),
+    checkedAtMs: Number(item.checkedAtMs) || Date.now(),
+    checkedAtLabel: String(item.checkedAtLabel || '').slice(0, 40),
+    inspectorName: String(item.inspectorName || appUser.name || 'Supervisor').slice(0, 120),
+    ...(item.linkedReportId ? { linkedReportId: String(item.linkedReportId).slice(0, 128) } : {}),
+  }));
+
+  const totalChecked = cleanItems.length;
+  const matchCount = cleanItems.filter((i) => i.status === 'Sesuai').length;
+  const issueCount = cleanItems.filter((i) => i.status !== 'Sesuai').length;
+  const sumScores = cleanItems.reduce((acc, i) => acc + (i.score || 0), 0);
+  const summaryScore = totalChecked > 0 ? Number((sumScores / totalChecked).toFixed(2)) : 0;
+
+  const fbUser = auth.currentUser;
+  const nowMs = Date.now();
+  const payloadDoc: SupervisorInspectionDoc = {
+    id: dateStr,
+    date: dateStr,
+    supervisorUid: fbUser?.uid || appUser.id,
+    supervisorName: (appUser.name || fbUser?.email?.split('@')[0] || 'Supervisor').trim().slice(0, 120),
+    supervisorEmail: (fbUser?.email || appUser.email || '').trim().toLowerCase(),
+    items: cleanItems,
+    summaryScore,
+    totalChecked,
+    matchCount,
+    issueCount,
+    updatedAtMs: nowMs,
+  };
+
+  saveLocalSupervisorInspectionDraft(dateStr, cleanItems);
+
+  if (!fbUser || !fbUser.email || !fbUser.emailVerified) {
+    return {
+      status: 'local_unauthenticated',
+      message: 'Hasil patroli tersimpan di perangkat ini. Masuk Cloud dengan Email & Sandi terverifikasi untuk menyinkronkan ke pusat.',
+      inspection: payloadDoc,
+    };
+  }
+
+  const path = `${SUPERVISOR_INSPECTIONS_COLLECTION}/${dateStr}`;
+  try {
+    await setDoc(
+      doc(db, SUPERVISOR_INSPECTIONS_COLLECTION, dateStr),
+      sanitizeForFirestore({
+        ...payloadDoc,
+        updatedAt: serverTimestamp(),
+      })
+    );
+    recordFirestoreWrite('reports', 1);
+    notifyQuotaStatus(false);
+    saveCachedSupervisorInspection(dateStr, payloadDoc, nowMs);
+    saveLocalSupervisorInspectionDraft(dateStr, null);
+    return { status: 'synced', inspection: payloadDoc };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      return {
+        status: 'local_quota',
+        message: 'Kuota harian Firestore penuh. Draft hasil patroli aman tersimpan lokal.',
+        inspection: payloadDoc,
+      };
+    }
+    const rawMsg = err instanceof Error ? err.message : String(err || '');
+    console.warn(`Failed saving ${path}:`, rawMsg);
+    return {
+      status: 'local_error',
+      message: rawMsg.toLowerCase().includes('permission')
+        ? 'Izin tulis ditolak. Pastikan akun Supervisor Anda aktif & terverifikasi.'
+        : `Gagal menyimpan ke Cloud (${rawMsg}). Draft tersimpan lokal.`,
+      inspection: payloadDoc,
+    };
+  }
+}
+
 

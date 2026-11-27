@@ -149,3 +149,30 @@ export interface AccountActivity {
   lastActiveAtMs: number;
   recentLogins?: string[];
 }
+
+export type SupervisorInspectionStatus = 'Sesuai' | 'Perlu Perbaikan' | 'Temuan Baru';
+
+export interface SupervisorInspectionItem {
+  roomName: string;
+  status: SupervisorInspectionStatus;
+  score: number; // 1..5
+  notes: string;
+  checkedAtMs: number;
+  checkedAtLabel: string;
+  inspectorName: string;
+  linkedReportId?: string;
+}
+
+export interface SupervisorInspectionDoc {
+  id: string; // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
+  supervisorUid: string;
+  supervisorName: string;
+  supervisorEmail: string;
+  items: SupervisorInspectionItem[];
+  summaryScore: number;
+  totalChecked: number;
+  matchCount: number;
+  issueCount: number;
+  updatedAtMs: number;
+}
