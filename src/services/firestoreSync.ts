@@ -25,7 +25,9 @@ import {
   RoomSchedule,
   PublicDailyNotificationSummary,
   PublicNotificationItem,
+  AccountActivity,
 } from '../types';
+import { detectDeviceInfo } from '../utils/deviceInfo';
 import {
   INITIAL_USERS,
   canonicalizeUsersToOfficial,
@@ -159,6 +161,13 @@ const SELF_USER_FETCHED_AT_KEY = 'scb_self_user_fetched_at_v1';
 const ADMIN_BOOTSTRAPPED_UID_KEY = 'scb_admin_bootstrapped_uid_v1';
 const LEGACY_MIGRATION_CHECKED_KEY = 'scb_legacy_config_migrated_v1';
 const STAFF_ROLES_HASH_KEY = 'scb_staff_roles_hash_v1';
+
+const ACCOUNT_ACTIVITY_COLLECTION = 'account_activity';
+const ACCOUNT_ACTIVITY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 menit cache pembacaan aktivitas akun
+const ACCOUNT_ACTIVITY_SIG_KEY = 'scb_account_activity_sig_v1';
+const ACCOUNT_ACTIVITY_LAST_WRITE_AT_KEY = 'scb_account_activity_last_write_ms_v1';
+const ACCOUNT_ACTIVITY_CACHE_KEY = 'scb_account_activity_cache_v1';
+const ACCOUNT_RECENT_LOGINS_KEY = 'scb_recent_logins_by_uid_v1';
 
 export interface CloudSaveResult {
   status: 'synced' | 'local_unauthenticated' | 'local_quota' | 'local_error';
@@ -2744,3 +2753,254 @@ export async function fetchPublicDailyNotificationsForGuest(forceRefresh = false
     };
   }
 }
+
+// ==========================================
+// ACCOUNT & DEVICE ACTIVITY (ULTRA-LOW QUOTA)
+// ==========================================
+
+function formatActivityLoginEntry(deviceLabel: string, nowMs: number): string {
+  try {
+    const dt = new Date(nowMs);
+    const formatted = new Intl.DateTimeFormat('id-ID', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(dt);
+    return `${formatted} WIB • ${deviceLabel}`.slice(0, 140);
+  } catch {
+    return `${new Date(nowMs).toISOString().slice(0, 16)} • ${deviceLabel}`.slice(0, 140);
+  }
+}
+
+function getLocalRecentLoginsForUid(uid: string): string[] {
+  try {
+    const raw = localStorage.getItem(ACCOUNT_RECENT_LOGINS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const list = parsed && typeof parsed === 'object' ? parsed[uid] : null;
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.slice(0, 140))
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalRecentLoginsForUid(uid: string, list: string[]): void {
+  try {
+    const raw = localStorage.getItem(ACCOUNT_RECENT_LOGINS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const map = parsed && typeof parsed === 'object' ? parsed : {};
+    map[uid] = list.slice(0, 5);
+    localStorage.setItem(ACCOUNT_RECENT_LOGINS_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function getCachedAccountActivities(): {
+  activities: AccountActivity[];
+  fetchedAtMs: number;
+} {
+  try {
+    const raw = localStorage.getItem(ACCOUNT_ACTIVITY_CACHE_KEY);
+    if (!raw) return { activities: [], fetchedAtMs: 0 };
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.activities) && typeof parsed.fetchedAtMs === 'number') {
+      return {
+        activities: parsed.activities as AccountActivity[],
+        fetchedAtMs: parsed.fetchedAtMs,
+      };
+    }
+    return { activities: [], fetchedAtMs: 0 };
+  } catch {
+    return { activities: [], fetchedAtMs: 0 };
+  }
+}
+
+function saveCachedAccountActivities(activities: AccountActivity[], fetchedAtMs: number): void {
+  try {
+    localStorage.setItem(
+      ACCOUNT_ACTIVITY_CACHE_KEY,
+      JSON.stringify({ activities, fetchedAtMs })
+    );
+  } catch {
+    // Ignore localStorage quota noise
+  }
+}
+
+/**
+ * Records the signed-in account's login and device metadata into /account_activity/{uid}.
+ * Quota-saving design:
+ * - Never writes for unauthenticated/unverified sessions.
+ * - Normal F5 reloads on the same day & device cost 0 Reads and 0 Writes.
+ * - Explicit login or day/device change performs 1 blind setDoc (0 Reads, 1 Write).
+ */
+export async function recordAccountActivityToCloud(
+  appUser: User,
+  forceOnLogin = false
+): Promise<void> {
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.email || !fbUser.emailVerified || isQuotaLimitedState) {
+    return;
+  }
+  if (appUser.isActive === false) {
+    return;
+  }
+
+  const uid = fbUser.uid;
+  const authEmail = fbUser.email.trim().toLowerCase();
+  const device = detectDeviceInfo();
+  const todayStr = getTodayDateString();
+  const signature = `${uid}|${todayStr}|${device.deviceType}|${device.os}|${device.browser}`;
+  const nowMs = Date.now();
+
+  let prevSig: string | null = null;
+  let lastWriteMs = 0;
+  try {
+    prevSig = localStorage.getItem(ACCOUNT_ACTIVITY_SIG_KEY);
+    lastWriteMs = Number(localStorage.getItem(ACCOUNT_ACTIVITY_LAST_WRITE_AT_KEY) || 0);
+  } catch {}
+
+  if (!forceOnLogin && prevSig === signature) {
+    return;
+  }
+  if (forceOnLogin && prevSig === signature && nowMs - lastWriteMs < 2 * 60 * 1000) {
+    return;
+  }
+
+  // Update deduplication markers upfront to prevent concurrent duplicate writes
+  try {
+    localStorage.setItem(ACCOUNT_ACTIVITY_SIG_KEY, signature);
+    localStorage.setItem(ACCOUNT_ACTIVITY_LAST_WRITE_AT_KEY, String(nowMs));
+  } catch {}
+
+  const entryLabel = formatActivityLoginEntry(device.deviceLabel, nowMs);
+  const existingHistory = getLocalRecentLoginsForUid(uid);
+  const nextHistory = [entryLabel, ...existingHistory.filter((item) => item !== entryLabel)].slice(0, 5);
+  saveLocalRecentLoginsForUid(uid, nextHistory);
+
+  const safeUserId = (appUser.id || uid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128) || uid;
+  const safeName = (appUser.name || authEmail.split('@')[0] || 'Pengguna').trim().slice(0, 120);
+  const safeRole: User['role'] =
+    appUser.role === 'superadmin' || appUser.role === 'supervisor' || appUser.role === 'petugas'
+      ? appUser.role
+      : 'petugas';
+
+  const activityRecord: AccountActivity = {
+    uid,
+    userId: safeUserId,
+    email: authEmail,
+    name: safeName,
+    role: safeRole,
+    deviceType: device.deviceType,
+    os: device.os,
+    browser: device.browser,
+    deviceLabel: device.deviceLabel,
+    screenInfo: device.screenInfo || undefined,
+    lastActiveDate: todayStr,
+    lastActiveAtMs: nowMs,
+    recentLogins: nextHistory,
+  };
+
+  try {
+    await setDoc(
+      doc(db, ACCOUNT_ACTIVITY_COLLECTION, uid),
+      sanitizeForFirestore({
+        ...activityRecord,
+        updatedAt: serverTimestamp(),
+      })
+    );
+    recordFirestoreWrite('users', 1);
+    notifyQuotaStatus(false);
+
+    // Patch local Superadmin cache immediately so self-login appears without re-reading
+    const cached = getCachedAccountActivities();
+    if (cached.activities.length > 0 || isCurrentAuthSuperAdmin()) {
+      const updatedList = [
+        activityRecord,
+        ...cached.activities.filter((a) => a.uid !== uid),
+      ].sort((a, b) => (b.lastActiveAtMs || 0) - (a.lastActiveAtMs || 0));
+      saveCachedAccountActivities(updatedList, cached.fetchedAtMs || nowMs);
+    }
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      console.warn('Firestore quota exceeded recording account activity, skipped.');
+      return;
+    }
+    console.warn('Account activity record note:', err);
+  }
+}
+
+/**
+ * Fetches all account & device activities on-demand ONLY for Superadmin.
+ * Uses a 5-minute localStorage cache (0 Reads on repeat tab switches) and NEVER opens a real-time listener.
+ */
+export async function fetchAccountActivitiesFromCloud(forceRefresh = false): Promise<{
+  activities: AccountActivity[];
+  fromCache: boolean;
+  fetchedAtMs: number;
+  quotaExceeded?: boolean;
+}> {
+  const cached = getCachedAccountActivities();
+  if (!isCurrentAuthSuperAdmin()) {
+    return { activities: cached.activities, fromCache: true, fetchedAtMs: cached.fetchedAtMs };
+  }
+
+  if (
+    !forceRefresh &&
+    cached.fetchedAtMs > 0 &&
+    Date.now() - cached.fetchedAtMs < ACCOUNT_ACTIVITY_CACHE_TTL_MS
+  ) {
+    return {
+      activities: cached.activities,
+      fromCache: true,
+      fetchedAtMs: cached.fetchedAtMs,
+    };
+  }
+
+  try {
+    const snapshot = await getDocs(collection(db, ACCOUNT_ACTIVITY_COLLECTION));
+    recordFirestoreRead('users', Math.max(1, snapshot.size), snapshot.metadata?.fromCache);
+    notifyQuotaStatus(false);
+
+    const list: AccountActivity[] = [];
+    snapshot.forEach((docSnap) => {
+      const data = docSnap.data() as AccountActivity;
+      if (data && typeof data.email === 'string') {
+        list.push({
+          ...data,
+          uid: data.uid || docSnap.id,
+          recentLogins: Array.isArray(data.recentLogins) ? data.recentLogins.slice(0, 5) : [],
+        });
+      }
+    });
+    list.sort((a, b) => (b.lastActiveAtMs || 0) - (a.lastActiveAtMs || 0));
+
+    const fetchedAtMs = Date.now();
+    saveCachedAccountActivities(list, fetchedAtMs);
+    return { activities: list, fromCache: false, fetchedAtMs };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      notifyQuotaStatus(true);
+      return {
+        activities: cached.activities,
+        fromCache: true,
+        fetchedAtMs: cached.fetchedAtMs,
+        quotaExceeded: true,
+      };
+    }
+    console.warn('Failed to fetch account activities:', err);
+    return {
+      activities: cached.activities,
+      fromCache: true,
+      fetchedAtMs: cached.fetchedAtMs,
+    };
+  }
+}
+

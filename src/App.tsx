@@ -72,6 +72,7 @@ import {
   fetchReportPhotosFromCloud,
   cleanupTemporaryReportPhotosInCloud,
   refreshReportsFromCloudNow,
+  recordAccountActivityToCloud,
 } from './services/firestoreSync';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
@@ -297,6 +298,7 @@ export default function App() {
       const nextSubscriptionKey = verifiedEmail ? `auth:${fbUser!.uid}` : 'guest';
       const needsResubscribe = currentSubscriptionKey !== nextSubscriptionKey;
 
+      let resolvedActiveUser: User | null = null;
       if (verifiedEmail && fbUser) {
         const cleanEmail = verifiedEmail.trim().toLowerCase();
         // Restore or align local currentUser with verified Firebase Auth session
@@ -310,7 +312,10 @@ export default function App() {
           if (matched && matched.isActive !== false) {
             setCurrentUser(matched);
             setCurrentUserState(matched);
+            resolvedActiveUser = matched;
           }
+        } else if (existingLocalSession.isActive !== false) {
+          resolvedActiveUser = existingLocalSession;
         }
       } else {
         resetCloudSyncSessionFlags();
@@ -337,6 +342,9 @@ export default function App() {
           unsubscribeUsers = subscribeUsers((cloudUsers) => {
             setUsers(cloudUsers);
           });
+          if (resolvedActiveUser) {
+            recordAccountActivityToCloud(resolvedActiveUser, false).catch(() => {});
+          }
         }
       }
 
@@ -1183,6 +1191,7 @@ export default function App() {
     });
     setCurrentUser(user);
     setCurrentUserState(user);
+    recordAccountActivityToCloud(user, true).catch(() => {});
     showToast(`Selamat datang, ${user.name}!`);
     if (user.role === 'petugas') {
       setActiveTab('input');

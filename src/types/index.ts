@@ -132,3 +132,20 @@ export interface PublicDailyNotificationSummary {
   updatedByUid?: string;
 }
 
+export type DeviceType = 'Desktop' | 'Mobile' | 'Tablet';
+
+export interface AccountActivity {
+  uid: string;
+  userId: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  deviceType: DeviceType;
+  os: string;
+  browser: string;
+  deviceLabel: string;
+  screenInfo?: string;
+  lastActiveDate: string;
+  lastActiveAtMs: number;
+  recentLogins?: string[];
+}

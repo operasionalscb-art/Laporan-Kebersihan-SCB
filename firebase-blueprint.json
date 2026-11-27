@@ -363,6 +363,93 @@
         "notifications",
         "updatedAtMs"
       ]
+    },
+    "AccountActivity": {
+      "title": "AccountActivity",
+      "description": "Per-user last login and device telemetry recorded only on login or day/device change",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "enum": ["superadmin", "supervisor", "petugas"]
+        },
+        "deviceType": {
+          "type": "string",
+          "enum": ["Desktop", "Mobile", "Tablet"]
+        },
+        "os": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "browser": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "deviceLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "screenInfo": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "lastActiveDate": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 20
+        },
+        "lastActiveAtMs": {
+          "type": "number"
+        },
+        "recentLogins": {
+          "type": "array",
+          "description": "Up to 5 recent formatted login timestamps and device labels"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "userId",
+        "email",
+        "name",
+        "role",
+        "deviceType",
+        "os",
+        "browser",
+        "deviceLabel",
+        "lastActiveDate",
+        "lastActiveAtMs",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -397,6 +484,10 @@
     "/public_summary/{summaryId}": {
       "schema": "PublicSummary",
       "description": "Single-document daily cleaning notification summary for non-logged-in landing page"
+    },
+    "/account_activity/{uid}": {
+      "schema": "AccountActivity",
+      "description": "Per-account login timestamp and device metadata readable by Superadmin"
     }
   }
 }

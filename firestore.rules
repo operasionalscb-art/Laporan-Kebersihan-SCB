@@ -218,6 +218,34 @@ service cloud.firestore {
         && (!('updatedByUid' in data) || (data.updatedByUid is string && data.updatedByUid == request.auth.uid));
     }
 
+    function isValidAccountActivity(data) {
+      return data.keys().hasAll([
+          'uid', 'userId', 'email', 'name', 'role', 'deviceType', 'os',
+          'browser', 'deviceLabel', 'lastActiveDate', 'lastActiveAtMs', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'userId', 'email', 'name', 'role', 'deviceType', 'os',
+          'browser', 'deviceLabel', 'screenInfo', 'lastActiveDate',
+          'lastActiveAtMs', 'recentLogins', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && isValidId(data.userId)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.email.lower() == request.auth.token.email.lower()
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.role is string && data.role in ['superadmin', 'supervisor', 'petugas']
+        && data.deviceType is string && data.deviceType in ['Desktop', 'Mobile', 'Tablet']
+        && data.os is string && data.os.size() >= 1 && data.os.size() <= 60
+        && data.browser is string && data.browser.size() >= 1 && data.browser.size() <= 60
+        && data.deviceLabel is string && data.deviceLabel.size() >= 1 && data.deviceLabel.size() <= 160
+        && (!('screenInfo' in data) || (data.screenInfo is string && data.screenInfo.size() <= 40))
+        && data.lastActiveDate is string && data.lastActiveDate.size() >= 8 && data.lastActiveDate.size() <= 20
+        && data.lastActiveAtMs is number && data.lastActiveAtMs > 0
+        && (!('recentLogins' in data) || (data.recentLogins is list && data.recentLogins.size() <= 5 && (data.recentLogins.size() == 0 || (data.recentLogins[0] is string && data.recentLogins[0].size() <= 140))))
+        && data.updatedAt == request.time;
+    }
+
     // =========================================================================
     // Collections
     // =========================================================================
@@ -414,6 +442,18 @@ service cloud.firestore {
         && incoming().updatedByUid == request.auth.uid
         && (isAdmin() || isActiveStaff());
       allow delete: if isAdmin() && isValidId(summaryId);
+    }
+
+    // Per-account login & device telemetry (written by verified owner only, listed by Superadmin on-demand)
+    match /account_activity/{uid} {
+      allow get: if isVerifiedEmail() && isValidId(uid) && (isAdmin() || request.auth.uid == uid);
+      allow list: if isVerifiedEmail() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+      allow create, update: if isVerifiedEmail()
+        && isValidId(uid)
+        && uid == request.auth.uid
+        && isActiveStaff()
+        && isValidAccountActivity(incoming());
+      allow delete: if isAdmin() && isValidId(uid);
     }
   }
 }

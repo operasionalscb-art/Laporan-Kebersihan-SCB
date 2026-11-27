@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { User, UserRole } from '../types';
+import React, { useState, useMemo, useEffect } from 'react';
+import { User, UserRole, AccountActivity } from '../types';
 import { 
   Users, 
   UserPlus, 
@@ -36,8 +36,19 @@ import {
   Loader2,
   KeyRound,
   Copy,
+  Smartphone,
+  Monitor,
+  Tablet,
+  Activity,
+  Clock,
+  History,
 } from 'lucide-react';
 import { generateStrongTempPassword } from '../services/firebaseAuth';
+import {
+  fetchAccountActivitiesFromCloud,
+  getCachedAccountActivities,
+} from '../services/firestoreSync';
+import { getTodayDateString } from '../utils/storage';
 
 export interface RolePermissionFeature {
   id: string;
@@ -312,10 +323,105 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const importUsersInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Sub Tab Navigation: 'users' or 'checklist'
-  const [activeSubTab, setActiveSubTab] = useState<'users' | 'checklist'>('users');
+  // Sub Tab Navigation: 'users' | 'activity' | 'checklist'
+  const [activeSubTab, setActiveSubTab] = useState<'users' | 'activity' | 'checklist'>('users');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchFeature, setSearchFeature] = useState<string>('');
+
+  // Account & Device Activity State (On-demand, 5-min cached, zero real-time listeners)
+  const initialCachedActivities = useMemo(() => getCachedAccountActivities(), []);
+  const [activities, setActivities] = useState<AccountActivity[]>(initialCachedActivities.activities);
+  const [activityFetchedAtMs, setActivityFetchedAtMs] = useState<number>(initialCachedActivities.fetchedAtMs);
+  const [activityFromCache, setActivityFromCache] = useState<boolean>(true);
+  const [isLoadingActivity, setIsLoadingActivity] = useState<boolean>(false);
+  const [activityQuotaError, setActivityQuotaError] = useState<boolean>(false);
+  const [activitySearch, setActivitySearch] = useState<string>('');
+  const [activityDeviceFilter, setActivityDeviceFilter] = useState<'ALL' | 'Mobile' | 'Desktop' | 'Tablet'>('ALL');
+  const [expandedActivityUid, setExpandedActivityUid] = useState<string | null>(null);
+
+  const loadAccountActivities = async (forceRefresh = false) => {
+    setIsLoadingActivity(true);
+    try {
+      const res = await fetchAccountActivitiesFromCloud(forceRefresh);
+      setActivities(res.activities);
+      setActivityFetchedAtMs(res.fetchedAtMs);
+      setActivityFromCache(res.fromCache);
+      setActivityQuotaError(Boolean(res.quotaExceeded));
+      if (forceRefresh) {
+        if (res.quotaExceeded) {
+          onShowToast?.('Kuota Firestore sedang penuh. Menampilkan data aktivitas tersimpan lokal.', 'info');
+        } else {
+          onShowToast?.(`Data aktivitas ${res.activities.length} akun berhasil diperbarui.`, 'success');
+        }
+      }
+    } finally {
+      setIsLoadingActivity(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSubTab === 'activity') {
+      loadAccountActivities(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSubTab]);
+
+  const todayDateStr = useMemo(() => getTodayDateString(), []);
+
+  const activityByEmail = useMemo(() => {
+    const map = new Map<string, AccountActivity>();
+    for (const act of activities) {
+      if (act.email) {
+        map.set(act.email.trim().toLowerCase(), act);
+      }
+    }
+    return map;
+  }, [activities]);
+
+  const filteredActivities = useMemo(() => {
+    const q = activitySearch.trim().toLowerCase();
+    return activities.filter((act) => {
+      if (activityDeviceFilter !== 'ALL' && act.deviceType !== activityDeviceFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        (act.name || '').toLowerCase().includes(q) ||
+        (act.email || '').toLowerCase().includes(q) ||
+        (act.deviceLabel || '').toLowerCase().includes(q) ||
+        (act.os || '').toLowerCase().includes(q) ||
+        (act.browser || '').toLowerCase().includes(q)
+      );
+    });
+  }, [activities, activitySearch, activityDeviceFilter]);
+
+  const activityStats = useMemo(() => {
+    const activeToday = activities.filter((a) => a.lastActiveDate === todayDateStr).length;
+    const mobileOrTablet = activities.filter((a) => a.deviceType === 'Mobile' || a.deviceType === 'Tablet').length;
+    const desktop = activities.filter((a) => a.deviceType === 'Desktop').length;
+    return {
+      total: activities.length,
+      activeToday,
+      mobileOrTablet,
+      desktop,
+    };
+  }, [activities, todayDateStr]);
+
+  const formatActivityTime = (ms: number): string => {
+    if (!ms) return '-';
+    try {
+      return new Intl.DateTimeFormat('id-ID', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(new Date(ms));
+    } catch {
+      return new Date(ms).toLocaleString();
+    }
+  };
 
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [confirmPassword, setConfirmPassword] = useState<string>('');
@@ -667,11 +773,11 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         </div>
       </div>
 
-      {/* SUB-TABS: USERS LIST VS ROLES CHECKLIST MATRIX */}
+      {/* SUB-TABS: USERS LIST VS ACCOUNT ACTIVITY VS ROLES CHECKLIST MATRIX */}
       <div className="bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200 flex flex-col sm:flex-row gap-1">
         <button
           onClick={() => setActiveSubTab('users')}
-          className={`flex-1 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 ${
+          className={`flex-1 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 cursor-pointer ${
             activeSubTab === 'users'
               ? 'bg-white text-slate-900 shadow-xs border border-slate-200/80'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
@@ -687,15 +793,32 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         </button>
 
         <button
+          onClick={() => setActiveSubTab('activity')}
+          className={`flex-1 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 cursor-pointer ${
+            activeSubTab === 'activity'
+              ? 'bg-white text-slate-900 shadow-xs border border-slate-200/80'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+          }`}
+        >
+          <Activity className="w-4 h-4 text-indigo-600" />
+          <span>Aktivitas Akun &amp; Perangkat</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            activeSubTab === 'activity' ? 'bg-indigo-100 text-indigo-800' : 'bg-slate-200 text-slate-600'
+          }`}>
+            {activities.length > 0 ? activities.length : 'Hemat Kuota'}
+          </span>
+        </button>
+
+        <button
           onClick={() => setActiveSubTab('checklist')}
-          className={`flex-1 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 ${
+          className={`flex-1 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 cursor-pointer ${
             activeSubTab === 'checklist'
               ? 'bg-white text-slate-900 shadow-xs border border-slate-200/80'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
           }`}
         >
           <ClipboardList className="w-4 h-4 text-blue-600" />
-          <span>Ceklist Fitur & Hak Akses Peran</span>
+          <span>Ceklist Fitur &amp; Hak Akses Peran</span>
           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
             activeSubTab === 'checklist' ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-600'
           }`}>
@@ -926,6 +1049,22 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
                             <Key className="w-3 h-3 text-emerald-600" />
                             Email &amp; Sandi Cloud
                           </span>
+                          {(() => {
+                            const act = activityByEmail.get((user.email || '').trim().toLowerCase());
+                            if (!act) return null;
+                            return (
+                              <div className="mt-1 text-[10px] text-slate-500 flex items-center gap-1">
+                                {act.deviceType === 'Mobile' ? (
+                                  <Smartphone className="w-3 h-3 text-indigo-500" />
+                                ) : act.deviceType === 'Tablet' ? (
+                                  <Tablet className="w-3 h-3 text-indigo-500" />
+                                ) : (
+                                  <Monitor className="w-3 h-3 text-slate-500" />
+                                )}
+                                <span>{act.deviceLabel}</span>
+                              </div>
+                            );
+                          })()}
                         </td>
 
                         <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
@@ -1004,7 +1143,266 @@ export const AccountManagement: React.FC<AccountManagementProps> = ({
         </div>
       )}
 
-      {/* TAB CONTENT 2: CEKLIST & MATRIKS HAK AKSES PERAN */}
+      {/* TAB CONTENT 2: AKTIVITAS AKUN & PERANGKAT */}
+      {activeSubTab === 'activity' && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          {/* Quota Optimization Notice */}
+          <div className="p-4 rounded-2xl bg-indigo-50/80 border border-indigo-200 text-indigo-950 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3 text-xs">
+              <Activity className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold text-indigo-950">
+                  Pemantauan Aktivitas Akun &amp; Perangkat (Mode Hemat Kuota Firestore)
+                </p>
+                <p className="text-indigo-800 leading-relaxed">
+                  Sistem hanya mencatat data saat petugas/pengguna melakukan <strong>login atau berganti hari/perangkat</strong> (reload halaman biasa tidak memakan kuota tulis). Daftar ini dimuat sesuai permintaan dengan <strong>cache 5 menit</strong> tanpa listener live.
+                </p>
+                <p className="text-[11px] text-indigo-700 font-medium">
+                  {activityFetchedAtMs > 0
+                    ? `Terakhir dimuat: ${formatActivityTime(activityFetchedAtMs)} (${activityFromCache ? 'dari cache lokal 0 Read' : 'sinkron langsung Cloud'})`
+                    : 'Belum dimuat dari Cloud'}
+                  {activityQuotaError ? ' • Kuota Firestore harian penuh, menampilkan salinan lokal.' : ''}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={isLoadingActivity}
+              onClick={() => loadAccountActivities(true)}
+              className="self-start sm:self-center inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer disabled:opacity-60 shrink-0"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingActivity ? 'animate-spin' : ''}`} />
+              <span>{isLoadingActivity ? 'Memuat...' : 'Segarkan Aktivitas'}</span>
+            </button>
+          </div>
+
+          {/* Summary KPI Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                <span>Akun Tercatat</span>
+                <Users className="w-4 h-4 text-slate-400" />
+              </div>
+              <div className="text-2xl font-bold text-slate-900">{activityStats.total}</div>
+              <p className="text-[11px] text-slate-400 mt-0.5">Dari {users.length} total akun</p>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-emerald-200 shadow-xs">
+              <div className="flex items-center justify-between text-xs text-emerald-700 font-semibold mb-1">
+                <span>Aktif Hari Ini</span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div className="text-2xl font-bold text-emerald-700">{activityStats.activeToday}</div>
+              <p className="text-[11px] text-emerald-600/80 mt-0.5">Tanggal {todayDateStr}</p>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-indigo-200 shadow-xs">
+              <div className="flex items-center justify-between text-xs text-indigo-700 font-semibold mb-1">
+                <span>Ponsel / Tablet</span>
+                <Smartphone className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="text-2xl font-bold text-indigo-700">{activityStats.mobileOrTablet}</div>
+              <p className="text-[11px] text-indigo-600/80 mt-0.5">Perangkat mobile lapangan</p>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="flex items-center justify-between text-xs text-slate-600 font-semibold mb-1">
+                <span>Desktop / Laptop</span>
+                <Monitor className="w-4 h-4 text-slate-500" />
+              </div>
+              <div className="text-2xl font-bold text-slate-800">{activityStats.desktop}</div>
+              <p className="text-[11px] text-slate-400 mt-0.5">Komputer / browser PC</p>
+            </div>
+          </div>
+
+          {/* Search, Device Filter & Activity Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="relative flex-1 max-w-md">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Cari nama akun, email, OS, atau browser..."
+                  value={activitySearch}
+                  onChange={(e) => setActivitySearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(['ALL', 'Mobile', 'Desktop', 'Tablet'] as const).map((dev) => (
+                  <button
+                    key={dev}
+                    type="button"
+                    onClick={() => setActivityDeviceFilter(dev)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activityDeviceFilter === dev
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {dev === 'ALL' ? 'Semua Perangkat' : dev}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {isLoadingActivity && activities.length === 0 ? (
+              <div className="p-10 text-center text-xs text-slate-500 flex flex-col items-center gap-2">
+                <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
+                <span>Mengambil data aktivitas akun &amp; perangkat...</span>
+              </div>
+            ) : filteredActivities.length === 0 ? (
+              <div className="p-10 text-center text-xs text-slate-500 space-y-2">
+                <Activity className="w-8 h-8 text-slate-300 mx-auto" />
+                <p className="font-semibold text-slate-700">
+                  Belum ada catatan aktivitas yang sesuai filter.
+                </p>
+                <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                  Aktivitas otomatis tercatat saat setiap personel atau pengawas masuk (login) menggunakan akun masing-masing.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
+                    <tr>
+                      <th className="py-3 px-4">Akun Pengguna</th>
+                      <th className="py-3 px-4">Peran</th>
+                      <th className="py-3 px-4">Jenis Perangkat</th>
+                      <th className="py-3 px-4">Sistem &amp; Browser</th>
+                      <th className="py-3 px-4">Aktivitas Terakhir</th>
+                      <th className="py-3 px-4 text-right">Riwayat Login</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {filteredActivities.map((act) => {
+                      const isToday = act.lastActiveDate === todayDateStr;
+                      const isExpanded = expandedActivityUid === act.uid;
+                      const isSuperRow = act.role === 'superadmin' || act.email === 'operasional.scb@gmail.com';
+                      const loginHistory = Array.isArray(act.recentLogins) ? act.recentLogins : [];
+
+                      return (
+                        <React.Fragment key={act.uid}>
+                          <tr className="hover:bg-slate-50/80 transition-colors">
+                            <td className="py-3.5 px-4">
+                              <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                                <span>{act.name}</span>
+                                {isToday && (
+                                  <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-[9px] font-bold">
+                                    Hari Ini
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] font-mono text-slate-500">{act.email}</div>
+                            </td>
+
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                  isSuperRow
+                                    ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                    : act.role === 'supervisor'
+                                    ? 'bg-blue-100 text-blue-900 border border-blue-300'
+                                    : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                                }`}
+                              >
+                                {isSuperRow ? 'Super Admin' : act.role === 'supervisor' ? 'Supervisor' : 'Petugas'}
+                              </span>
+                            </td>
+
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
+                                  act.deviceType === 'Mobile'
+                                    ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                                    : act.deviceType === 'Tablet'
+                                    ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                    : 'bg-slate-100 text-slate-700 border-slate-200'
+                                }`}
+                              >
+                                {act.deviceType === 'Mobile' ? (
+                                  <Smartphone className="w-3.5 h-3.5" />
+                                ) : act.deviceType === 'Tablet' ? (
+                                  <Tablet className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Monitor className="w-3.5 h-3.5" />
+                                )}
+                                <span>{act.deviceType}</span>
+                              </span>
+                            </td>
+
+                            <td className="py-3.5 px-4">
+                              <div className="font-semibold text-slate-800">
+                                {act.os} • {act.browser}
+                              </div>
+                              {act.screenInfo && (
+                                <div className="text-[10px] text-slate-400 font-mono">
+                                  Layar: {act.screenInfo}
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5 font-semibold text-slate-800">
+                                <Clock className="w-3.5 h-3.5 text-slate-400" />
+                                <span>{formatActivityTime(act.lastActiveAtMs)}</span>
+                              </div>
+                            </td>
+
+                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                              {loginHistory.length > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedActivityUid(isExpanded ? null : act.uid)
+                                  }
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-indigo-100 text-slate-700 hover:text-indigo-800 text-[11px] font-semibold transition-colors cursor-pointer"
+                                >
+                                  <History className="w-3.5 h-3.5" />
+                                  <span>{isExpanded ? 'Tutup' : `${loginHistory.length} Riwayat`}</span>
+                                </button>
+                              ) : (
+                                <span className="text-[11px] text-slate-400">-</span>
+                              )}
+                            </td>
+                          </tr>
+
+                          {isExpanded && loginHistory.length > 0 && (
+                            <tr className="bg-slate-50/70">
+                              <td colSpan={6} className="px-4 py-3 border-t border-slate-100">
+                                <div className="text-[11px] text-slate-600 space-y-1.5">
+                                  <p className="font-bold text-slate-700 flex items-center gap-1.5">
+                                    <History className="w-3.5 h-3.5 text-indigo-600" />
+                                    <span>5 Login Terakhir ({act.name})</span>
+                                  </p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {loginHistory.map((entry, idx) => (
+                                      <span
+                                        key={`${act.uid}-hist-${idx}`}
+                                        className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-700 font-medium text-[11px]"
+                                      >
+                                        {entry}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB CONTENT 3: CEKLIST & MATRIKS HAK AKSES PERAN */}
       {activeSubTab === 'checklist' && (
         <div className="space-y-6 animate-in fade-in duration-200">
           {/* Role Summary Cards (User / Supervisor / Admin) */}
